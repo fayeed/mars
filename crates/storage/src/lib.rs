@@ -23,6 +23,8 @@ pub enum StorageError {
     Json(#[from] serde_json::Error),
     #[error("job `{0}` does not exist")]
     JobNotFound(String),
+    #[error("repository `{0}` does not exist")]
+    RepositoryNotFound(String),
     #[error("job `{job_id}` cannot transition from {from} to {to}")]
     InvalidJobTransition {
         job_id: String,

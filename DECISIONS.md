@@ -120,3 +120,10 @@ Status values: proposed, accepted, superseded. These decisions are proposed toge
 - Decision: Opening a repository first canonicalizes its root, resolves directory or worktree Git metadata, and presents the exact root plus the read, index, and Git-observation capabilities. Mars persists a project only after explicit confirmation. Reopening the same canonical root returns the existing project atomically.
 - Rationale: Selecting a directory is not consent to index it, and worktrees may share metadata outside their visible root. Inspection needs to be mutation-free and concurrency-safe.
 - Consequence: Repository trust does not grant file writes, command execution, network access, or Git mutation. Those remain separately permissioned. Canonical local paths are machine-specific metadata and repository contents remain external to the profile database.
+
+## ADR-018 — Human editing and terminals stay behind trusted repository identities
+
+- Status: accepted
+- Decision: Explorer, editor, and terminal commands accept a persisted repository identifier rather than a client-supplied root. The Rust core resolves the canonical trusted root, applies Git/product/default ignore policy, rejects path traversal and symlink escapes, limits editable files to 2 MiB, and saves against a SHA-256 content version through same-directory replacement. A terminal launches the user's default shell only after an explicit click, starts in that root, streams raw PTY bytes, and retains at most 1 MiB of native scrollback.
+- Rationale: Webview paths are untrusted input, external tools may edit files concurrently, and PTY byte streams are not safely decoded one arbitrary read chunk at a time.
+- Consequence: Human saves can surface a disk-conflict instead of overwriting an external edit. Binary, oversized, ignored, sensitive, and out-of-root files are not editable. Agent command permissions remain a separate later capability layer; this decision covers direct human IDE actions.

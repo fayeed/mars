@@ -15,7 +15,7 @@ import {
   Settings2Icon,
   TerminalSquareIcon,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -28,6 +28,12 @@ import {
 } from "@/components/ui/empty";
 import { Separator } from "@/components/ui/separator";
 import { OpenRepository } from "@/features/projects/OpenRepository";
+
+const RepositoryWorkspace = lazy(() =>
+  import("@/features/workspace/RepositoryWorkspace").then((module) => ({
+    default: module.RepositoryWorkspace,
+  })),
+);
 
 type CoreConnection =
   | { phase: "connecting" }
@@ -139,57 +145,67 @@ export function App() {
         </Button>
       </aside>
 
-      <section className="border-r bg-card" aria-labelledby="activity-title">
-        <div className="flex h-[140px] flex-col justify-between border-b px-6 py-7">
-          <p className="text-[10px] uppercase tracking-[0.16em] text-muted-foreground">Operations / now</p>
-          <h1 className="font-heading text-3xl tracking-tight" id="activity-title">Activity</h1>
-        </div>
+      {project ? (
+        <Suspense
+          fallback={
+            <section className="col-span-2 grid place-items-center text-xs text-muted-foreground">
+              Loading repository workspace…
+            </section>
+          }
+        >
+          <RepositoryWorkspace project={project} />
+        </Suspense>
+      ) : (
+        <>
+          <section className="border-r bg-card" aria-labelledby="activity-title">
+            <div className="flex h-[140px] flex-col justify-between border-b px-6 py-7">
+              <p className="text-[10px] uppercase tracking-[0.16em] text-muted-foreground">Operations / now</p>
+              <h1 className="font-heading text-3xl tracking-tight" id="activity-title">Activity</h1>
+            </div>
 
-        <div className="flex flex-col">
-          {activities.map((activity) => (
-            <article className="grid min-h-24 grid-cols-[35px_1fr] items-start px-5 py-5" key={activity.code}>
-              <span className="text-[10px] text-muted-foreground">{activity.code}</span>
-              <div className="flex flex-col gap-2">
-                <h2 className="text-xs font-medium tracking-wide">{activity.label}</h2>
-                <p className="truncate text-xs text-muted-foreground">
-                  {activity.code === "01" && project ? project.rootPath : activity.detail}
-                </p>
-              </div>
-              <Separator className="col-span-full mt-5" />
-            </article>
-          ))}
-        </div>
-      </section>
+            <div className="flex flex-col">
+              {activities.map((activity) => (
+                <article className="grid min-h-24 grid-cols-[35px_1fr] items-start px-5 py-5" key={activity.code}>
+                  <span className="text-[10px] text-muted-foreground">{activity.code}</span>
+                  <div className="flex flex-col gap-2">
+                    <h2 className="text-xs font-medium tracking-wide">{activity.label}</h2>
+                    <p className="truncate text-xs text-muted-foreground">{activity.detail}</p>
+                  </div>
+                  <Separator className="col-span-full mt-5" />
+                </article>
+              ))}
+            </div>
+          </section>
 
-      <section className="brain-grid relative grid place-items-center" aria-labelledby="canvas-title">
-        <span className="absolute left-6 top-5 text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
-          Mars / 000
-        </span>
+          <section className="brain-grid relative grid place-items-center" aria-labelledby="canvas-title">
+            <span className="absolute left-6 top-5 text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
+              Mars / 000
+            </span>
 
-        <Empty className="max-w-lg border-none">
-          <EmptyHeader>
-            <EmptyMedia variant="icon">
-              <Code2Icon />
-            </EmptyMedia>
-            <p className="text-[10px] uppercase tracking-[0.2em] text-primary">Ready for assignment</p>
-            <EmptyTitle className="font-heading text-4xl tracking-tight" id="canvas-title">
-              {project ? `${project.name} is ready.` : "Open a repository to begin."}
-            </EmptyTitle>
-            <EmptyDescription>
-              {project
-                ? "Repository trust is established. File browsing and structural indexing arrive in the next slice."
-                : "Choose a local Git repository. Mars will show exactly which read capabilities trust enables."}
-            </EmptyDescription>
-          </EmptyHeader>
-          {project ? null : <OpenRepository onOpened={setProject} />}
-        </Empty>
+            <Empty className="max-w-lg border-none">
+              <EmptyHeader>
+                <EmptyMedia variant="icon">
+                  <Code2Icon />
+                </EmptyMedia>
+                <p className="text-[10px] uppercase tracking-[0.2em] text-primary">Ready for assignment</p>
+                <EmptyTitle className="font-heading text-4xl tracking-tight" id="canvas-title">
+                  Open a repository to begin.
+                </EmptyTitle>
+                <EmptyDescription>
+                  Choose a local Git repository. Mars will show exactly which read capabilities trust enables.
+                </EmptyDescription>
+              </EmptyHeader>
+              <OpenRepository onOpened={setProject} />
+            </Empty>
 
-        <footer className="absolute inset-x-0 bottom-0 flex gap-7 border-t bg-background/90 px-5 py-3 text-[10px] uppercase tracking-wide text-muted-foreground backdrop-blur-sm">
-          <span className="inline-flex items-center gap-2"><GitBranchIcon /> Branch —</span>
-          <span>Agents 0</span>
-          <span>Queue 0</span>
-        </footer>
-      </section>
+            <footer className="absolute inset-x-0 bottom-0 flex gap-7 border-t bg-background/90 px-5 py-3 text-[10px] uppercase tracking-wide text-muted-foreground backdrop-blur-sm">
+              <span className="inline-flex items-center gap-2"><GitBranchIcon /> Branch —</span>
+              <span>Agents 0</span>
+              <span>Queue 0</span>
+            </footer>
+          </section>
+        </>
+      )}
     </main>
   );
 }

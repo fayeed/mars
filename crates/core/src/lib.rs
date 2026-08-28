@@ -5,9 +5,11 @@ use serde_json::json;
 
 use crate::protocol::{Command, CommandRequest, CommandResponse, ProtocolError, ResponsePayload};
 
+pub mod files;
 pub mod jobs;
 pub mod projects;
 pub mod protocol;
+pub mod terminal;
 
 const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::new(0, 1, 0);
 
