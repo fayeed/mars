@@ -2,6 +2,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+pub mod jobs;
 pub mod protocol;
 
 const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::new(0, 1, 0);
