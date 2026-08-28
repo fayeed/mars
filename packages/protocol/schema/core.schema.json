@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mars.dev/protocol/core.schema.json",
+  "title": "Mars Core Protocol",
+  "x-mars-protocol-version": "0.1.0",
+  "$defs": {
+    "ProtocolVersion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["major", "minor", "patch"],
+      "properties": {
+        "major": { "type": "integer", "minimum": 0, "maximum": 65535 },
+        "minor": { "type": "integer", "minimum": 0, "maximum": 65535 },
+        "patch": { "type": "integer", "minimum": 0, "maximum": 65535 }
+      }
+    },
+    "CoreInfoCommand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": { "type": { "const": "coreInfo" } }
+    },
+    "CoreInfoResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "protocolVersion"],
+      "properties": {
+        "type": { "const": "coreInfo" },
+        "protocolVersion": { "$ref": "#/$defs/ProtocolVersion" }
+      }
+    },
+    "ProtocolError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message", "retryable"],
+      "properties": {
+        "code": { "type": "string", "minLength": 1 },
+        "message": { "type": "string", "minLength": 1 },
+        "retryable": { "type": "boolean" },
+        "details": true
+      }
+    },
+    "CommandRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocolVersion", "correlationId", "command"],
+      "properties": {
+        "protocolVersion": { "$ref": "#/$defs/ProtocolVersion" },
+        "correlationId": { "type": "string", "minLength": 1 },
+        "command": { "$ref": "#/$defs/CoreInfoCommand" }
+      }
+    },
+    "CommandSuccess": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "protocolVersion", "correlationId", "result"],
+      "properties": {
+        "status": { "const": "success" },
+        "protocolVersion": { "$ref": "#/$defs/ProtocolVersion" },
+        "correlationId": { "type": "string", "minLength": 1 },
+        "result": { "$ref": "#/$defs/CoreInfoResult" }
+      }
+    },
+    "CommandFailure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "protocolVersion", "correlationId", "error"],
+      "properties": {
+        "status": { "const": "failure" },
+        "protocolVersion": { "$ref": "#/$defs/ProtocolVersion" },
+        "correlationId": { "type": "string", "minLength": 1 },
+        "error": { "$ref": "#/$defs/ProtocolError" }
+      }
+    },
+    "CommandResponse": {
+      "oneOf": [
+        { "$ref": "#/$defs/CommandSuccess" },
+        { "$ref": "#/$defs/CommandFailure" }
+      ]
+    },
+    "EventPayload": {
+      "type": "object",
+      "required": ["type", "payload"],
+      "properties": {
+        "type": { "type": "string", "minLength": 1 },
+        "payload": true
+      },
+      "additionalProperties": true
+    },
+    "CoreEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocolVersion", "sequence", "event"],
+      "properties": {
+        "protocolVersion": { "$ref": "#/$defs/ProtocolVersion" },
+        "sequence": { "type": "integer", "minimum": 0 },
+        "event": { "$ref": "#/$defs/EventPayload" }
+      }
+    }
+  },
+  "oneOf": [
+    { "$ref": "#/$defs/CommandRequest" },
+    { "$ref": "#/$defs/CommandResponse" },
+    { "$ref": "#/$defs/CoreEvent" }
+  ]
+}

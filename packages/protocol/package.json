@@ -1,5 +1,14 @@
 {
   "name": "@mars/protocol",
   "version": "0.1.0",
-  "private": true
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/generated.ts"
+  },
+  "types": "./src/generated.ts",
+  "scripts": {
+    "test": "node --test src/generated.test.ts",
+    "typecheck": "tsc --project tsconfig.json"
+  }
 }

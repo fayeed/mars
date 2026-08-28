@@ -1,6 +1,8 @@
 use std::fmt;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+
+pub mod protocol;
 
 const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::new(0, 1, 0);
 
@@ -21,7 +23,8 @@ impl Core {
 }
 
 /// A transport-safe semantic version for the core protocol.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProtocolVersion {
     pub major: u16,
     pub minor: u16,
