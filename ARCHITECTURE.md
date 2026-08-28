@@ -69,6 +69,7 @@ flowchart TB
 ### Runtime shape
 
 - `apps/desktop` owns windows, menus, global capture registration, React state, Monaco, and xterm rendering.
+- Desktop UI uses Tailwind CSS v4 and local shadcn/ui source components with semantic design tokens. Components begin app-local; only proven cross-app primitives move to `packages/ui`.
 - `crates/core` composes domain services and exposes a transport-neutral `CoreApi` plus event subscription. Tauri is one transport; a future local socket is another.
 - Domain crates own machine/repository/process lifecycle. They never depend on Tauri or React.
 - `packages/protocol` is the versioned command/event contract generated or checked against Rust types.
@@ -107,7 +108,7 @@ crates/
 packages/
   protocol/                  # JSON schema + generated TS/Rust contract tests
   shared-types/              # presentation-safe TypeScript types
-  ui/                        # shared shadcn components and design tokens
+  ui/                        # shared shadcn components promoted after real reuse
 fixtures/
   repositories/              # tiny deterministic Git/TS fixture repos
   agents/                    # redacted Claude/Codex event streams

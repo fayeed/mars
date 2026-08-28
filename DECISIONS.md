@@ -106,3 +106,10 @@ Status values: proposed, accepted, superseded. These decisions are proposed toge
 - Decision: Make Tasks the default workspace, with Explorer, Brain, Context, Skills, and Git/PRs as peer activities. Agent chat/stream is part of a task rather than the product shell.
 - Rationale: The principal workflow is intent → context → delegation → review → integration → memory.
 - Consequence: A user can still browse/edit/terminal directly, but the main information architecture cannot regress to “editor plus chat sidebar.”
+
+## ADR-016 — shadcn/ui is the desktop component foundation
+
+- Status: accepted
+- Decision: Use Tailwind CSS v4, semantic theme tokens, and shadcn/ui components stored as local source. Start components in `apps/desktop`; promote them to `packages/ui` only after a second real consumer exists.
+- Rationale: Mars needs an inspectable, adaptable design system without binding product UI to an opaque runtime component package. App-local ownership avoids premature shared abstractions.
+- Consequence: New UI checks the shadcn registry and current component documentation before inventing primitives. Layout may use utility classes, while component color and typography flow through semantic tokens and variants.
