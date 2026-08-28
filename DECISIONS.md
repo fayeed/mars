@@ -113,3 +113,10 @@ Status values: proposed, accepted, superseded. These decisions are proposed toge
 - Decision: Use Tailwind CSS v4, semantic theme tokens, and shadcn/ui components stored as local source. Start components in `apps/desktop`; promote them to `packages/ui` only after a second real consumer exists.
 - Rationale: Mars needs an inspectable, adaptable design system without binding product UI to an opaque runtime component package. App-local ownership avoids premature shared abstractions.
 - Consequence: New UI checks the shadcn registry and current component documentation before inventing primitives. Layout may use utility classes, while component color and typography flow through semantic tokens and variants.
+
+## ADR-017 — Repository trust is inspect-before-persist
+
+- Status: accepted
+- Decision: Opening a repository first canonicalizes its root, resolves directory or worktree Git metadata, and presents the exact root plus the read, index, and Git-observation capabilities. Mars persists a project only after explicit confirmation. Reopening the same canonical root returns the existing project atomically.
+- Rationale: Selecting a directory is not consent to index it, and worktrees may share metadata outside their visible root. Inspection needs to be mutation-free and concurrency-safe.
+- Consequence: Repository trust does not grant file writes, command execution, network access, or Git mutation. Those remain separately permissioned. Canonical local paths are machine-specific metadata and repository contents remain external to the profile database.

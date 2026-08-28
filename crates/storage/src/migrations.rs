@@ -11,11 +11,18 @@ struct Migration {
     sql: &'static str,
 }
 
-const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "core",
-    sql: include_str!("../migrations/0001_core.sql"),
-}];
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "core",
+        sql: include_str!("../migrations/0001_core.sql"),
+    },
+    Migration {
+        version: 2,
+        name: "projects",
+        sql: include_str!("../migrations/0002_projects.sql"),
+    },
+];
 
 pub(crate) fn apply_all(connection: &mut Connection) -> Result<()> {
     for migration in MIGRATIONS {

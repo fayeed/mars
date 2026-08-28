@@ -2,6 +2,7 @@
 
 pub mod jobs;
 pub mod migrations;
+pub mod projects;
 
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
@@ -57,6 +58,14 @@ impl Storage {
     ) -> Result<T> {
         let connection = self.connection()?;
         Ok(operation(&connection)?)
+    }
+
+    pub(crate) fn with_connection_mut<T>(
+        &self,
+        operation: impl FnOnce(&mut Connection) -> Result<T>,
+    ) -> Result<T> {
+        let mut connection = self.connection()?;
+        operation(&mut connection)
     }
 
     pub(crate) fn connection(&self) -> Result<MutexGuard<'_, Connection>> {

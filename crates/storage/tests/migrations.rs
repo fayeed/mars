@@ -60,7 +60,7 @@ fn fresh_database_applies_each_migration_once() {
         })
         .expect("jobs table should exist");
 
-    assert_eq!(applied, 1);
+    assert_eq!(applied, 2);
     assert_eq!(jobs_table, "jobs");
 
     drop(storage);
@@ -72,7 +72,7 @@ fn fresh_database_applies_each_migration_once() {
             })
         })
         .expect("migration journal should remain readable");
-    assert_eq!(applied_after_reopen, 1);
+    assert_eq!(applied_after_reopen, 2);
 }
 
 #[test]

@@ -5,6 +5,7 @@ import {
   type CommandResponse,
   type ProtocolVersion,
 } from "@mars/protocol";
+import type { ProjectSnapshot } from "@mars/shared-types";
 import {
   BlocksIcon,
   BrainCircuitIcon,
@@ -26,6 +27,7 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty";
 import { Separator } from "@/components/ui/separator";
+import { OpenRepository } from "@/features/projects/OpenRepository";
 
 type CoreConnection =
   | { phase: "connecting" }
@@ -59,6 +61,7 @@ function connectionLabel(connection: CoreConnection) {
 
 export function App() {
   const [connection, setConnection] = useState<CoreConnection>({ phase: "connecting" });
+  const [project, setProject] = useState<ProjectSnapshot | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -109,7 +112,7 @@ export function App() {
 
         <div className="flex items-center gap-4 px-6 text-xs uppercase tracking-[0.12em]">
           <span className="text-muted-foreground">Local</span>
-          <strong className="font-medium">Untitled workspace</strong>
+          <strong className="font-medium">{project?.name ?? "Untitled workspace"}</strong>
         </div>
 
         <div className="flex min-w-56 items-center border-l px-5" aria-live="polite">
@@ -148,7 +151,9 @@ export function App() {
               <span className="text-[10px] text-muted-foreground">{activity.code}</span>
               <div className="flex flex-col gap-2">
                 <h2 className="text-xs font-medium tracking-wide">{activity.label}</h2>
-                <p className="text-xs text-muted-foreground">{activity.detail}</p>
+                <p className="truncate text-xs text-muted-foreground">
+                  {activity.code === "01" && project ? project.rootPath : activity.detail}
+                </p>
               </div>
               <Separator className="col-span-full mt-5" />
             </article>
@@ -168,12 +173,15 @@ export function App() {
             </EmptyMedia>
             <p className="text-[10px] uppercase tracking-[0.2em] text-primary">Ready for assignment</p>
             <EmptyTitle className="font-heading text-4xl tracking-tight" id="canvas-title">
-              Open a worktree to begin.
+              {project ? `${project.name} is ready.` : "Open a repository to begin."}
             </EmptyTitle>
             <EmptyDescription>
-              Tasks, agent activity, diffs, and review evidence will resolve here.
+              {project
+                ? "Repository trust is established. File browsing and structural indexing arrive in the next slice."
+                : "Choose a local Git repository. Mars will show exactly which read capabilities trust enables."}
             </EmptyDescription>
           </EmptyHeader>
+          {project ? null : <OpenRepository onOpened={setProject} />}
         </Empty>
 
         <footer className="absolute inset-x-0 bottom-0 flex gap-7 border-t bg-background/90 px-5 py-3 text-[10px] uppercase tracking-wide text-muted-foreground backdrop-blur-sm">

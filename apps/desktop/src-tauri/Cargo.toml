@@ -9,5 +9,8 @@ tauri-build.workspace = true
 
 [dependencies]
 mars-core.workspace = true
+mars-security.workspace = true
+mars-storage.workspace = true
 serde.workspace = true
 tauri.workspace = true
+tauri-plugin-dialog = "2.7.2"

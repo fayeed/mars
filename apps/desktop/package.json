@@ -7,13 +7,16 @@
     "build": "vite build",
     "dev": "vite",
     "lint": "eslint src vite.config.ts",
+    "test": "vitest run",
     "typecheck": "tsc --project tsconfig.json"
   },
   "dependencies": {
-    "@mars/protocol": "workspace:*",
     "@base-ui/react": "^1.7.0",
     "@fontsource-variable/geist": "^5.3.0",
+    "@mars/protocol": "workspace:*",
+    "@mars/shared-types": "workspace:*",
     "@tauri-apps/api": "2.11.1",
+    "@tauri-apps/plugin-dialog": "^2.7.2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^1.34.0",
@@ -25,7 +28,12 @@
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.6",
+    "jsdom": "^30.0.1",
     "tailwindcss": "^4.3.3",
-    "vite": "8.2.2"
+    "vite": "8.2.2",
+    "vitest": "^4.1.11"
   }
 }

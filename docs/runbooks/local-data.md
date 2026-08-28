@@ -1,10 +1,10 @@
 # Local data and backup
 
-Status: Milestone 0 storage foundation
+Status: Milestone A repository foundation
 
 ## Database
 
-Mars uses one bundled SQLite database per local application profile. The desktop will resolve the profile directory through Tauri's application-data API and store the database as `mars.sqlite3` beneath the `dev.mars.desktop` application directory. `mars-storage` currently accepts that path explicitly; wiring the desktop path resolver is deferred until the first repository-opening slice.
+Mars uses one bundled SQLite database per local application profile. At startup, the desktop resolves the profile directory through Tauri's application-data API, creates it when needed, and opens `mars.sqlite3` beneath the `dev.mars.desktop` application directory. Startup applies pending migrations before commands become available and fails rather than running against an unavailable or invalid database.
 
 Every connection enables foreign keys, a five-second busy timeout, WAL journaling, and `synchronous=NORMAL`. Mars bundles SQLite through `rusqlite`; the test suite creates an FTS5 virtual table to prove that the shipped build includes FTS5 instead of relying on the host SQLite binary.
 
@@ -28,7 +28,7 @@ Milestone 0 does not yet expose a backup command. Until it does:
 2. Copy `mars.sqlite3` and the future `artifacts/` directory together.
 3. If the process cannot be stopped, use SQLite's online backup API rather than copying only the main database while WAL mode is active. Online backup is planned before user data enters the database.
 
-Source repositories and Git worktrees are not stored in this database and require their normal backup strategy.
+Source repositories and Git worktrees are not stored in this database and require their normal backup strategy. Project records contain canonical local paths and resolved Git common-directory paths; restoring a database on another machine does not copy or relocate those repositories.
 
 ## Recovery behavior
 
@@ -36,6 +36,5 @@ On startup, any job left in `running` or `cancel_requested` state is marked `int
 
 Current limitations:
 
-- The desktop does not yet open the profile database.
 - There is no online backup, restore, compaction, or artifact garbage collection UI.
 - Jobs persist status/events but do not yet expose checkpoint update APIs; those arrive with the first resumable indexer.
