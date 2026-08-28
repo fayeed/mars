@@ -1,8 +1,8 @@
-use mars_core::ProtocolVersion;
 use mars_core::protocol::{
     Command, CommandRequest, CommandResponse, CoreEvent, EventPayload, ProtocolError,
     ResponsePayload,
 };
+use mars_core::{Core, ProtocolVersion};
 use serde_json::{Value, json};
 
 #[test]
@@ -101,4 +101,38 @@ fn command_request_rejects_fields_outside_the_versioned_schema() {
     });
 
     assert!(serde_json::from_value::<CommandRequest>(wire).is_err());
+}
+
+#[test]
+fn core_executes_a_versioned_request_and_preserves_correlation() {
+    let response = Core::new().execute(CommandRequest {
+        protocol_version: ProtocolVersion::new(0, 1, 0),
+        correlation_id: "req-live".into(),
+        command: Command::CoreInfo {},
+    });
+
+    assert!(matches!(
+        response,
+        CommandResponse::Success {
+            correlation_id,
+            result: ResponsePayload::CoreInfo {
+                protocol_version: ProtocolVersion { major: 0, minor: 1, patch: 0 }
+            },
+            ..
+        } if correlation_id == "req-live"
+    ));
+}
+
+#[test]
+fn core_rejects_an_incompatible_protocol_version() {
+    let response = Core::new().execute(CommandRequest {
+        protocol_version: ProtocolVersion::new(1, 0, 0),
+        correlation_id: "req-newer".into(),
+        command: Command::CoreInfo {},
+    });
+
+    assert!(matches!(
+        response,
+        CommandResponse::Failure { error, .. } if error.code == "protocol.version_mismatch"
+    ));
 }

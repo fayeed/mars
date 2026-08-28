@@ -1,5 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import {
+  PROTOCOL_VERSION,
+  type CommandRequest,
+  type CommandResponse,
+  type ProtocolVersion,
+} from "@mars/protocol";
+import {
   BlocksIcon,
   BrainCircuitIcon,
   Code2Icon,
@@ -21,19 +27,9 @@ import {
 } from "@/components/ui/empty";
 import { Separator } from "@/components/ui/separator";
 
-interface ProtocolVersion {
-  major: number;
-  minor: number;
-  patch: number;
-}
-
-interface CoreInfo {
-  protocolVersion: ProtocolVersion;
-}
-
 type CoreConnection =
   | { phase: "connecting" }
-  | { phase: "connected"; info: CoreInfo }
+  | { phase: "connected"; protocolVersion: ProtocolVersion }
   | { phase: "disconnected"; reason: string };
 
 const activities = [
@@ -55,7 +51,7 @@ function formatVersion(version: ProtocolVersion) {
 
 function connectionLabel(connection: CoreConnection) {
   if (connection.phase === "connected") {
-    return `Core · v${formatVersion(connection.info.protocolVersion)}`;
+    return `Core · v${formatVersion(connection.protocolVersion)}`;
   }
 
   return connection.phase === "connecting" ? "Core · connecting" : "Core · offline";
@@ -66,10 +62,24 @@ export function App() {
 
   useEffect(() => {
     let active = true;
+    const request = {
+      protocolVersion: PROTOCOL_VERSION,
+      correlationId: crypto.randomUUID(),
+      command: { type: "coreInfo" },
+    } satisfies CommandRequest;
 
-    invoke<CoreInfo>("core_info")
-      .then((info) => {
-        if (active) setConnection({ phase: "connected", info });
+    invoke<CommandResponse>("core_info", { request })
+      .then((response) => {
+        if (!active) return;
+        if (response.status === "success" && response.result.type === "coreInfo") {
+          setConnection({
+            phase: "connected",
+            protocolVersion: response.result.protocolVersion,
+          });
+          return;
+        }
+        const reason = response.status === "failure" ? response.error.message : "Unexpected core response";
+        setConnection({ phase: "disconnected", reason });
       })
       .catch((error: unknown) => {
         if (active) {

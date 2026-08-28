@@ -1,6 +1,9 @@
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
+use serde_json::json;
+
+use crate::protocol::{Command, CommandRequest, CommandResponse, ProtocolError, ResponsePayload};
 
 pub mod jobs;
 pub mod protocol;
@@ -20,6 +23,35 @@ impl Core {
     #[must_use]
     pub const fn protocol_version(&self) -> ProtocolVersion {
         PROTOCOL_VERSION
+    }
+
+    #[must_use]
+    pub fn execute(&self, request: CommandRequest) -> CommandResponse {
+        if request.protocol_version != PROTOCOL_VERSION {
+            return CommandResponse::Failure {
+                protocol_version: PROTOCOL_VERSION,
+                correlation_id: request.correlation_id,
+                error: ProtocolError {
+                    code: "protocol.version_mismatch".into(),
+                    message: format!(
+                        "desktop protocol {} is incompatible with core protocol {}",
+                        request.protocol_version, PROTOCOL_VERSION
+                    ),
+                    retryable: false,
+                    details: Some(json!({ "supported": PROTOCOL_VERSION })),
+                },
+            };
+        }
+
+        match request.command {
+            Command::CoreInfo {} => CommandResponse::Success {
+                protocol_version: PROTOCOL_VERSION,
+                correlation_id: request.correlation_id,
+                result: ResponsePayload::CoreInfo {
+                    protocol_version: PROTOCOL_VERSION,
+                },
+            },
+        }
     }
 }
 

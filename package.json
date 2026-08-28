@@ -3,12 +3,18 @@
   "private": true,
   "packageManager": "pnpm@10.23.0",
   "scripts": {
-    "check:protocol": "node scripts/check-protocol.mjs"
+    "check:protocol": "node scripts/check-protocol.mjs",
+    "lint": "eslint ."
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/node": "^24.10.0",
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.4",
-    "typescript": "6.0.3"
+    "eslint": "^10.9.1",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.11.0",
+    "typescript": "6.0.3",
+    "typescript-eslint": "^8.68.0"
   }
 }

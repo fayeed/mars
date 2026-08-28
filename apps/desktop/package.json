@@ -6,9 +6,11 @@
   "scripts": {
     "build": "vite build",
     "dev": "vite",
+    "lint": "eslint src vite.config.ts",
     "typecheck": "tsc --project tsconfig.json"
   },
   "dependencies": {
+    "@mars/protocol": "workspace:*",
     "@base-ui/react": "^1.7.0",
     "@fontsource-variable/geist": "^5.3.0",
     "@tauri-apps/api": "2.11.1",

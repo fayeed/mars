@@ -8,6 +8,7 @@
   },
   "types": "./src/generated.ts",
   "scripts": {
+    "lint": "eslint src",
     "test": "node --test src/generated.test.ts",
     "typecheck": "tsc --project tsconfig.json"
   }
