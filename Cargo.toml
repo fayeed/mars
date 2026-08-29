@@ -1,5 +1,5 @@
 [workspace]
-members = ["apps/desktop/src-tauri", "crates/brain", "crates/core", "crates/git", "crates/indexer", "crates/security", "crates/storage"]
+members = ["apps/desktop/src-tauri", "crates/agents", "crates/brain", "crates/core", "crates/git", "crates/indexer", "crates/security", "crates/storage"]
 resolver = "2"
 
 [workspace.package]
@@ -11,6 +11,7 @@ version = "0.1.0"
 ignore = "0.4.25"
 portable-pty = "0.9.0"
 mars-brain = { path = "crates/brain" }
+mars-agents = { path = "crates/agents" }
 mars-core = { path = "crates/core" }
 mars-git = { path = "crates/git" }
 mars-indexer = { path = "crates/indexer" }
@@ -22,7 +23,9 @@ rusqlite = { version = "0.40.1", features = ["bundled"] }
 sha2 = "0.10.9"
 thiserror = "2.0.18"
 time = { version = "0.3.53", features = ["formatting"] }
+tokio = { version = "1.52.3", features = ["io-util", "process", "rt-multi-thread", "sync", "time"] }
 tokio-util = "0.7.18"
+libc = "0.2.186"
 uuid = { version = "1.23.4", features = ["v7"] }
 tauri = { version = "2.11.5", default-features = false, features = ["wry"] }
 tauri-build = "2.6.3"

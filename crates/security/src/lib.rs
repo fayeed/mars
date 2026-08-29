@@ -1,5 +1,7 @@
 //! Repository trust and capability policy types.
 
+pub mod permissions;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
