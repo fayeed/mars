@@ -1,0 +1,7 @@
+{
+  "provider": "claude",
+  "capturedFrom": "redacted representative stream",
+  "testedCliVersion": "2.1.247",
+  "format": "stream-json",
+  "capturedAt": "2026-08-29"
+}

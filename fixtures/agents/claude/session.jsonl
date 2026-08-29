@@ -1,0 +1,9 @@
+{"type":"system","subtype":"init","session_id":"claude-session-1"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"I will inspect the project."}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"src/main.ts"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git status --short"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"pnpm test"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"src/main.ts"}}]}}
+{"type":"permission_request","tool_name":"Bash","description":"Run pnpm test"}
+{"type":"future_frame","payload":{"preserve":true}}
+{"type":"result","subtype":"success","is_error":false,"result":"Implemented and tested.","session_id":"claude-session-1"}

@@ -1,0 +1,7 @@
+{
+  "provider": "codex",
+  "capturedFrom": "redacted representative stream",
+  "testedCliVersion": "0.150.0-alpha.12.2",
+  "format": "exec --json JSONL",
+  "capturedAt": "2026-08-29"
+}
