@@ -1,6 +1,6 @@
 # Mars Architecture
 
-Status: MVP implementation in progress; Proof A implemented
+Status: MVP implementation in progress; Proofs A and B implemented
 Last updated: 2026-08-29
 
 ## 1. Concrete MVP restatement
@@ -18,7 +18,9 @@ The MVP is proven only by six running vertical slices:
 | E | Claude implements → Codex reviews exact diff with shared compact context |
 | F | GitHub issue → task/worktree → pull request → checks/reviews in IDE |
 
-Proof A is implemented. A trusted Git repository can be browsed and edited through repository-scoped native services, used as the working directory of a native PTY, incrementally indexed into a tree-sitter/SQLite graph, and queried through bounded evidence-backed Project Brain tools. The React workspace composes the shadcn/ui Explorer and Brain surfaces with Monaco source navigation and xterm rendering. Proofs B through F remain planned.
+Proof A is implemented. A trusted Git repository can be browsed and edited through repository-scoped native services, used as the working directory of a native PTY, incrementally indexed into a tree-sitter/SQLite graph, and queried through bounded evidence-backed Project Brain tools. The React workspace composes the shadcn/ui Explorer and Brain surfaces with Monaco source navigation and xterm rendering.
+
+Proof B is implemented. Tasks begin as mutation-free branch/worktree plans, require approval before system-Git provisioning, and open their isolated roots in the same Explorer, Monaco, and terminal workspace. Claude Code and Codex adapters probe installed versions, build bounded commands without permission-bypass flags, normalize streaming JSONL, retain unknown frames, and support provider checkpoints for follow-up runs. A durable process supervisor records redacted ordered events, handles bounded delivery, cancellation escalation, exit state, and restart interruption. The Tasks-first shadcn/ui flow exposes capability grants and retains only the newest 500 rendered events while the durable native history remains authoritative. The real Milestone B proof used Codex in a disposable Mars-managed worktree and is recorded in `docs/proofs/b-agent-worktree.md`. Proofs C through F remain planned.
 
 The editor, terminal, agents, context, graph, and Git lifecycle are one product. The MVP does not include an autonomous swarm, hosted collaboration, organization policy, non-GitHub forge parity, broad language support, or automatic merge.
 

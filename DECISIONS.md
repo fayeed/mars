@@ -134,3 +134,10 @@ Status values: proposed, accepted, superseded. These decisions are proposed toge
 - Decision: Every Project Brain structural query is scoped to a persisted repository identity and requires an explicit result limit. Recursive related-code and blast-radius queries additionally require a depth, with hard service maxima of 100 results and depth 5. Returned relationships retain confidence plus parser/source-span evidence suitable for direct source navigation.
 - Rationale: Local graph traversal is still an availability boundary, especially when invoked by an agent or rendered interactively. Fixed server-side ceilings make latency and payload size predictable, while evidence prevents a syntax-derived relationship from being presented as unexplained semantic truth.
 - Consequence: Clients cannot request an unbounded graph dump. Broader exploration must page or issue narrower follow-up queries, and future ranking/enrichment must preserve evidence even when it changes ordering or confidence.
+
+## ADR-020 — Agent CLIs run below an explicit capability ceiling
+
+- Status: accepted
+- Decision: Launch provider CLIs only inside a ready task worktree and translate the user-approved file, command, and provider-tool grants into the narrowest supported CLI arguments. Never use dangerous permission-bypass flags. Codex uses `read-only` or `workspace-write` sandboxing; Claude receives an explicit allowed-tool set. Mars still supervises the process group, redacts persisted command/output data, and owns cancellation independently of provider behavior.
+- Rationale: Provider-native permissions differ and can drift, so they are defense in depth rather than the product authorization source. A provider cannot widen the capability decision recorded before launch.
+- Consequence: Adapter contract fixtures and opt-in real CLI proofs must cover command construction and stream drift. Unsupported fine-grained provider controls remain denied or are disclosed as coarse grants; durable permission-decision audit wiring is required before remote Git or forge mutations.
