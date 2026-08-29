@@ -13,6 +13,7 @@ use mars_agents::process::{
 };
 use mars_brain::tools::{BrainEdge, BrainNeighborhood, BrainSymbol, Dependency};
 use mars_brain::{BrainError, BrainService};
+use mars_context::{CaptureError, ContextItem, ContextService};
 use mars_core::Core;
 use mars_core::files::{FileDocument, FileError, FilePage, FileService};
 use mars_core::projects::{OpenRepositoryOutcome, ProjectError, ProjectService};
@@ -33,6 +34,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 struct AppState {
     agents: ProcessSupervisor,
     brain: BrainService,
+    context: ContextService,
     files: FileService,
     indexer: Indexer,
     projects: ProjectService,
@@ -201,6 +203,24 @@ impl From<PermissionError> for CommandFailure {
     }
 }
 
+impl From<CaptureError> for CommandFailure {
+    fn from(error: CaptureError) -> Self {
+        let code = match error {
+            CaptureError::Storage(_) => "context.storage",
+            CaptureError::Filesystem { .. } => "context.filesystem",
+            CaptureError::NotAFile(_) => "context.not_file",
+            CaptureError::ArtifactTooLarge { .. } => "context.too_large",
+            CaptureError::DigestMismatch { .. } => "context.digest_mismatch",
+            CaptureError::EmptyText => "context.empty_text",
+            CaptureError::InvalidStoredKind(_) => "context.invalid_kind",
+            CaptureError::ItemNotFound(_) => "context.not_found",
+            CaptureError::Quarantined(_) => "context.quarantined",
+            CaptureError::Timestamp(_) => "context.timestamp",
+        };
+        Self::new(code, error.to_string())
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AgentPermissions {
@@ -222,6 +242,14 @@ struct AgentLaunchOutcome {
 struct AgentTimelinePayload {
     session_id: String,
     event: NormalizedAgentEvent,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ContextArtifactContent {
+    bytes: Vec<u8>,
+    mime_type: String,
+    original_name: Option<String>,
 }
 
 #[tauri::command]
@@ -436,6 +464,93 @@ fn brain_blast_radius(
         .brain
         .blast_radius(&repository_id, &symbol_id, depth, limit)
         .map_err(Into::into)
+}
+
+#[tauri::command]
+fn capture_text_context(
+    repository_id: String,
+    task_id: Option<String>,
+    title: Option<String>,
+    text: String,
+    state: State<'_, AppState>,
+) -> Result<ContextItem, CommandFailure> {
+    state
+        .context
+        .capture_text(&repository_id, task_id.as_deref(), title.as_deref(), &text)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+fn capture_context_bytes(
+    repository_id: String,
+    task_id: Option<String>,
+    title: Option<String>,
+    original_name: String,
+    bytes: Vec<u8>,
+    mime_type: String,
+    state: State<'_, AppState>,
+) -> Result<ContextItem, CommandFailure> {
+    state
+        .context
+        .capture_bytes(
+            &repository_id,
+            task_id.as_deref(),
+            title.as_deref(),
+            &original_name,
+            &bytes,
+            &mime_type,
+        )
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+fn search_context(
+    repository_id: String,
+    task_id: Option<String>,
+    query: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<ContextItem>, CommandFailure> {
+    state
+        .context
+        .search(&repository_id, task_id.as_deref(), &query, 100)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+fn classify_context(
+    item_id: String,
+    classification: String,
+    state: State<'_, AppState>,
+) -> Result<ContextItem, CommandFailure> {
+    state
+        .context
+        .classify(&item_id, &classification)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+fn read_context_artifact(
+    item_id: String,
+    state: State<'_, AppState>,
+) -> Result<ContextArtifactContent, CommandFailure> {
+    let item = state.context.get(&item_id)?;
+    let Some(path) = item.artifact_path else {
+        return Err(CommandFailure::new(
+            "context.no_artifact",
+            "text context does not have a binary artifact",
+        ));
+    };
+    let bytes = fs::read(&path).map_err(|error| {
+        CommandFailure::new(
+            "context.filesystem",
+            format!("failed to read `{}`: {error}", path.display()),
+        )
+    })?;
+    Ok(ContextArtifactContent {
+        bytes,
+        mime_type: item.mime_type,
+        original_name: item.original_name,
+    })
 }
 
 #[tauri::command]
@@ -726,6 +841,7 @@ fn main() {
             app.manage(AppState {
                 agents,
                 brain: BrainService::new(storage.clone()),
+                context: ContextService::new(storage.clone(), data_dir.join("artifacts")),
                 files: FileService::new(storage.clone()),
                 indexer: Indexer::new(storage.clone()),
                 projects: ProjectService::new(storage.clone()),
@@ -753,6 +869,11 @@ fn main() {
             brain_dependencies,
             brain_related_code,
             brain_blast_radius,
+            capture_text_context,
+            capture_context_bytes,
+            search_context,
+            classify_context,
+            read_context_artifact,
             list_tasks,
             create_task,
             provision_task,

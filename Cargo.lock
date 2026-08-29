@@ -1738,6 +1738,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "mars-context"
+version = "0.1.0"
+dependencies = [
+ "mars-core",
+ "mars-git",
+ "mars-security",
+ "mars-storage",
+ "rusqlite",
+ "serde",
+ "sha2",
+ "thiserror 2.0.18",
+ "time",
+ "uuid",
+]
+
+[[package]]
 name = "mars-core"
 version = "0.1.0"
 dependencies = [
@@ -1759,6 +1775,7 @@ version = "0.1.0"
 dependencies = [
  "mars-agents",
  "mars-brain",
+ "mars-context",
  "mars-core",
  "mars-git",
  "mars-indexer",

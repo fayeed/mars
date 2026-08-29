@@ -37,6 +37,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "agent_sessions",
         sql: include_str!("../migrations/0005_agent_sessions.sql"),
     },
+    Migration {
+        version: 6,
+        name: "context",
+        sql: include_str!("../migrations/0006_context.sql"),
+    },
 ];
 
 pub(crate) fn apply_all(connection: &mut Connection) -> Result<()> {

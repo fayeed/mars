@@ -11,6 +11,7 @@ tauri-build.workspace = true
 mars-agents.workspace = true
 mars-brain.workspace = true
 mars-core.workspace = true
+mars-context.workspace = true
 mars-git.workspace = true
 mars-indexer.workspace = true
 mars-security.workspace = true

@@ -47,6 +47,7 @@ describe("task agent workflow", () => {
       if (command === "list_tasks") return Promise.resolve([]);
       if (command === "create_task") return Promise.resolve(plannedTask);
       if (command === "provision_task") return Promise.resolve(readyTask);
+      if (command === "search_context") return Promise.resolve([]);
       if (command === "open_task_worktree") {
         return Promise.resolve({
           status: "opened",
@@ -91,6 +92,7 @@ describe("task agent workflow", () => {
     const user = userEvent.setup();
     mocks.invoke.mockImplementation((command: string) => {
       if (command === "list_tasks") return Promise.resolve([readyTask]);
+      if (command === "search_context") return Promise.resolve([]);
       if (command === "probe_agent") {
         return Promise.reject({ message: "claude executable was not found" });
       }
@@ -110,6 +112,7 @@ describe("task agent workflow", () => {
     let launchCount = 0;
     mocks.invoke.mockImplementation((command: string) => {
       if (command === "list_tasks") return Promise.resolve([readyTask]);
+      if (command === "search_context") return Promise.resolve([]);
       if (command === "probe_agent") {
         return Promise.resolve({
           kind: "claude",

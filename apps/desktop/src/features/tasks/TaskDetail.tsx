@@ -23,6 +23,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { AgentTimeline } from "@/features/agents/AgentTimeline";
 import { PermissionPrompt } from "@/features/agents/PermissionPrompt";
+import { ContextTray } from "@/features/context/ContextTray";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -198,6 +199,7 @@ export function TaskDetail({ onOpenWorktree, onTaskChanged, task }: TaskDetailPr
     <ScrollArea className="min-h-0 flex-1">
       <section className="grid gap-4 p-4" aria-label="Task agent">
         <TaskHeading task={task} />
+        <ContextTray repositoryId={task.repositoryId} taskId={task.taskId} />
         <Button className="justify-start" disabled={busy} onClick={() => void openWorktree()} type="button" variant="outline">
           <ExternalLinkIcon /> Open worktree in editor and terminal
         </Button>
