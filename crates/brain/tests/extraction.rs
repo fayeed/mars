@@ -165,6 +165,68 @@ fn manual_fallback_uses_the_same_evidence_validation() {
 }
 
 #[test]
+fn extraction_prompt_declares_singular_claim_categories() {
+    let fixture = support::indexed_fixture();
+    seed_completed_session(&fixture);
+    let service = ExtractionService::new(
+        fixture.storage.clone(),
+        Arc::new(FailingProvider("unused".into())),
+    );
+    let bundle = service
+        .assemble(
+            "memory-session",
+            include_str!("../../../fixtures/memory/task.diff"),
+        )
+        .expect("evidence should assemble");
+    let prompt = render_extraction_prompt(&bundle).expect("prompt should render");
+    assert!(prompt.contains("decisions -> `decision`"));
+    assert!(prompt.contains("Never use an array field name such as `decisions`"));
+    assert!(prompt.contains("Copy every entry in changedSymbols"));
+    assert!(prompt.contains("affectedEntities must not be empty"));
+}
+
+#[test]
+fn multi_file_diffs_keep_each_hunk_attached_to_its_own_path() {
+    let fixture = support::indexed_fixture();
+    seed_completed_session(&fixture);
+    let service = ExtractionService::new(
+        fixture.storage.clone(),
+        Arc::new(FailingProvider("unused".into())),
+    );
+    let diff = concat!(
+        "diff --git a/src/math.ts b/src/math.ts\n",
+        "--- a/src/math.ts\n",
+        "+++ b/src/math.ts\n",
+        "@@ -5,7 +5,10 @@ export interface Numeric {\n",
+        " export function add(left: number, right: number): number {\n",
+        "+  if (!Number.isSafeInteger(left + right)) throw new RangeError();\n",
+        "   return left + right;\n",
+        " }\n",
+        "diff --git a/tests/math.test.ts b/tests/math.test.ts\n",
+        "--- a/tests/math.test.ts\n",
+        "+++ b/tests/math.test.ts\n",
+        "@@ -3,5 +3,8 @@ describe(\"add\", () => {\n",
+        "   it(\"adds values\", () => {\n",
+        "     expect(add(1, 2)).toBe(3);\n",
+        "   });\n",
+        "+  it(\"rejects unsafe sums\", () => expect(() => add(Number.MAX_SAFE_INTEGER, 1)).toThrow());\n",
+        " });\n",
+    );
+    let bundle = service
+        .assemble("memory-session", diff)
+        .expect("multi-file evidence should assemble");
+
+    assert_eq!(bundle.diff_hunks[0].path, "src/math.ts");
+    assert_eq!(bundle.diff_hunks[1].path, "tests/math.test.ts");
+    assert!(
+        bundle
+            .changed_symbols
+            .iter()
+            .any(|symbol| symbol.name == "add")
+    );
+}
+
+#[test]
 #[ignore = "requires an authenticated installed Codex CLI and explicitly permits a paid extraction run"]
 fn real_codex_extraction_obeys_the_strict_evidence_contract() {
     let fixture = support::indexed_fixture();

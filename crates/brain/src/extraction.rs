@@ -121,7 +121,7 @@ pub fn render_extraction_prompt(bundle: &EvidenceBundle) -> Result<String, Extra
     let evidence = serde_json::to_string_pretty(bundle)
         .map_err(|error| ExtractionError::InvalidOutput(error.to_string()))?;
     Ok(format!(
-        "{}\n\nReturn only JSON matching this exact shape (replace placeholder values; summary is one object, not an array):\n{{\"summary\":{{\"category\":\"summary\",\"title\":\"...\",\"body\":\"...\",\"confidence\":0.0,\"evidence\":[\"task:intent\"]}},\"decisions\":[],\"constraints\":[],\"attempts\":[],\"risks\":[],\"questions\":[],\"tests\":[],\"commits\":[],\"affectedEntities\":[{{\"kind\":\"symbol\",\"id\":\"copy a changedSymbols id\",\"title\":\"copy its name\",\"evidence\":[\"copy a supporting evidence id\"]}}]}}\nEvery array claim has category, title, body, confidence, evidence; its category must match its containing array. affectedEntities.kind is the entityKind `symbol`, never the symbolKind such as `function`. Use only evidence IDs present below. Empty arrays are valid. No extra fields and no Markdown fences.\n\nEVIDENCE_BUNDLE_JSON\n{evidence}\nEND_EVIDENCE_BUNDLE_JSON",
+        "{}\n\nReturn only JSON matching this exact shape (replace placeholder values; summary is one object, not an array):\n{{\"summary\":{{\"category\":\"summary\",\"title\":\"...\",\"body\":\"...\",\"confidence\":0.0,\"evidence\":[\"task:intent\"]}},\"decisions\":[],\"constraints\":[],\"attempts\":[],\"risks\":[],\"questions\":[],\"tests\":[],\"commits\":[],\"affectedEntities\":[{{\"kind\":\"symbol\",\"id\":\"copy a changedSymbols id\",\"title\":\"copy its name\",\"evidence\":[\"copy a supporting evidence id\"]}}]}}\nEvery array claim has category, title, body, confidence, evidence. Category values are always singular and must use this exact mapping: decisions -> `decision`, constraints -> `constraint`, attempts -> `attempt`, risks -> `risk`, questions -> `question`, tests -> `test`, commits -> `commit`. Never use an array field name such as `decisions` as a category value. Copy every entry in changedSymbols into affectedEntities exactly once, preserving its id and name as title; use kind `symbol`, never its symbolKind such as `function`, and cite the overlapping diff hunk. Use only evidence IDs present below. Empty claim arrays are valid, but affectedEntities must not be empty when changedSymbols is not empty. No extra fields and no Markdown fences.\n\nEVIDENCE_BUNDLE_JSON\n{evidence}\nEND_EVIDENCE_BUNDLE_JSON",
         bundle.instructions
     ))
 }
@@ -361,14 +361,17 @@ fn normalize(value: &str) -> String {
 fn parse_diff(diff: &str) -> Result<Vec<DiffEvidence>, ExtractionError> {
     let mut path = None::<String>;
     let mut hunks = Vec::new();
-    let mut current = None::<(usize, usize, Vec<String>)>;
+    let mut current = None::<(String, usize, usize, Vec<String>)>;
     for line in diff.lines() {
         if let Some(value) = line.strip_prefix("+++ b/") {
             path = Some(value.to_owned());
         } else if line.starts_with("@@ ") {
-            if let (Some(path), Some((start, count, lines))) = (&path, current.take()) {
-                hunks.push(diff_evidence(path, start, count, lines));
+            if let Some((path, start, count, lines)) = current.take() {
+                hunks.push(diff_evidence(&path, start, count, lines));
             }
+            let hunk_path = path
+                .clone()
+                .ok_or_else(|| ExtractionError::InvalidOutput("diff hunk has no path".into()))?;
             let Some(new_range) = line.split_whitespace().find(|part| part.starts_with('+')) else {
                 return Err(ExtractionError::InvalidOutput("malformed diff hunk".into()));
             };
@@ -381,13 +384,13 @@ fn parse_diff(diff: &str) -> Result<Vec<DiffEvidence>, ExtractionError> {
                 .next()
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(1);
-            current = Some((start, count, vec![line.to_owned()]));
-        } else if let Some((_, _, lines)) = &mut current {
+            current = Some((hunk_path, start, count, vec![line.to_owned()]));
+        } else if let Some((_, _, _, lines)) = &mut current {
             lines.push(line.to_owned());
         }
     }
-    if let (Some(path), Some((start, count, lines))) = (&path, current) {
-        hunks.push(diff_evidence(path, start, count, lines));
+    if let Some((path, start, count, lines)) = current {
+        hunks.push(diff_evidence(&path, start, count, lines));
     }
     Ok(hunks)
 }
