@@ -5,6 +5,7 @@ import type {
   AgentPermissions,
   AgentTimelinePayload,
   CommandFailure,
+  ContextPack,
   OpenRepositoryOutcome,
   ProjectSnapshot,
   WorktreePlan,
@@ -22,6 +23,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 
 import { AgentTimeline } from "@/features/agents/AgentTimeline";
+import { ContextPackPreview } from "@/features/agents/ContextPackPreview";
 import { PermissionPrompt } from "@/features/agents/PermissionPrompt";
 import { ContextTray } from "@/features/context/ContextTray";
 import { SkillBrowser } from "@/features/skills/SkillBrowser";
@@ -57,6 +59,9 @@ export function TaskDetail({ onOpenWorktree, onTaskChanged, task }: TaskDetailPr
   const [prompt, setPrompt] = useState(task.intent);
   const [probe, setProbe] = useState<AdapterProbe | null>(null);
   const [permissionOpen, setPermissionOpen] = useState(false);
+  const [packOpen, setPackOpen] = useState(false);
+  const [contextPack, setContextPack] = useState<ContextPack | null>(null);
+  const [packExclusions, setPackExclusions] = useState<string[]>([]);
   const [events, setEvents] = useState<AgentTimelinePayload["event"][]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [providerSessionId, setProviderSessionId] = useState<string | null>(null);
@@ -110,7 +115,22 @@ export function TaskDetail({ onOpenWorktree, onTaskChanged, task }: TaskDetailPr
     setBusy(true);
     setError(null);
     try {
+      const pack = await buildPack(packExclusions);
+      setContextPack(pack);
+      setPackOpen(true);
+    } catch (caught) {
+      setError(messageFor(caught));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function continueToPermissions() {
+    setBusy(true);
+    setError(null);
+    try {
       setProbe(await invoke<AdapterProbe>("probe_agent", { adapter }));
+      setPackOpen(false);
       setPermissionOpen(true);
     } catch (caught) {
       setError(messageFor(caught));
@@ -119,7 +139,38 @@ export function TaskDetail({ onOpenWorktree, onTaskChanged, task }: TaskDetailPr
     }
   }
 
+  async function togglePackItem(entityRef: string, included: boolean) {
+    const next = included
+      ? packExclusions.filter((item) => item !== entityRef)
+      : [...new Set([...packExclusions, entityRef])];
+    setBusy(true);
+    setError(null);
+    try {
+      setContextPack(await buildPack(next));
+      setPackExclusions(next);
+    } catch (caught) {
+      setError(messageFor(caught));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function buildPack(excludedEntityRefs: string[]) {
+    return invoke<ContextPack>("build_context_pack", {
+      request: {
+        taskId: task.taskId,
+        adapter,
+        maxBytes: 24 * 1024,
+        excludedEntityRefs,
+      },
+    });
+  }
+
   async function launch(permissions: AgentPermissions) {
+    if (!contextPack) {
+      setError("Review the context pack before launching the agent.");
+      return;
+    }
     setPermissionOpen(false);
     setBusy(true);
     setError(null);
@@ -129,11 +180,14 @@ export function TaskDetail({ onOpenWorktree, onTaskChanged, task }: TaskDetailPr
     setRunning(true);
     try {
       const outcome = await invoke<AgentLaunchOutcome>("launch_agent", {
-        taskId: task.taskId,
-        adapter,
-        prompt: prompt.trim(),
-        resumeSessionId: providerSessionId,
-        permissions,
+        request: {
+          taskId: task.taskId,
+          adapter,
+          prompt: prompt.trim(),
+          resumeSessionId: providerSessionId,
+          permissions,
+          contextPack,
+        },
       });
       sessionRef.current = outcome.sessionId;
       setSessionId(outcome.sessionId);
@@ -210,7 +264,14 @@ export function TaskDetail({ onOpenWorktree, onTaskChanged, task }: TaskDetailPr
           <div className="flex items-end gap-2">
             <div className="grid flex-1 gap-1.5">
               <Label htmlFor="agent-adapter">Agent CLI</Label>
-              <Select onValueChange={(value) => setAdapter(value as AdapterKind)} value={adapter}>
+              <Select
+                onValueChange={(value) => {
+                  setAdapter(value as AdapterKind);
+                  setContextPack(null);
+                  setPackExclusions([]);
+                }}
+                value={adapter}
+              >
                 <SelectTrigger className="w-full" id="agent-adapter">
                   <SelectValue />
                 </SelectTrigger>
@@ -254,6 +315,14 @@ export function TaskDetail({ onOpenWorktree, onTaskChanged, task }: TaskDetailPr
         onOpenChange={setPermissionOpen}
         open={permissionOpen}
         probe={probe}
+      />
+      <ContextPackPreview
+        busy={busy}
+        onContinue={() => void continueToPermissions()}
+        onOpenChange={setPackOpen}
+        onToggle={(entityRef, included) => void togglePackItem(entityRef, included)}
+        open={packOpen}
+        pack={contextPack}
       />
     </ScrollArea>
   );

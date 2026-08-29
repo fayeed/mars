@@ -1859,9 +1859,12 @@ dependencies = [
 name = "mars-brain"
 version = "0.1.0"
 dependencies = [
+ "mars-context",
  "mars-core",
+ "mars-git",
  "mars-indexer",
  "mars-security",
+ "mars-skills",
  "mars-storage",
  "rusqlite",
  "serde",

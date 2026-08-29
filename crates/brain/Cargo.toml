@@ -12,7 +12,10 @@ serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+mars-context.workspace = true
 mars-core.workspace = true
+mars-git.workspace = true
 mars-indexer.workspace = true
 mars-security.workspace = true
+mars-skills.workspace = true
 tokio-util.workspace = true

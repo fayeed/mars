@@ -1,0 +1,20 @@
+{
+  "intent": "Update add calculator keyboard workflow using accessibility guidance",
+  "requiredInclusionReasons": [
+    "active task constraint",
+    "explicit task attachment",
+    "exact task symbol match",
+    "one-hop structural graph neighbor",
+    "project context FTS match",
+    "project knowledge FTS match",
+    "explicit task skill"
+  ],
+  "requiredExclusionReasons": [
+    "skill is blocked",
+    "skill is not allowed for selected adapter",
+    "secret quarantine",
+    "duplicate content suppressed"
+  ],
+  "requiredProvenance": ["HUMAN", "EXTRACTED_CODE", "IMPORTED"],
+  "maxBytes": 8192
+}

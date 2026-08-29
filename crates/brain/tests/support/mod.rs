@@ -11,6 +11,8 @@ use tokio_util::sync::CancellationToken;
 
 pub struct BrainFixture {
     _directory: TestDirectory,
+    #[allow(dead_code)]
+    pub root: PathBuf,
     pub repository_id: String,
     pub storage: Arc<Storage>,
 }
@@ -34,6 +36,7 @@ pub fn indexed_fixture() -> BrainFixture {
         .expect("fixture should index");
     BrainFixture {
         _directory: directory,
+        root,
         repository_id: project.repository_id,
         storage,
     }

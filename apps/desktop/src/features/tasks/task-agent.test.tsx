@@ -1,4 +1,4 @@
-import type { AgentTimelinePayload, WorktreePlan } from "@mars/shared-types";
+import type { AgentTimelinePayload, ContextPack, WorktreePlan } from "@mars/shared-types";
 import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -34,6 +34,35 @@ const plannedTask: WorktreePlan = {
 
 const readyTask = { ...plannedTask, state: "ready" } satisfies WorktreePlan;
 
+const contextPack: ContextPack = {
+  taskId: readyTask.taskId,
+  adapter: "claude",
+  maxBytes: 24 * 1024,
+  totalBytes: 184,
+  sectionUsage: [
+    { section: "instructions", maxBytes: 4915, usedBytes: 184 },
+    { section: "context", maxBytes: 6144, usedBytes: 0 },
+    { section: "code", maxBytes: 8601, usedBytes: 0 },
+    { section: "history", maxBytes: 2457, usedBytes: 0 },
+    { section: "skills", maxBytes: 2457, usedBytes: 0 },
+  ],
+  items: [
+    {
+      section: "instructions",
+      entityRef: "context:constraint-1",
+      title: "Parser constraint",
+      content: "Malformed records must remain recoverable.",
+      provenance: "HUMAN",
+      freshness: "current task attachment",
+      sourceLocation: "context:constraint-1",
+      reason: "active task constraint",
+      score: 1,
+      byteSize: 184,
+    },
+  ],
+  exclusions: [],
+};
+
 afterEach(() => {
   vi.clearAllMocks();
   mocks.listener = null;
@@ -49,6 +78,7 @@ describe("task agent workflow", () => {
       if (command === "provision_task") return Promise.resolve(readyTask);
       if (command === "search_context") return Promise.resolve([]);
       if (command === "list_task_skills") return Promise.resolve([]);
+      if (command === "build_context_pack") return Promise.resolve(contextPack);
       if (command === "open_task_worktree") {
         return Promise.resolve({
           status: "opened",
@@ -95,6 +125,7 @@ describe("task agent workflow", () => {
       if (command === "list_tasks") return Promise.resolve([readyTask]);
       if (command === "search_context") return Promise.resolve([]);
       if (command === "list_task_skills") return Promise.resolve([]);
+      if (command === "build_context_pack") return Promise.resolve(contextPack);
       if (command === "probe_agent") {
         return Promise.reject({ message: "claude executable was not found" });
       }
@@ -103,9 +134,14 @@ describe("task agent workflow", () => {
     render(<TaskWorkspace onOpenWorktree={vi.fn()} repositoryId="repository-1" />);
 
     await user.click(await screen.findByRole("button", { name: "Review permissions" }));
+    const packDialog = await screen.findByRole("dialog");
+    expect(within(packDialog).getByText("Parser constraint")).toBeVisible();
+    await user.click(
+      within(packDialog).getByRole("button", { name: "Continue to permissions" }),
+    );
 
     expect(await screen.findByRole("alert")).toHaveTextContent("claude executable was not found");
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.queryByText("Approve agent capabilities")).not.toBeInTheDocument();
     expect(mocks.invoke).not.toHaveBeenCalledWith("launch_agent", expect.anything());
   });
 
@@ -116,6 +152,7 @@ describe("task agent workflow", () => {
       if (command === "list_tasks") return Promise.resolve([readyTask]);
       if (command === "search_context") return Promise.resolve([]);
       if (command === "list_task_skills") return Promise.resolve([]);
+      if (command === "build_context_pack") return Promise.resolve(contextPack);
       if (command === "probe_agent") {
         return Promise.resolve({
           kind: "claude",
@@ -138,6 +175,11 @@ describe("task agent workflow", () => {
     render(<TaskWorkspace onOpenWorktree={vi.fn()} repositoryId="repository-1" />);
 
     await user.click(await screen.findByRole("button", { name: "Review permissions" }));
+    await user.click(
+      within(await screen.findByRole("dialog")).getByRole("button", {
+        name: "Continue to permissions",
+      }),
+    );
     const permissionDialog = await screen.findByRole("dialog");
     expect(within(permissionDialog).getByText("Write worktree files")).toBeVisible();
     await user.click(within(permissionDialog).getByRole("button", { name: "Approve and launch" }));
@@ -146,9 +188,12 @@ describe("task agent workflow", () => {
     expect(mocks.invoke).toHaveBeenCalledWith(
       "launch_agent",
       expect.objectContaining({
-        taskId: readyTask.taskId,
-        resumeSessionId: null,
-        permissions: { writeFiles: true, runCommands: true, network: false },
+        request: expect.objectContaining({
+          taskId: readyTask.taskId,
+          resumeSessionId: null,
+          permissions: { writeFiles: true, runCommands: true, network: false },
+          contextPack,
+        }),
       }),
     );
 
@@ -170,6 +215,11 @@ describe("task agent workflow", () => {
     await user.click(screen.getByRole("button", { name: "Review follow-up" }));
     await user.click(
       within(await screen.findByRole("dialog")).getByRole("button", {
+        name: "Continue to permissions",
+      }),
+    );
+    await user.click(
+      within(await screen.findByRole("dialog")).getByRole("button", {
         name: "Approve and launch",
       }),
     );
@@ -177,8 +227,10 @@ describe("task agent workflow", () => {
     expect(mocks.invoke).toHaveBeenLastCalledWith(
       "launch_agent",
       expect.objectContaining({
-        prompt: "Recover and rerun the tests",
-        resumeSessionId: "provider-session-1",
+        request: expect.objectContaining({
+          prompt: "Recover and rerun the tests",
+          resumeSessionId: "provider-session-1",
+        }),
       }),
     );
   });

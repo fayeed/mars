@@ -12,7 +12,10 @@ use mars_agents::process::{
     ProcessError, ProcessEventKind, ProcessSpec, ProcessSupervisor, SessionRecord,
 };
 use mars_brain::tools::{BrainEdge, BrainNeighborhood, BrainSymbol, Dependency};
-use mars_brain::{BrainError, BrainService};
+use mars_brain::{
+    BrainError, BrainService, ContextPack, ContextPackError, ContextPackRequest,
+    ContextPackService, render_context_pack,
+};
 use mars_context::{CaptureError, ContextItem, ContextService};
 use mars_core::Core;
 use mars_core::files::{FileDocument, FileError, FilePage, FileService};
@@ -38,6 +41,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 struct AppState {
     agents: ProcessSupervisor,
     brain: BrainService,
+    context_packs: ContextPackService,
     context: ContextService,
     files: FileService,
     indexer: Indexer,
@@ -154,6 +158,16 @@ impl From<BrainError> for CommandFailure {
     }
 }
 
+impl From<ContextPackError> for CommandFailure {
+    fn from(error: ContextPackError) -> Self {
+        let code = match error {
+            ContextPackError::Storage(_) => "context_pack.storage",
+            ContextPackError::InvalidBudget => "context_pack.invalid_budget",
+        };
+        Self::new(code, error.to_string())
+    }
+}
+
 impl From<TaskWorktreeError> for CommandFailure {
     fn from(error: TaskWorktreeError) -> Self {
         let code = match error {
@@ -255,6 +269,17 @@ struct AgentPermissions {
     write_files: bool,
     run_commands: bool,
     network: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentLaunchInput {
+    task_id: String,
+    adapter: AdapterKind,
+    prompt: String,
+    context_pack: ContextPack,
+    resume_session_id: Option<String>,
+    permissions: AgentPermissions,
 }
 
 #[derive(Serialize)]
@@ -641,6 +666,14 @@ fn remove_skill_installation(
 }
 
 #[tauri::command]
+fn build_context_pack(
+    request: ContextPackRequest,
+    state: State<'_, AppState>,
+) -> Result<ContextPack, CommandFailure> {
+    state.context_packs.build(request).map_err(Into::into)
+}
+
+#[tauri::command]
 fn list_tasks(
     repository_id: String,
     state: State<'_, AppState>,
@@ -700,14 +733,18 @@ fn probe_agent(adapter: AdapterKind) -> Result<AdapterProbe, CommandFailure> {
 
 #[tauri::command]
 async fn launch_agent(
-    task_id: String,
-    adapter: AdapterKind,
-    prompt: String,
-    resume_session_id: Option<String>,
-    permissions: AgentPermissions,
+    request: AgentLaunchInput,
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<AgentLaunchOutcome, CommandFailure> {
+    let AgentLaunchInput {
+        task_id,
+        adapter,
+        prompt,
+        context_pack,
+        resume_session_id,
+        permissions,
+    } = request;
     let task = state.tasks.get(&task_id)?;
     if task.state != mars_git::WorktreeState::Ready {
         return Err(CommandFailure::new(
@@ -721,6 +758,35 @@ async fn launch_agent(
             "Codex CLI sessions require explicit command permission",
         ));
     }
+    let adapter_name = match adapter {
+        AdapterKind::Claude => "claude",
+        AdapterKind::Codex => "codex",
+    };
+    if context_pack.task_id != task_id || context_pack.adapter != adapter_name {
+        return Err(CommandFailure::new(
+            "context_pack.mismatch",
+            "the preview does not match this task and adapter; review context again",
+        ));
+    }
+    let preview_exclusions = context_pack
+        .exclusions
+        .iter()
+        .filter(|item| item.reason == "removed in pack preview")
+        .map(|item| item.entity_ref.clone())
+        .collect();
+    let verified_pack = state.context_packs.build(ContextPackRequest {
+        task_id: task_id.clone(),
+        adapter: adapter_name.into(),
+        max_bytes: context_pack.max_bytes,
+        excluded_entity_refs: preview_exclusions,
+    })?;
+    if verified_pack != context_pack {
+        return Err(CommandFailure::new(
+            "context_pack.stale",
+            "task context changed after preview; review the refreshed pack before launch",
+        ));
+    }
+    let prompt = render_context_pack(&verified_pack, &prompt);
 
     let adapter_impl = adapter_for(adapter);
     let executable = Path::new(executable_name(adapter));
@@ -929,6 +995,7 @@ fn main() {
             app.manage(AppState {
                 agents,
                 brain: BrainService::new(storage.clone()),
+                context_packs: ContextPackService::new(storage.clone()),
                 context: ContextService::new(storage.clone(), data_dir.join("artifacts")),
                 files: FileService::new(storage.clone()),
                 indexer: Indexer::new(storage.clone()),
@@ -968,6 +1035,7 @@ fn main() {
             install_skill,
             list_task_skills,
             remove_skill_installation,
+            build_context_pack,
             list_tasks,
             create_task,
             provision_task,
