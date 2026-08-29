@@ -8,7 +8,7 @@ use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
-use rusqlite::Connection;
+use rusqlite::{Connection, Transaction};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -60,6 +60,17 @@ impl Storage {
     ) -> Result<T> {
         let connection = self.connection()?;
         Ok(operation(&connection)?)
+    }
+
+    pub fn with_transaction<T>(
+        &self,
+        operation: impl FnOnce(&Transaction<'_>) -> rusqlite::Result<T>,
+    ) -> Result<T> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction()?;
+        let result = operation(&transaction)?;
+        transaction.commit()?;
+        Ok(result)
     }
 
     pub(crate) fn with_connection_mut<T>(

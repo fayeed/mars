@@ -1,0 +1,1 @@
+export const secretShape = "hidden";

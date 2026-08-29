@@ -8,6 +8,8 @@ Mars uses one bundled SQLite database per local application profile. At startup,
 
 Every connection enables foreign keys, a five-second busy timeout, WAL journaling, and `synchronous=NORMAL`. Mars bundles SQLite through `rusqlite`; the test suite creates an FTS5 virtual table to prove that the shipped build includes FTS5 instead of relying on the host SQLite binary.
 
+The database also contains the rebuildable structural code index. Index runs publish changed files, symbols, and edges transactionally; interrupted runs retain diagnostic state without exposing partial graph replacements. Source files remain authoritative and can be reindexed.
+
 Related files may sit beside the database:
 
 - `mars.sqlite3-wal` — committed pages not yet checkpointed into the main file.

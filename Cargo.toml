@@ -1,5 +1,5 @@
 [workspace]
-members = ["apps/desktop/src-tauri", "crates/core", "crates/security", "crates/storage"]
+members = ["apps/desktop/src-tauri", "crates/core", "crates/indexer", "crates/security", "crates/storage"]
 resolver = "2"
 
 [workspace.package]
@@ -11,6 +11,7 @@ version = "0.1.0"
 ignore = "0.4.25"
 portable-pty = "0.9.0"
 mars-core = { path = "crates/core" }
+mars-indexer = { path = "crates/indexer" }
 mars-security = { path = "crates/security" }
 mars-storage = { path = "crates/storage" }
 serde = { version = "1.0.228", features = ["derive"] }
