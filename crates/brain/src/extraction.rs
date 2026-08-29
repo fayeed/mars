@@ -358,7 +358,7 @@ fn normalize(value: &str) -> String {
         .to_lowercase()
 }
 
-fn parse_diff(diff: &str) -> Result<Vec<DiffEvidence>, ExtractionError> {
+pub(crate) fn parse_diff(diff: &str) -> Result<Vec<DiffEvidence>, ExtractionError> {
     let mut path = None::<String>;
     let mut hunks = Vec::new();
     let mut current = None::<(String, usize, usize, Vec<String>)>;

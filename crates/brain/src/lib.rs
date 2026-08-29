@@ -21,7 +21,11 @@ pub use knowledge::{
     KnowledgeService, KnowledgeStatus, NewKnowledge, NewProvenance, Provenance, ProvenanceKind,
 };
 pub use query::{BrainError, BrainService};
-pub use review::{HandoffEvent, ReviewError, ReviewHandoff, ReviewHandoffRequest, ReviewService};
+pub use review::{
+    FindingSeverity, FindingStatus, HandoffEvent, ReviewDraft, ReviewError, ReviewFinding,
+    ReviewFindingDraft, ReviewHandoff, ReviewHandoffRequest, ReviewProvider, ReviewRecord,
+    ReviewService, ReviewStatus, ReviewVerdict, render_review_prompt,
+};
 pub use tools::{BrainEdge, BrainNeighborhood, BrainSymbol, Dependency};
 pub use why_query::{
     WhyAnswer, WhyError, WhyFact, WhyPath, WhyPathStep, WhyRequest, WhyService, WhySource,
