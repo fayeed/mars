@@ -1,0 +1,13 @@
+diff --git a/src/math.ts b/src/math.ts
+index f7ec193..432e009 100644
+--- a/src/math.ts
++++ b/src/math.ts
+@@ -5,7 +5,10 @@ export interface Numeric {
+ }
+ 
+ export function add(left: number, right: number): number {
++  if (!Number.isSafeInteger(left + right)) {
++    throw new RangeError("unsafe sum");
++  }
+   return left + right;
+ }

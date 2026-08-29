@@ -1,4 +1,5 @@
 pub mod context_pack;
+pub mod extraction;
 pub mod knowledge;
 pub mod query;
 pub mod retrieval;
@@ -7,6 +8,11 @@ pub mod tools;
 pub use context_pack::{
     ContextPack, ContextPackError, ContextPackItem, ContextPackRequest, ContextPackService,
     PackExclusion, PackSection, SectionUsage, render_context_pack,
+};
+pub use extraction::{
+    AffectedEntityDraft, ChangedSymbolEvidence, ClaimDraft, DiffEvidence, EvidenceBundle,
+    EvidenceEvent, ExtractionError, ExtractionProvider, ExtractionRequest, ExtractionResult,
+    ExtractionService, ManualMemoryDraft, MemoryCategory, render_extraction_prompt,
 };
 pub use knowledge::{
     EntityKind, EntityLink, EntityRef, KnowledgeError, KnowledgeKind, KnowledgeRecord,
