@@ -453,6 +453,48 @@ impl KnowledgeService {
                     params![repository_id, id, title, body],
                 )?;
             }
+            let inherited_links: Vec<(String, String, String, String, String, f64)> = {
+                let mut statement = transaction.prepare(
+                    "SELECT source_type, source_id, relation, target_type, target_id, confidence
+                     FROM entity_links
+                     WHERE project_id = ?1
+                       AND relation != 'SUPERSEDES'
+                       AND ((source_type = 'knowledge' AND source_id = ?2)
+                         OR (target_type = 'knowledge' AND target_id = ?2))",
+                )?;
+                statement
+                    .query_map(params![original.project_id, record_id], |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                        ))
+                    })?
+                    .collect::<Result<_, _>>()?
+            };
+            for (source_type, source_id, relation, target_type, target_id, confidence) in
+                inherited_links
+            {
+                let source_id = if source_type == "knowledge" && source_id == record_id {
+                    id.clone()
+                } else {
+                    source_id
+                };
+                let target_id = if target_type == "knowledge" && target_id == record_id {
+                    id.clone()
+                } else {
+                    target_id
+                };
+                transaction.execute(
+                    "INSERT INTO entity_links
+                     (id, project_id, source_type, source_id, relation, target_type, target_id, provenance_id, confidence, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                    params![Uuid::now_v7().to_string(), original.project_id, source_type, source_id, relation, target_type, target_id, resolver.id, confidence, timestamp],
+                )?;
+            }
             transaction.execute(
                 "INSERT INTO entity_links
                  (id, project_id, source_type, source_id, relation, target_type, target_id, provenance_id, confidence, created_at)

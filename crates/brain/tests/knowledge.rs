@@ -62,6 +62,24 @@ fn correction_rejection_staleness_and_superseding_preserve_history() {
     let approved = service
         .approve(&original.id, &human.id)
         .expect("approval should work");
+    let symbol_id: String = fixture
+        .storage
+        .with_connection(|connection| {
+            connection.query_row("SELECT id FROM symbols ORDER BY id LIMIT 1", [], |row| {
+                row.get(0)
+            })
+        })
+        .expect("symbol should exist");
+    service
+        .link(
+            &project_id,
+            EntityRef::new(EntityKind::Knowledge, &approved.id),
+            "AFFECTS",
+            EntityRef::new(EntityKind::Symbol, &symbol_id),
+            &human.id,
+            0.8,
+        )
+        .expect("original relationship should persist");
     let correction = service
         .correct(
             &approved.id,
@@ -83,6 +101,19 @@ fn correction_rejection_staleness_and_superseding_preserve_history() {
         KnowledgeStatus::Superseded
     );
     assert_eq!(service.count(&project_id).expect("records should count"), 2);
+    let corrected_link_count: i64 = fixture
+        .storage
+        .with_connection(|connection| {
+            connection.query_row(
+                "SELECT COUNT(*) FROM entity_links
+                 WHERE source_type = 'knowledge' AND source_id = ?1
+                   AND relation = 'AFFECTS' AND target_type = 'symbol' AND target_id = ?2",
+                rusqlite::params![correction.id, symbol_id],
+                |row| row.get(0),
+            )
+        })
+        .expect("corrected relationship should remain queryable");
+    assert_eq!(corrected_link_count, 1);
 
     let rejected = service
         .create_candidate(candidate(&project_id, &human.id, 0.9, "Delete originals"))
