@@ -4,6 +4,7 @@ pub mod knowledge;
 pub mod query;
 pub mod retrieval;
 pub mod tools;
+pub mod why_query;
 
 pub use context_pack::{
     ContextPack, ContextPackError, ContextPackItem, ContextPackRequest, ContextPackService,
@@ -20,3 +21,7 @@ pub use knowledge::{
 };
 pub use query::{BrainError, BrainService};
 pub use tools::{BrainEdge, BrainNeighborhood, BrainSymbol, Dependency};
+pub use why_query::{
+    WhyAnswer, WhyError, WhyFact, WhyPath, WhyPathStep, WhyRequest, WhyService, WhySource,
+    WhyStatus,
+};

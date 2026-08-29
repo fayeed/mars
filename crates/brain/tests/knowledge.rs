@@ -41,6 +41,12 @@ fn candidates_require_bounded_confidence_and_human_resolution() {
         approved.resolution_provenance_id.as_deref(),
         Some(human.id.as_str())
     );
+    assert!(
+        service
+            .set_pinned(&approved.id, true, &human.id)
+            .expect("approved knowledge should pin")
+            .pinned
+    );
 }
 
 #[test]

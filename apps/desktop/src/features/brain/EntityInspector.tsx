@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { WhyAnswer } from "./WhyAnswer";
 
 interface EntityInspectorProps {
   onOpenSource: (path: string, line: number) => void;
@@ -87,6 +88,11 @@ export function EntityInspector({ onOpenSource, repositoryId, symbol }: EntityIn
           </span>
         </button>
       ))}
+      <WhyAnswer
+        onOpenCode={onOpenSource}
+        repositoryId={repositoryId}
+        subject={{ kind: "symbol", id: symbol.id }}
+      />
     </section>
   );
 }

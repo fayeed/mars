@@ -26,6 +26,7 @@ import { AgentTimeline } from "@/features/agents/AgentTimeline";
 import { ContextPackPreview } from "@/features/agents/ContextPackPreview";
 import { PermissionPrompt } from "@/features/agents/PermissionPrompt";
 import { ContextTray } from "@/features/context/ContextTray";
+import { MemoryReview } from "@/features/brain/MemoryReview";
 import { SkillBrowser } from "@/features/skills/SkillBrowser";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -256,6 +257,7 @@ export function TaskDetail({ onOpenWorktree, onTaskChanged, task }: TaskDetailPr
         <TaskHeading task={task} />
         <ContextTray repositoryId={task.repositoryId} taskId={task.taskId} />
         <SkillBrowser repositoryId={task.repositoryId} taskId={task.taskId} />
+        <MemoryReview adapter={adapter} taskId={task.taskId} />
         <Button className="justify-start" disabled={busy} onClick={() => void openWorktree()} type="button" variant="outline">
           <ExternalLinkIcon /> Open worktree in editor and terminal
         </Button>

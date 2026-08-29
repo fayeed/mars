@@ -1,4 +1,5 @@
 use std::cmp::Reverse;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use mars_storage::{Storage, StorageError};
@@ -10,7 +11,7 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use uuid::Uuid;
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProvenanceKind {
     Human,
@@ -60,7 +61,7 @@ impl ProvenanceKind {
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum KnowledgeKind {
     Summary,
@@ -587,6 +588,64 @@ impl KnowledgeService {
                 |row| row.get::<_, i64>(0),
             )
         })? as usize)
+    }
+
+    pub fn list_for_task(&self, task_id: &str) -> Result<Vec<KnowledgeRecord>, KnowledgeError> {
+        let project_id: String = self.storage.with_connection(|connection| {
+            connection.query_row(
+                "SELECT project_id FROM tasks WHERE id = ?1",
+                [task_id],
+                |row| row.get(0),
+            )
+        })?;
+        let ids: HashSet<String> = self.storage.with_connection(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT k.id FROM knowledge_records k JOIN provenance p ON p.id = k.provenance_id
+                 WHERE (p.source_type = 'task' AND p.source_id = ?1)
+                    OR (p.source_type = 'agent_session' AND EXISTS (
+                        SELECT 1 FROM agent_sessions a WHERE a.id = p.source_id AND a.task_id = ?1
+                    ))
+                    OR EXISTS (
+                        SELECT 1 FROM entity_links l WHERE l.source_type = 'knowledge' AND l.source_id = k.id
+                          AND l.target_type = 'task' AND l.target_id = ?1
+                    )",
+            )?;
+            statement.query_map([task_id], |row| row.get(0))?.collect()
+        })?;
+        Ok(self
+            .list(&project_id, true)?
+            .into_iter()
+            .filter(|record| ids.contains(&record.id))
+            .collect())
+    }
+
+    pub fn set_pinned(
+        &self,
+        record_id: &str,
+        pinned: bool,
+        resolver_id: &str,
+    ) -> Result<KnowledgeRecord, KnowledgeError> {
+        let record = self.get(record_id)?;
+        self.require_human_resolver(&record.project_id, resolver_id)?;
+        if !matches!(
+            record.status,
+            KnowledgeStatus::Approved | KnowledgeStatus::Stale
+        ) {
+            return Err(invalid_transition(&record, record.status));
+        }
+        let timestamp = now()?;
+        self.storage.with_connection(|connection| {
+            connection.execute(
+                "UPDATE knowledge_records SET pinned = ?2, resolution_provenance_id = ?3, updated_at = ?4 WHERE id = ?1",
+                params![record_id, pinned, resolver_id, timestamp],
+            )?;
+            Ok(())
+        })?;
+        self.get(record_id)
+    }
+
+    pub fn get_provenance(&self, id: &str) -> Result<Provenance, KnowledgeError> {
+        self.provenance(id)
     }
 
     fn provenance(&self, id: &str) -> Result<Provenance, KnowledgeError> {

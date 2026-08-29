@@ -14,7 +14,10 @@ use mars_agents::process::{
 use mars_brain::tools::{BrainEdge, BrainNeighborhood, BrainSymbol, Dependency};
 use mars_brain::{
     BrainError, BrainService, ContextPack, ContextPackError, ContextPackRequest,
-    ContextPackService, render_context_pack,
+    ContextPackService, EntityKind, EntityRef, ExtractionError, ExtractionProvider,
+    ExtractionRequest, ExtractionService, KnowledgeError, KnowledgeKind, KnowledgeRecord,
+    KnowledgeService, MemoryCategory, NewKnowledge, NewProvenance, ProvenanceKind, WhyAnswer,
+    WhyError, WhyRequest, WhyService, render_context_pack, render_extraction_prompt,
 };
 use mars_context::{CaptureError, ContextItem, ContextService};
 use mars_core::Core;
@@ -45,11 +48,14 @@ struct AppState {
     context: ContextService,
     files: FileService,
     indexer: Indexer,
+    knowledge: KnowledgeService,
     projects: ProjectService,
     permissions: PermissionEngine,
     skills: SkillService,
     tasks: TaskWorktreeService,
     terminals: TerminalService,
+    why: WhyService,
+    storage: Arc<Storage>,
 }
 
 #[derive(Serialize)]
@@ -168,6 +174,24 @@ impl From<ContextPackError> for CommandFailure {
     }
 }
 
+impl From<KnowledgeError> for CommandFailure {
+    fn from(error: KnowledgeError) -> Self {
+        Self::new("knowledge.invalid", error.to_string())
+    }
+}
+
+impl From<ExtractionError> for CommandFailure {
+    fn from(error: ExtractionError) -> Self {
+        Self::new("memory.extraction", error.to_string())
+    }
+}
+
+impl From<WhyError> for CommandFailure {
+    fn from(error: WhyError) -> Self {
+        Self::new("memory.why", error.to_string())
+    }
+}
+
 impl From<TaskWorktreeError> for CommandFailure {
     fn from(error: TaskWorktreeError) -> Self {
         let code = match error {
@@ -280,6 +304,68 @@ struct AgentLaunchInput {
     context_pack: ContextPack,
     resume_session_id: Option<String>,
     permissions: AgentPermissions,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum MemoryResolutionAction {
+    Approve,
+    Reject,
+    Correct,
+    MarkStale,
+    Pin,
+    Unpin,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MemoryResolutionInput {
+    task_id: String,
+    record_id: String,
+    action: MemoryResolutionAction,
+    title: Option<String>,
+    body: Option<String>,
+}
+
+struct CliExtractionProvider {
+    adapter: AdapterKind,
+    cwd: std::path::PathBuf,
+}
+
+impl ExtractionProvider for CliExtractionProvider {
+    fn extract(&self, bundle: &mars_brain::EvidenceBundle) -> Result<String, String> {
+        let prompt = render_extraction_prompt(bundle).map_err(|error| error.to_string())?;
+        let adapter = adapter_for(self.adapter);
+        let command = adapter
+            .command(&AgentLaunchRequest {
+                executable: executable_name(self.adapter).into(),
+                cwd: self.cwd.clone(),
+                prompt,
+                resume_session_id: None,
+                allowed_tools: Vec::new(),
+                allow_write: false,
+            })
+            .map_err(|error| error.to_string())?;
+        let output = std::process::Command::new(command.program)
+            .args(command.arguments)
+            .current_dir(command.cwd)
+            .output()
+            .map_err(|error| error.to_string())?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
+        }
+        let mut decoder = JsonLineDecoder::new();
+        let mut events = decoder.push(&output.stdout, adapter.as_ref());
+        events.extend(decoder.finish(adapter.as_ref()));
+        events
+            .into_iter()
+            .filter_map(|event| match event {
+                NormalizedAgentEvent::Text { text } => Some(strip_json_fence(&text)),
+                _ => None,
+            })
+            .next_back()
+            .ok_or_else(|| "agent returned no memory extraction JSON".into())
+    }
 }
 
 #[derive(Serialize)]
@@ -666,6 +752,174 @@ fn remove_skill_installation(
 }
 
 #[tauri::command]
+fn list_task_memory(
+    task_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<KnowledgeRecord>, CommandFailure> {
+    state.knowledge.list_for_task(&task_id).map_err(Into::into)
+}
+
+#[tauri::command]
+fn extract_task_memory(
+    task_id: String,
+    adapter: AdapterKind,
+    model_permission: bool,
+    state: State<'_, AppState>,
+) -> Result<Vec<KnowledgeRecord>, CommandFailure> {
+    let task = state.tasks.get(&task_id)?;
+    let (session_id, observed_at): (String, String) = state.storage.with_connection(|connection| {
+        connection.query_row(
+            "SELECT id, COALESCE(ended_at, started_at) FROM agent_sessions
+             WHERE task_id = ?1 AND status = 'completed' ORDER BY COALESCE(ended_at, started_at) DESC, id DESC LIMIT 1",
+            [&task_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+    }).map_err(|error| CommandFailure::new("memory.session", error.to_string()))?;
+    let diff = mars_git::command::run(
+        &task.worktree_path,
+        ["diff", "--no-ext-diff", "--unified=3", "HEAD"],
+    )
+    .map_err(|error| CommandFailure::new("memory.diff", error.to_string()))?
+    .stdout_text();
+    let provider = Arc::new(CliExtractionProvider {
+        adapter,
+        cwd: task.worktree_path.clone(),
+    });
+    let extracted =
+        ExtractionService::new(state.storage.clone(), provider).extract(ExtractionRequest {
+            session_id: session_id.clone(),
+            diff,
+            model_permission,
+        })?;
+    let project_id: String = state
+        .storage
+        .with_connection(|connection| {
+            connection.query_row(
+                "SELECT project_id FROM tasks WHERE id = ?1",
+                [&task_id],
+                |row| row.get(0),
+            )
+        })
+        .map_err(|error| CommandFailure::new("memory.task", error.to_string()))?;
+    let affected = extracted.affected_entities;
+    let claims = std::iter::once(extracted.summary)
+        .chain(extracted.decisions)
+        .chain(extracted.constraints)
+        .chain(extracted.attempts)
+        .chain(extracted.risks)
+        .chain(extracted.questions)
+        .chain(extracted.tests)
+        .chain(extracted.commits);
+    let mut records = Vec::new();
+    for claim in claims {
+        let provenance = state.knowledge.create_provenance(NewProvenance {
+            project_id: project_id.clone(),
+            kind: ProvenanceKind::AgentInferred,
+            source: EntityRef::new(EntityKind::AgentSession, &session_id),
+            evidence: serde_json::json!({ "evidenceIds": claim.evidence, "category": claim.category }),
+            observed_at: observed_at.clone(),
+        })?;
+        let record = state.knowledge.create_candidate(NewKnowledge {
+            project_id: project_id.clone(),
+            kind: knowledge_kind(claim.category),
+            title: claim.title,
+            body: claim.body,
+            confidence: claim.confidence,
+            provenance_id: provenance.id.clone(),
+        })?;
+        for entity in &affected {
+            state.knowledge.link(
+                &project_id,
+                EntityRef::new(EntityKind::Knowledge, &record.id),
+                "AFFECTS",
+                EntityRef::new(entity.kind, &entity.id),
+                &provenance.id,
+                claim.confidence,
+            )?;
+        }
+        records.push(record);
+    }
+    Ok(records)
+}
+
+#[tauri::command]
+fn resolve_memory(
+    request: MemoryResolutionInput,
+    state: State<'_, AppState>,
+) -> Result<KnowledgeRecord, CommandFailure> {
+    let (project_id, observed_at): (String, String) = state
+        .storage
+        .with_connection(|connection| {
+            connection.query_row(
+                "SELECT project_id, updated_at FROM tasks WHERE id = ?1",
+                [&request.task_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+        })
+        .map_err(|error| CommandFailure::new("memory.task", error.to_string()))?;
+    let human = state.knowledge.create_provenance(NewProvenance {
+        project_id,
+        kind: ProvenanceKind::Human,
+        source: EntityRef::new(EntityKind::Task, &request.task_id),
+        evidence: serde_json::json!({ "action": format!("{:?}", request.action), "visibleReview": true }),
+        observed_at,
+    })?;
+    match request.action {
+        MemoryResolutionAction::Approve => state.knowledge.approve(&request.record_id, &human.id),
+        MemoryResolutionAction::Reject => state.knowledge.reject(&request.record_id, &human.id),
+        MemoryResolutionAction::Correct => state.knowledge.correct(
+            &request.record_id,
+            request.title.as_deref().unwrap_or_default(),
+            request.body.as_deref().unwrap_or_default(),
+            &human.id,
+        ),
+        MemoryResolutionAction::MarkStale => {
+            state.knowledge.mark_stale(&request.record_id, &human.id)
+        }
+        MemoryResolutionAction::Pin => {
+            state
+                .knowledge
+                .set_pinned(&request.record_id, true, &human.id)
+        }
+        MemoryResolutionAction::Unpin => {
+            state
+                .knowledge
+                .set_pinned(&request.record_id, false, &human.id)
+        }
+    }
+    .map_err(Into::into)
+}
+
+#[tauri::command]
+fn why_query(
+    repository_id: String,
+    subject: EntityRef,
+    max_depth: usize,
+    max_paths: usize,
+    state: State<'_, AppState>,
+) -> Result<WhyAnswer, CommandFailure> {
+    let project_id = state
+        .storage
+        .with_connection(|connection| {
+            connection.query_row(
+                "SELECT project_id FROM repositories WHERE id = ?1",
+                [&repository_id],
+                |row| row.get(0),
+            )
+        })
+        .map_err(|error| CommandFailure::new("why.repository", error.to_string()))?;
+    state
+        .why
+        .ask(WhyRequest {
+            project_id,
+            subject,
+            max_depth,
+            max_paths,
+        })
+        .map_err(Into::into)
+}
+
+#[tauri::command]
 fn build_context_pack(
     request: ContextPackRequest,
     state: State<'_, AppState>,
@@ -848,6 +1102,30 @@ fn executable_name(kind: AdapterKind) -> &'static str {
     }
 }
 
+fn strip_json_fence(value: &str) -> String {
+    let trimmed = value.trim();
+    trimmed
+        .strip_prefix("```json")
+        .or_else(|| trimmed.strip_prefix("```"))
+        .and_then(|value| value.strip_suffix("```"))
+        .map(str::trim)
+        .unwrap_or(trimmed)
+        .to_owned()
+}
+
+fn knowledge_kind(category: MemoryCategory) -> KnowledgeKind {
+    match category {
+        MemoryCategory::Summary => KnowledgeKind::Summary,
+        MemoryCategory::Decision => KnowledgeKind::Decision,
+        MemoryCategory::Constraint => KnowledgeKind::Constraint,
+        MemoryCategory::Attempt => KnowledgeKind::Attempt,
+        MemoryCategory::Risk => KnowledgeKind::Risk,
+        MemoryCategory::Question => KnowledgeKind::Question,
+        MemoryCategory::Test => KnowledgeKind::Test,
+        MemoryCategory::Commit => KnowledgeKind::Commit,
+    }
+}
+
 fn authorize_agent(
     engine: &PermissionEngine,
     task: &WorktreePlan,
@@ -999,11 +1277,14 @@ fn main() {
                 context: ContextService::new(storage.clone(), data_dir.join("artifacts")),
                 files: FileService::new(storage.clone()),
                 indexer: Indexer::new(storage.clone()),
+                knowledge: KnowledgeService::new(storage.clone()),
                 projects: ProjectService::new(storage.clone()),
                 permissions: PermissionEngine::new(),
                 skills: SkillService::new(storage.clone(), skill_registry, data_dir.join("skills")),
                 tasks: TaskWorktreeService::new(storage.clone(), data_dir.join("worktrees")),
-                terminals: TerminalService::new(storage),
+                terminals: TerminalService::new(storage.clone()),
+                why: WhyService::new(storage.clone()),
+                storage,
             });
             Ok(())
         })
@@ -1035,6 +1316,10 @@ fn main() {
             install_skill,
             list_task_skills,
             remove_skill_installation,
+            list_task_memory,
+            extract_task_memory,
+            resolve_memory,
+            why_query,
             build_context_pack,
             list_tasks,
             create_task,
