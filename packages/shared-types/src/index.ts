@@ -4,3 +4,4 @@ export * from "./projects";
 export * from "./terminal";
 export * from "./tasks";
 export * from "./context";
+export * from "./skills";

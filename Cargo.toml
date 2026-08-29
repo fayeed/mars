@@ -1,5 +1,5 @@
 [workspace]
-members = ["apps/desktop/src-tauri", "crates/agents", "crates/brain", "crates/context", "crates/core", "crates/git", "crates/indexer", "crates/security", "crates/storage"]
+members = ["apps/desktop/src-tauri", "crates/agents", "crates/brain", "crates/context", "crates/core", "crates/git", "crates/indexer", "crates/security", "crates/skills", "crates/storage"]
 resolver = "2"
 
 [workspace.package]
@@ -17,7 +17,9 @@ mars-context = { path = "crates/context" }
 mars-git = { path = "crates/git" }
 mars-indexer = { path = "crates/indexer" }
 mars-security = { path = "crates/security" }
+mars-skills = { path = "crates/skills" }
 mars-storage = { path = "crates/storage" }
+reqwest = { version = "0.13.4", default-features = false, features = ["blocking", "json", "query", "rustls"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 rusqlite = { version = "0.40.1", features = ["bundled"] }

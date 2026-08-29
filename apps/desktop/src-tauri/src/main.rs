@@ -26,6 +26,10 @@ use mars_security::permissions::{
     Capability, PermissionDecision, PermissionEngine, PermissionError, PermissionOutcome,
     PermissionRequest, PermissionScope,
 };
+use mars_skills::{
+    InspectedSkill, SkillCandidate, SkillError, SkillInstallation, SkillScope, SkillService,
+    SkillsShRegistry,
+};
 use mars_storage::Storage;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -39,6 +43,7 @@ struct AppState {
     indexer: Indexer,
     projects: ProjectService,
     permissions: PermissionEngine,
+    skills: SkillService,
     tasks: TaskWorktreeService,
     terminals: TerminalService,
 }
@@ -216,6 +221,29 @@ impl From<CaptureError> for CommandFailure {
             CaptureError::ItemNotFound(_) => "context.not_found",
             CaptureError::Quarantined(_) => "context.quarantined",
             CaptureError::Timestamp(_) => "context.timestamp",
+        };
+        Self::new(code, error.to_string())
+    }
+}
+
+impl From<SkillError> for CommandFailure {
+    fn from(error: SkillError) -> Self {
+        let code = match error {
+            SkillError::Storage(_) => "skill.storage",
+            SkillError::Network(_) => "skill.network",
+            SkillError::InvalidSource(_) => "skill.invalid_source",
+            SkillError::HashMismatch { .. } => "skill.hash_mismatch",
+            SkillError::InvalidRegistryHash(_) => "skill.invalid_registry_hash",
+            SkillError::MissingSkillMarkdown => "skill.missing_manifest",
+            SkillError::UnsafePath(_) => "skill.unsafe_path",
+            SkillError::NotInspected(_) => "skill.not_inspected",
+            SkillError::Blocked(_) => "skill.blocked",
+            SkillError::InstallationNotFound(_) => "skill.installation_not_found",
+            SkillError::InvalidStoredScope(_) => "skill.invalid_scope",
+            SkillError::MissingScopeTarget { .. } => "skill.missing_scope",
+            SkillError::Filesystem { .. } => "skill.filesystem",
+            SkillError::Json(_) => "skill.json",
+            SkillError::Timestamp(_) => "skill.timestamp",
         };
         Self::new(code, error.to_string())
     }
@@ -554,6 +582,65 @@ fn read_context_artifact(
 }
 
 #[tauri::command]
+fn search_skills(
+    query: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<SkillCandidate>, CommandFailure> {
+    state.skills.search(&query).map_err(Into::into)
+}
+
+#[tauri::command]
+fn inspect_skill(
+    candidate: SkillCandidate,
+    state: State<'_, AppState>,
+) -> Result<InspectedSkill, CommandFailure> {
+    state.skills.inspect(&candidate).map_err(Into::into)
+}
+
+#[tauri::command]
+fn install_skill(
+    skill_id: String,
+    repository_id: String,
+    task_id: String,
+    scope: SkillScope,
+    allow_claude: bool,
+    allow_codex: bool,
+    state: State<'_, AppState>,
+) -> Result<SkillInstallation, CommandFailure> {
+    let scoped_repository =
+        (!matches!(scope, SkillScope::Global)).then_some(repository_id.as_str());
+    let scoped_task =
+        matches!(scope, SkillScope::Task | SkillScope::Workflow).then_some(task_id.as_str());
+    state
+        .skills
+        .trust_and_install(
+            &skill_id,
+            scoped_repository,
+            scoped_task,
+            scope,
+            allow_claude,
+            allow_codex,
+        )
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+fn list_task_skills(
+    task_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<SkillInstallation>, CommandFailure> {
+    state.skills.list_for_task(&task_id).map_err(Into::into)
+}
+
+#[tauri::command]
+fn remove_skill_installation(
+    installation_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), CommandFailure> {
+    state.skills.remove(&installation_id).map_err(Into::into)
+}
+
+#[tauri::command]
 fn list_tasks(
     repository_id: String,
     state: State<'_, AppState>,
@@ -838,6 +925,7 @@ fn main() {
             let storage = Arc::new(Storage::open(data_dir.join("mars.sqlite3"))?);
             let agents = ProcessSupervisor::new(storage.clone());
             agents.recover_interrupted()?;
+            let skill_registry = Arc::new(SkillsShRegistry::new()?);
             app.manage(AppState {
                 agents,
                 brain: BrainService::new(storage.clone()),
@@ -846,6 +934,7 @@ fn main() {
                 indexer: Indexer::new(storage.clone()),
                 projects: ProjectService::new(storage.clone()),
                 permissions: PermissionEngine::new(),
+                skills: SkillService::new(storage.clone(), skill_registry, data_dir.join("skills")),
                 tasks: TaskWorktreeService::new(storage.clone(), data_dir.join("worktrees")),
                 terminals: TerminalService::new(storage),
             });
@@ -874,6 +963,11 @@ fn main() {
             search_context,
             classify_context,
             read_context_artifact,
+            search_skills,
+            inspect_skill,
+            install_skill,
+            list_task_skills,
+            remove_skill_installation,
             list_tasks,
             create_task,
             provision_task,
