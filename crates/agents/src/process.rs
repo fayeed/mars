@@ -19,6 +19,8 @@ use tokio::time::{Instant, sleep, timeout};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use crate::adapter::NormalizedAgentEvent;
+
 const RAW_EVENT_CAPACITY: usize = 64;
 const STREAM_CHUNK_BYTES: usize = 4 * 1024;
 
@@ -281,6 +283,43 @@ impl ProcessSupervisor {
 
     pub fn events(&self, session_id: &str) -> Result<Vec<ProcessEvent>, ProcessError> {
         load_events(&self.inner.storage, session_id)
+    }
+
+    pub fn record_normalized(
+        &self,
+        session_id: &str,
+        event: &NormalizedAgentEvent,
+    ) -> Result<i64, ProcessError> {
+        let occurred_at = now()?;
+        let payload = serde_json::to_string(event)?;
+        let event_type = serde_json::to_value(event)?
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown")
+            .to_owned();
+        let sequence = self.inner.storage.with_transaction(|transaction| {
+            let exists: i64 = transaction.query_row(
+                "SELECT COUNT(*) FROM agent_sessions WHERE id = ?1",
+                [session_id],
+                |row| row.get(0),
+            )?;
+            if exists == 0 {
+                return Err(rusqlite::Error::QueryReturnedNoRows);
+            }
+            let sequence = transaction.query_row(
+                "SELECT COALESCE(MAX(sequence), 0) + 1 FROM normalized_agent_events WHERE session_id = ?1",
+                [session_id],
+                |row| row.get::<_, i64>(0),
+            )?;
+            transaction.execute(
+                "INSERT INTO normalized_agent_events
+                 (session_id, sequence, event_type, payload_json, occurred_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![session_id, sequence, event_type, payload, occurred_at],
+            )?;
+            Ok(sequence)
+        })?;
+        Ok(sequence)
     }
 
     pub fn recover_interrupted(&self) -> Result<Vec<String>, ProcessError> {

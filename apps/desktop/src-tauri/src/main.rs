@@ -1067,7 +1067,7 @@ async fn launch_agent(
     spec.task_id = Some(task_id);
     let launched = state.agents.launch(spec)?;
     let session_id = launched.session_id.clone();
-    stream_agent_events(app, adapter_impl, launched);
+    stream_agent_events(app, state.agents.clone(), adapter_impl, launched);
     Ok(AgentLaunchOutcome {
         session_id,
         adapter,
@@ -1207,6 +1207,7 @@ fn record_permission(
 
 fn stream_agent_events(
     app: AppHandle,
+    supervisor: ProcessSupervisor,
     adapter: Box<dyn AgentAdapter>,
     mut launched: mars_agents::process::LaunchedProcess,
 ) {
@@ -1248,6 +1249,7 @@ fn stream_agent_events(
             };
             for event in events {
                 provider_ended |= matches!(event, NormalizedAgentEvent::End { .. });
+                let _ = supervisor.record_normalized(&launched.session_id, &event);
                 let _ = app.emit(
                     "agent-event",
                     AgentTimelinePayload {

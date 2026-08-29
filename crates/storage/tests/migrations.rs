@@ -77,11 +77,21 @@ fn fresh_database_applies_each_migration_once() {
             )
         })
         .expect("context table should exist");
+    let reviews_table: String = storage
+        .with_connection(|connection| {
+            connection.query_row(
+                "SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'reviews'",
+                [],
+                |row| row.get(0),
+            )
+        })
+        .expect("reviews table should exist");
 
-    assert_eq!(applied, 9);
+    assert_eq!(applied, 10);
     assert_eq!(jobs_table, "jobs");
     assert_eq!(tasks_table, "tasks");
     assert_eq!(context_table, "context_items");
+    assert_eq!(reviews_table, "reviews");
 
     drop(storage);
     let reopened = Storage::open(database.path()).expect("migrated database should reopen");
@@ -92,7 +102,7 @@ fn fresh_database_applies_each_migration_once() {
             })
         })
         .expect("migration journal should remain readable");
-    assert_eq!(applied_after_reopen, 9);
+    assert_eq!(applied_after_reopen, 10);
 }
 
 #[test]

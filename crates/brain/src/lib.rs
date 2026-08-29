@@ -3,6 +3,7 @@ pub mod extraction;
 pub mod knowledge;
 pub mod query;
 pub mod retrieval;
+pub mod review;
 pub mod tools;
 pub mod why_query;
 
@@ -20,6 +21,7 @@ pub use knowledge::{
     KnowledgeService, KnowledgeStatus, NewKnowledge, NewProvenance, Provenance, ProvenanceKind,
 };
 pub use query::{BrainError, BrainService};
+pub use review::{HandoffEvent, ReviewError, ReviewHandoff, ReviewHandoffRequest, ReviewService};
 pub use tools::{BrainEdge, BrainNeighborhood, BrainSymbol, Dependency};
 pub use why_query::{
     WhyAnswer, WhyError, WhyFact, WhyPath, WhyPathStep, WhyRequest, WhyService, WhySource,

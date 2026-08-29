@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use mars_agents::adapter::NormalizedAgentEvent;
 use mars_agents::process::{
     ProcessEvent, ProcessEventKind, ProcessSpec, ProcessSupervisor, SessionStatus,
 };
@@ -177,6 +178,60 @@ fn restart_reconciliation_marks_abandoned_sessions_interrupted() {
             .iter()
             .any(|event| matches!(event.kind, ProcessEventKind::InterruptedOnRestart))
     );
+}
+
+#[test]
+fn normalized_provider_events_are_durable_and_ordered_for_handoffs() {
+    runtime().block_on(async {
+        let fixture = ProcessFixture::new();
+        let supervisor = ProcessSupervisor::new(fixture.storage.clone());
+        let mut launched = supervisor
+            .launch(shell(fixture.path(), "printf done"))
+            .expect("process should launch");
+        collect_until_exit(&mut launched.events).await;
+
+        assert_eq!(
+            supervisor
+                .record_normalized(
+                    &launched.session_id,
+                    &NormalizedAgentEvent::Text {
+                        text: "Implemented the safe addition guard.".into(),
+                    },
+                )
+                .expect("normalized text should persist"),
+            1
+        );
+        assert_eq!(
+            supervisor
+                .record_normalized(
+                    &launched.session_id,
+                    &NormalizedAgentEvent::Test {
+                        command: "pnpm test".into(),
+                        status: "passed".into(),
+                    },
+                )
+                .expect("normalized test should persist"),
+            2
+        );
+        let stored: Vec<(i64, String, String)> = fixture
+            .storage
+            .with_connection(|connection| {
+                let mut statement = connection.prepare(
+                    "SELECT sequence, event_type, payload_json FROM normalized_agent_events
+                     WHERE session_id = ?1 ORDER BY sequence",
+                )?;
+                statement
+                    .query_map([&launched.session_id], |row| {
+                        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                    })?
+                    .collect()
+            })
+            .expect("normalized events should load");
+        assert_eq!(stored.len(), 2);
+        assert_eq!(stored[0].1, "text");
+        assert_eq!(stored[1].1, "test");
+        assert!(stored[1].2.contains("pnpm test"));
+    });
 }
 
 fn runtime() -> tokio::runtime::Runtime {
