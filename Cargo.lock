@@ -1741,6 +1741,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "mars-git"
+version = "0.1.0"
+dependencies = [
+ "mars-core",
+ "mars-security",
+ "mars-storage",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "time",
+ "uuid",
+]
+
+[[package]]
 name = "mars-indexer"
 version = "0.1.0"
 dependencies = [
