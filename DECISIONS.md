@@ -141,3 +141,10 @@ Status values: proposed, accepted, superseded. These decisions are proposed toge
 - Decision: Launch provider CLIs only inside a ready task worktree and translate the user-approved file, command, and provider-tool grants into the narrowest supported CLI arguments. Never use dangerous permission-bypass flags. Codex uses `read-only` or `workspace-write` sandboxing; Claude receives an explicit allowed-tool set. Mars still supervises the process group, redacts persisted command/output data, and owns cancellation independently of provider behavior.
 - Rationale: Provider-native permissions differ and can drift, so they are defense in depth rather than the product authorization source. A provider cannot widen the capability decision recorded before launch.
 - Consequence: Adapter contract fixtures and opt-in real CLI proofs must cover command construction and stream drift. Unsupported fine-grained provider controls remain denied or are disclosed as coarse grants; durable permission-decision audit wiring is required before remote Git or forge mutations.
+
+## ADR-021 — Agent launch revalidates the exact visible context pack
+
+- Status: accepted
+- Decision: Build task context packs in Rust from durable entities, expose the exact serialized pack for preview, and accept only a server-side reconstruction equal to that preview at launch. The client may submit only its visible removal set; it cannot add policy-excluded content or alter evidence. Any intervening context, skill, index, or Git-recency change makes the preview stale and requires review again.
+- Rationale: “What the agent saw” must be auditable, while a webview-supplied pack cannot be trusted as authority and a silent rebuild could differ from the user's approval.
+- Consequence: Pack generation is deterministic and includes provenance, freshness, source location, inclusion reason, section usage, and hard exclusions. Launch latency includes one bounded rebuild. Required items may exceed soft section shares but never the total byte ceiling; token-aware budgeting and binary provider attachments remain future refinements.

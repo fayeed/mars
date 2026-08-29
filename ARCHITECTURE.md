@@ -1,6 +1,6 @@
 # Mars Architecture
 
-Status: MVP implementation in progress; Proofs A and B implemented
+Status: MVP implementation in progress; Proofs A, B, and C implemented
 Last updated: 2026-08-29
 
 ## 1. Concrete MVP restatement
@@ -20,7 +20,9 @@ The MVP is proven only by six running vertical slices:
 
 Proof A is implemented. A trusted Git repository can be browsed and edited through repository-scoped native services, used as the working directory of a native PTY, incrementally indexed into a tree-sitter/SQLite graph, and queried through bounded evidence-backed Project Brain tools. The React workspace composes the shadcn/ui Explorer and Brain surfaces with Monaco source navigation and xterm rendering.
 
-Proof B is implemented. Tasks begin as mutation-free branch/worktree plans, require approval before system-Git provisioning, and open their isolated roots in the same Explorer, Monaco, and terminal workspace. Claude Code and Codex adapters probe installed versions, build bounded commands without permission-bypass flags, normalize streaming JSONL, retain unknown frames, and support provider checkpoints for follow-up runs. A durable process supervisor records redacted ordered events, handles bounded delivery, cancellation escalation, exit state, and restart interruption. The Tasks-first shadcn/ui flow exposes capability grants and retains only the newest 500 rendered events while the durable native history remains authoritative. The real Milestone B proof used Codex in a disposable Mars-managed worktree and is recorded in `docs/proofs/b-agent-worktree.md`. Proofs C through F remain planned.
+Proof B is implemented. Tasks begin as mutation-free branch/worktree plans, require approval before system-Git provisioning, and open their isolated roots in the same Explorer, Monaco, and terminal workspace. Claude Code and Codex adapters probe installed versions, build bounded commands without permission-bypass flags, normalize streaming JSONL, retain unknown frames, and support provider checkpoints for follow-up runs. A durable process supervisor records redacted ordered events, handles bounded delivery, cancellation escalation, exit state, and restart interruption. The Tasks-first shadcn/ui flow exposes capability grants and retains only the newest 500 rendered events while the durable native history remains authoritative. The real Milestone B proof used Codex in a disposable Mars-managed worktree and is recorded in `docs/proofs/b-agent-worktree.md`.
+
+Proof C is implemented. Context capture preserves exact text/image originals in a content-addressed store, deduplicates by SHA-256, attaches safe items to tasks, and quarantines detected secrets. Skills are discovered from skills.sh through a replaceable registry, inspected before trust, locally rehashed, pinned, atomically installed, scoped, and adapter-filtered. Deterministic retrieval combines explicit attachments, active constraints, context/knowledge FTS, exact symbols, one-hop graph neighbors, read-only Git recency, active work, and relevant trusted skills. Every included item carries provenance, freshness, source location, score, and reason; hard exclusions remain visible. A shadcn/ui preview exposes the exact byte-budgeted pack with remove/re-add controls before permissions. Launch rebuilds and compares the preview server-side, rejects stale/tampered packs, then delivers it through the existing real adapter path. The live Codex proof is recorded in `docs/proofs/c-context-skills.md`. Proofs D through F remain planned.
 
 The editor, terminal, agents, context, graph, and Git lifecycle are one product. The MVP does not include an autonomous swarm, hosted collaboration, organization policy, non-GitHub forge parity, broad language support, or automatic merge.
 
@@ -614,6 +616,8 @@ Candidate score (initial tunable heuristic):
 Hard rules outrank scores: explicit task attachments and active constraints are included; blocked skills and secret-quarantined context are excluded; human-approved facts outrank inferred contradictions. Expansion is depth ≤ 2 by default with edge-specific fan-out. Packs allocate budgets by intent: instructions/constraints, task/context, code, history/active work, skills, and diff/review. Every item includes `entity_ref`, provenance, freshness, retrieval reason, and source location. The UI previews the exact pack before launch.
 
 Golden tests assert relevance, exclusions, stable ordering, provenance, and budget bounds. Retrieval telemetry stays local and records candidate scores, not sensitive prompt contents by default.
+
+The implemented baseline uses a 24 KiB launch budget and deterministic section shares of 20% instructions, 25% context, 35% code, 10% history, and 10% skills. Required explicit attachments, active constraints, and explicitly task-scoped skills may exceed their soft section share but never the total hard limit. Optional candidates stop at both section and total ceilings. Normalized-content fingerprints suppress duplicates across sections. Before launch, the backend reconstructs the pack from durable entities and the user's removal list and requires exact equality with the preview; a changed pack must be reviewed again.
 
 ## 14. Minimal IDE information architecture
 
