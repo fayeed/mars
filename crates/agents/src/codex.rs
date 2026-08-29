@@ -30,7 +30,11 @@ impl AgentAdapter for CodexAdapter {
                 OsString::from("--color"),
                 OsString::from("never"),
                 OsString::from("--sandbox"),
-                OsString::from("workspace-write"),
+                OsString::from(if request.allow_write {
+                    "workspace-write"
+                } else {
+                    "read-only"
+                }),
                 OsString::from("--cd"),
                 request.cwd.clone().into_os_string(),
             ]);

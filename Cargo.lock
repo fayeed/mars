@@ -1754,12 +1754,15 @@ dependencies = [
 name = "mars-desktop"
 version = "0.1.0"
 dependencies = [
+ "mars-agents",
  "mars-brain",
  "mars-core",
+ "mars-git",
  "mars-indexer",
  "mars-security",
  "mars-storage",
  "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",

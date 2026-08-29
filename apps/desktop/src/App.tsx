@@ -153,7 +153,11 @@ export function App() {
             </section>
           }
         >
-          <RepositoryWorkspace project={project} />
+          <RepositoryWorkspace
+            key={project.repositoryId}
+            onOpenProject={setProject}
+            project={project}
+          />
         </Suspense>
       ) : (
         <>

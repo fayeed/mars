@@ -17,6 +17,17 @@ use uuid::Uuid;
 use crate::command::{GitCommandError, run};
 use crate::status::{is_registered, parse_worktree_porcelain_z, status_is_dirty};
 
+type WorktreeRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+);
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorktreeState {
@@ -458,6 +469,46 @@ impl TaskWorktreeService {
             worktree_path: PathBuf::from(path),
             state: WorktreeState::parse(&state)?,
         })
+    }
+
+    pub fn list(&self, repository_id: &str) -> Result<Vec<WorktreePlan>, TaskWorktreeError> {
+        let rows: Vec<WorktreeRow> = self.storage.with_connection(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT t.id, t.repository_id, t.title, t.intent, b.name, b.base_ref, w.path, w.state
+                 FROM tasks t JOIN branches b ON b.task_id = t.id JOIN worktrees w ON w.task_id = t.id
+                 WHERE t.repository_id = ?1 ORDER BY t.created_at DESC, t.id DESC",
+            )?;
+            statement
+                .query_map([repository_id], |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                    ))
+                })?
+                .collect()
+        })?;
+        rows.into_iter()
+            .map(
+                |(task_id, repository_id, title, intent, branch_name, base_ref, path, state)| {
+                    Ok(WorktreePlan {
+                        task_id,
+                        repository_id,
+                        title,
+                        intent,
+                        branch_name,
+                        base_ref,
+                        worktree_path: PathBuf::from(path),
+                        state: WorktreeState::parse(&state)?,
+                    })
+                },
+            )
+            .collect()
     }
 
     pub fn mutation_journal(

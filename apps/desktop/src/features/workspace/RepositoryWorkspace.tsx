@@ -12,6 +12,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { BrainSearch } from "@/features/brain/BrainSearch";
 import { FileExplorer } from "@/features/explorer/FileExplorer";
+import { TaskWorkspace } from "@/features/tasks/TaskWorkspace";
 import { TerminalPanel } from "@/features/terminal/TerminalPanel";
 
 const CodeEditor = lazy(() =>
@@ -19,6 +20,7 @@ const CodeEditor = lazy(() =>
 );
 
 interface RepositoryWorkspaceProps {
+  onOpenProject: (project: ProjectSnapshot) => void;
   project: ProjectSnapshot;
 }
 
@@ -34,7 +36,7 @@ function messageFor(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function RepositoryWorkspace({ project }: RepositoryWorkspaceProps) {
+export function RepositoryWorkspace({ onOpenProject, project }: RepositoryWorkspaceProps) {
   const [files, setFiles] = useState<OpenFile[]>([]);
   const [activePath, setActivePath] = useState<string | null>(null);
   const [revealLine, setRevealLine] = useState<number | null>(null);
@@ -75,11 +77,18 @@ export function RepositoryWorkspace({ project }: RepositoryWorkspaceProps) {
     <section className="col-span-2 min-h-0" aria-label={`${project.name} workspace`}>
       <ResizablePanelGroup orientation="horizontal">
         <ResizablePanel defaultSize="22%" minSize="15%" maxSize="38%">
-          <Tabs className="h-full gap-0" defaultValue="explorer">
+          <Tabs className="h-full gap-0" defaultValue="tasks">
             <TabsList className="h-9 w-full rounded-none border-b bg-card" variant="line">
+              <TabsTrigger value="tasks">Tasks</TabsTrigger>
               <TabsTrigger value="explorer">Explorer</TabsTrigger>
               <TabsTrigger value="brain">Brain</TabsTrigger>
             </TabsList>
+            <TabsContent className="min-h-0" value="tasks">
+              <TaskWorkspace
+                onOpenWorktree={onOpenProject}
+                repositoryId={project.repositoryId}
+              />
+            </TabsContent>
             <TabsContent className="min-h-0" value="explorer">
               <FileExplorer
                 activePath={activePath}

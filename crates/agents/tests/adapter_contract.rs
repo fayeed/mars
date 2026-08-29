@@ -104,6 +104,7 @@ fn commands_use_streaming_modes_and_resume_without_permission_bypass() {
         prompt: "Implement the task".into(),
         resume_session_id: None,
         allowed_tools: vec!["Read".into(), "Edit".into()],
+        allow_write: true,
     };
 
     let claude = ClaudeAdapter;
@@ -233,6 +234,7 @@ fn real_adapter_smoke(expected: AdapterKind, executable: &Path) {
             prompt: "Reply with exactly MARS_SMOKE_OK. Do not use tools or modify files.".into(),
             resume_session_id: None,
             allowed_tools: Vec::new(),
+            allow_write: false,
         })
         .expect("smoke command should build");
     let output = Command::new(command.program)

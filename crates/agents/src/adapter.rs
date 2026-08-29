@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AdapterKind {
     Claude,
@@ -29,6 +29,7 @@ pub struct AgentLaunchRequest {
     pub prompt: String,
     pub resume_session_id: Option<String>,
     pub allowed_tools: Vec<String>,
+    pub allow_write: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -39,7 +40,11 @@ pub struct AdapterCommand {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case", tag = "type")]
+#[serde(
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    tag = "type"
+)]
 pub enum NormalizedAgentEvent {
     Checkpoint {
         session_id: String,
