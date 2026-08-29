@@ -1,8 +1,8 @@
-import Editor from "@monaco-editor/react";
+import Editor, { type OnMount } from "@monaco-editor/react";
 import type { CommandFailure, FileDocument } from "@mars/shared-types";
 import { invoke } from "@tauri-apps/api/core";
 import { AlertCircleIcon, RefreshCwIcon, SaveIcon } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -17,6 +17,7 @@ interface CodeEditorProps {
   onChange: (value: string) => void;
   onReload: () => void;
   onSaved: (document: FileDocument) => void;
+  revealLine?: number | null;
 }
 
 function languageFor(path: string) {
@@ -56,7 +57,9 @@ export function CodeEditor({
   onChange,
   onReload,
   onSaved,
+  revealLine,
 }: CodeEditorProps) {
+  const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
   const [error, setError] = useState<{ code: string; message: string } | null>(null);
   const [saving, setSaving] = useState(false);
   const dirty = value !== document.content;
@@ -91,6 +94,22 @@ export function CodeEditor({
     return () => window.removeEventListener("keydown", handleSave);
   }, [save]);
 
+  useEffect(() => {
+    if (revealLine && editorRef.current) {
+      editorRef.current.revealLineInCenter(revealLine);
+      editorRef.current.setPosition({ column: 1, lineNumber: revealLine });
+      editorRef.current.focus();
+    }
+  }, [revealLine]);
+
+  const mountEditor: OnMount = (editor) => {
+    editorRef.current = editor;
+    if (revealLine) {
+      editor.revealLineInCenter(revealLine);
+      editor.setPosition({ column: 1, lineNumber: revealLine });
+    }
+  };
+
   return (
     <section className="flex h-full min-h-0 flex-col" aria-label={`Editor: ${document.relativePath}`}>
       <header className="flex h-11 shrink-0 items-center gap-3 border-b px-3">
@@ -120,6 +139,7 @@ export function CodeEditor({
       <div className="min-h-0 flex-1">
         <Editor
           language={languageFor(document.relativePath)}
+          onMount={mountEditor}
           onChange={(next) => onChange(next ?? "")}
           options={{
             automaticLayout: true,

@@ -10,6 +10,7 @@ import {
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { BrainSearch } from "@/features/brain/BrainSearch";
 import { FileExplorer } from "@/features/explorer/FileExplorer";
 import { TerminalPanel } from "@/features/terminal/TerminalPanel";
 
@@ -36,10 +37,12 @@ function messageFor(error: unknown) {
 export function RepositoryWorkspace({ project }: RepositoryWorkspaceProps) {
   const [files, setFiles] = useState<OpenFile[]>([]);
   const [activePath, setActivePath] = useState<string | null>(null);
+  const [revealLine, setRevealLine] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const activeFile = files.find((file) => file.document.relativePath === activePath) ?? null;
 
-  async function openFile(relativePath: string, force = false) {
+  async function openFile(relativePath: string, force = false, line: number | null = null) {
+    setRevealLine(line);
     const existing = files.find((file) => file.document.relativePath === relativePath);
     if (existing && !force) {
       setActivePath(relativePath);
@@ -72,12 +75,26 @@ export function RepositoryWorkspace({ project }: RepositoryWorkspaceProps) {
     <section className="col-span-2 min-h-0" aria-label={`${project.name} workspace`}>
       <ResizablePanelGroup orientation="horizontal">
         <ResizablePanel defaultSize="22%" minSize="15%" maxSize="38%">
-          <FileExplorer
-            activePath={activePath}
-            onOpen={(path) => void openFile(path)}
-            repositoryId={project.repositoryId}
-            repositoryName={project.name}
-          />
+          <Tabs className="h-full gap-0" defaultValue="explorer">
+            <TabsList className="h-9 w-full rounded-none border-b bg-card" variant="line">
+              <TabsTrigger value="explorer">Explorer</TabsTrigger>
+              <TabsTrigger value="brain">Brain</TabsTrigger>
+            </TabsList>
+            <TabsContent className="min-h-0" value="explorer">
+              <FileExplorer
+                activePath={activePath}
+                onOpen={(path) => void openFile(path)}
+                repositoryId={project.repositoryId}
+                repositoryName={project.name}
+              />
+            </TabsContent>
+            <TabsContent className="min-h-0" value="brain">
+              <BrainSearch
+                onOpenSource={(path, line) => void openFile(path, false, line)}
+                repositoryId={project.repositoryId}
+              />
+            </TabsContent>
+          </Tabs>
         </ResizablePanel>
         <ResizableHandle withHandle />
         <ResizablePanel defaultSize="78%" minSize="45%">
@@ -110,6 +127,7 @@ export function RepositoryWorkspace({ project }: RepositoryWorkspaceProps) {
                               updateActive(() => ({ document, draft: document.content }))
                             }
                             repositoryId={project.repositoryId}
+                            revealLine={revealLine}
                             value={activeFile.draft}
                           />
                         </Suspense>

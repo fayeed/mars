@@ -8,9 +8,12 @@ license.workspace = true
 tauri-build.workspace = true
 
 [dependencies]
+mars-brain.workspace = true
 mars-core.workspace = true
+mars-indexer.workspace = true
 mars-security.workspace = true
 mars-storage.workspace = true
 serde.workspace = true
 tauri.workspace = true
 tauri-plugin-dialog = "2.7.2"
+tokio-util.workspace = true

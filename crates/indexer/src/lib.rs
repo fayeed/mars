@@ -9,6 +9,7 @@ use std::sync::Arc;
 use mars_storage::Storage;
 use mars_storage::projects::ProjectRepository;
 use rusqlite::params;
+use serde::Serialize;
 use thiserror::Error;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
@@ -17,7 +18,8 @@ use uuid::Uuid;
 
 use javascript::ParsedFile;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct IndexSummary {
     pub run_id: String,
     pub indexed_files: usize,

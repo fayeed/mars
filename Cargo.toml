@@ -1,5 +1,5 @@
 [workspace]
-members = ["apps/desktop/src-tauri", "crates/core", "crates/indexer", "crates/security", "crates/storage"]
+members = ["apps/desktop/src-tauri", "crates/brain", "crates/core", "crates/indexer", "crates/security", "crates/storage"]
 resolver = "2"
 
 [workspace.package]
@@ -10,6 +10,7 @@ version = "0.1.0"
 [workspace.dependencies]
 ignore = "0.4.25"
 portable-pty = "0.9.0"
+mars-brain = { path = "crates/brain" }
 mars-core = { path = "crates/core" }
 mars-indexer = { path = "crates/indexer" }
 mars-security = { path = "crates/security" }

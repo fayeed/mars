@@ -1694,6 +1694,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "mars-brain"
+version = "0.1.0"
+dependencies = [
+ "mars-core",
+ "mars-indexer",
+ "mars-security",
+ "mars-storage",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio-util",
+]
+
+[[package]]
 name = "mars-core"
 version = "0.1.0"
 dependencies = [
@@ -1713,13 +1728,16 @@ dependencies = [
 name = "mars-desktop"
 version = "0.1.0"
 dependencies = [
+ "mars-brain",
  "mars-core",
+ "mars-indexer",
  "mars-security",
  "mars-storage",
  "serde",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
+ "tokio-util",
 ]
 
 [[package]]

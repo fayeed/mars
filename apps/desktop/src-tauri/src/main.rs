@@ -1,18 +1,23 @@
 use std::fs;
 use std::sync::Arc;
 
+use mars_brain::tools::{BrainEdge, BrainNeighborhood, BrainSymbol, Dependency};
+use mars_brain::{BrainError, BrainService};
 use mars_core::Core;
 use mars_core::files::{FileDocument, FileError, FilePage, FileService};
 use mars_core::projects::{OpenRepositoryOutcome, ProjectError, ProjectService};
 use mars_core::protocol::{CommandRequest, CommandResponse};
 use mars_core::terminal::{TerminalError, TerminalService, TerminalSessionInfo};
+use mars_indexer::{IndexError, IndexSummary, Indexer};
 use mars_security::TrustDecision;
 use mars_storage::Storage;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 struct AppState {
+    brain: BrainService,
     files: FileService,
+    indexer: Indexer,
     projects: ProjectService,
     terminals: TerminalService,
 }
@@ -72,6 +77,40 @@ impl From<TerminalError> for CommandFailure {
             TerminalError::StatePoisoned(_) => "terminal.state",
             TerminalError::Pty(_) => "terminal.pty",
             TerminalError::Io(_) => "terminal.io",
+        };
+        Self {
+            code,
+            message: error.to_string(),
+        }
+    }
+}
+
+impl From<IndexError> for CommandFailure {
+    fn from(error: IndexError) -> Self {
+        let code = match error {
+            IndexError::Storage(_) => "index.storage",
+            IndexError::Json(_) => "index.json",
+            IndexError::Timestamp(_) => "index.timestamp",
+            IndexError::Filesystem { .. } => "index.filesystem",
+            IndexError::OutsideRepository(_) => "index.outside_repository",
+            IndexError::Walk(_) => "index.walk",
+            IndexError::Parse(_) => "index.parse",
+            IndexError::Cancelled { .. } => "index.cancelled",
+        };
+        Self {
+            code,
+            message: error.to_string(),
+        }
+    }
+}
+
+impl From<BrainError> for CommandFailure {
+    fn from(error: BrainError) -> Self {
+        let code = match error {
+            BrainError::Storage(_) => "brain.storage",
+            BrainError::Json(_) => "brain.evidence",
+            BrainError::InvalidBounds { .. } => "brain.invalid_bounds",
+            BrainError::SymbolNotFound(_) => "brain.symbol_not_found",
         };
         Self {
             code,
@@ -191,6 +230,109 @@ fn cancel_terminal(session_id: String, state: State<'_, AppState>) -> Result<(),
         .map_err(Into::into)
 }
 
+#[tauri::command]
+fn index_repository(
+    repository_id: String,
+    state: State<'_, AppState>,
+) -> Result<IndexSummary, CommandFailure> {
+    state
+        .indexer
+        .index_repository(&repository_id, &tokio_util::sync::CancellationToken::new())
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+fn find_symbols(
+    repository_id: String,
+    query: String,
+    limit: usize,
+    state: State<'_, AppState>,
+) -> Result<Vec<BrainSymbol>, CommandFailure> {
+    state
+        .brain
+        .find_symbol(&repository_id, &query, limit)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+fn brain_references(
+    repository_id: String,
+    symbol_id: String,
+    limit: usize,
+    state: State<'_, AppState>,
+) -> Result<Vec<BrainEdge>, CommandFailure> {
+    state
+        .brain
+        .references(&repository_id, &symbol_id, limit)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+fn brain_callers(
+    repository_id: String,
+    symbol_id: String,
+    limit: usize,
+    state: State<'_, AppState>,
+) -> Result<Vec<BrainEdge>, CommandFailure> {
+    state
+        .brain
+        .callers(&repository_id, &symbol_id, limit)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+fn brain_callees(
+    repository_id: String,
+    symbol_id: String,
+    limit: usize,
+    state: State<'_, AppState>,
+) -> Result<Vec<BrainEdge>, CommandFailure> {
+    state
+        .brain
+        .callees(&repository_id, &symbol_id, limit)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+fn brain_dependencies(
+    repository_id: String,
+    limit: usize,
+    state: State<'_, AppState>,
+) -> Result<Vec<Dependency>, CommandFailure> {
+    state
+        .brain
+        .dependencies(&repository_id, limit)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+fn brain_related_code(
+    repository_id: String,
+    symbol_id: String,
+    depth: usize,
+    limit: usize,
+    state: State<'_, AppState>,
+) -> Result<BrainNeighborhood, CommandFailure> {
+    state
+        .brain
+        .related_code(&repository_id, &symbol_id, depth, limit)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+fn brain_blast_radius(
+    repository_id: String,
+    symbol_id: String,
+    depth: usize,
+    limit: usize,
+    state: State<'_, AppState>,
+) -> Result<BrainNeighborhood, CommandFailure> {
+    state
+        .brain
+        .blast_radius(&repository_id, &symbol_id, depth, limit)
+        .map_err(Into::into)
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -199,7 +341,9 @@ fn main() {
             fs::create_dir_all(&data_dir)?;
             let storage = Arc::new(Storage::open(data_dir.join("mars.sqlite3"))?);
             app.manage(AppState {
+                brain: BrainService::new(storage.clone()),
                 files: FileService::new(storage.clone()),
+                indexer: Indexer::new(storage.clone()),
                 projects: ProjectService::new(storage.clone()),
                 terminals: TerminalService::new(storage),
             });
@@ -214,7 +358,15 @@ fn main() {
             spawn_terminal,
             write_terminal,
             resize_terminal,
-            cancel_terminal
+            cancel_terminal,
+            index_repository,
+            find_symbols,
+            brain_references,
+            brain_callers,
+            brain_callees,
+            brain_dependencies,
+            brain_related_code,
+            brain_blast_radius
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Mars desktop");
