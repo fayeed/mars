@@ -1708,6 +1708,9 @@ name = "mars-agents"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "mars-core",
+ "mars-git",
+ "mars-security",
  "mars-storage",
  "rusqlite",
  "serde",

@@ -3,7 +3,7 @@
 {"type":"item.started","item":{"id":"item-2","type":"mcp_tool_call","name":"project_brain","arguments":{"query":"run"},"status":"in_progress"}}
 {"type":"item.started","item":{"id":"item-3","type":"command_execution","command":"git status --short","status":"in_progress"}}
 {"type":"item.completed","item":{"id":"item-4","type":"command_execution","command":"cargo test","status":"completed"}}
-{"type":"item.completed","item":{"id":"item-5","type":"file_change","path":"src/main.ts","change":"modified","status":"completed"}}
+{"type":"item.completed","item":{"id":"item-5","type":"file_change","changes":[{"path":"src/main.ts","kind":"modified"}],"status":"completed"}}
 {"type":"approval.requested","tool":"command_execution","description":"Run cargo test"}
 {"type":"future.event","payload":{"preserve":true}}
 {"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":30}}

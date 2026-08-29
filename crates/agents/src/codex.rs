@@ -118,18 +118,7 @@ fn item_events(value: &Value) -> Vec<NormalizedAgentEvent> {
                 NormalizedAgentEvent::Command { command, status }
             }]
         }
-        Some("file_change") => vec![NormalizedAgentEvent::FileChange {
-            path: item
-                .get("path")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown")
-                .to_owned(),
-            change: item
-                .get("change")
-                .and_then(Value::as_str)
-                .unwrap_or("modified")
-                .to_owned(),
-        }],
+        Some("file_change") => file_change_events(item),
         Some("mcp_tool_call" | "web_search") => vec![NormalizedAgentEvent::Tool {
             name: item
                 .get("name")
@@ -148,4 +137,39 @@ fn item_events(value: &Value) -> Vec<NormalizedAgentEvent> {
             raw: item.clone(),
         }],
     }
+}
+
+fn file_change_events(item: &Value) -> Vec<NormalizedAgentEvent> {
+    let changes = item
+        .get("changes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|change| {
+            Some(NormalizedAgentEvent::FileChange {
+                path: change.get("path")?.as_str()?.to_owned(),
+                change: change
+                    .get("kind")
+                    .or_else(|| change.get("change"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("modified")
+                    .to_owned(),
+            })
+        })
+        .collect::<Vec<_>>();
+    if !changes.is_empty() {
+        return changes;
+    }
+    vec![NormalizedAgentEvent::FileChange {
+        path: item
+            .get("path")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_owned(),
+        change: item
+            .get("change")
+            .and_then(Value::as_str)
+            .unwrap_or("modified")
+            .to_owned(),
+    }]
 }

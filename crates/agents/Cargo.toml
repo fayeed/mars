@@ -15,3 +15,8 @@ time.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 uuid.workspace = true
+
+[dev-dependencies]
+mars-core.workspace = true
+mars-git.workspace = true
+mars-security.workspace = true
