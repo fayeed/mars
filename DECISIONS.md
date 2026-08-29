@@ -127,3 +127,10 @@ Status values: proposed, accepted, superseded. These decisions are proposed toge
 - Decision: Explorer, editor, and terminal commands accept a persisted repository identifier rather than a client-supplied root. The Rust core resolves the canonical trusted root, applies Git/product/default ignore policy, rejects path traversal and symlink escapes, limits editable files to 2 MiB, and saves against a SHA-256 content version through same-directory replacement. A terminal launches the user's default shell only after an explicit click, starts in that root, streams raw PTY bytes, and retains at most 1 MiB of native scrollback.
 - Rationale: Webview paths are untrusted input, external tools may edit files concurrently, and PTY byte streams are not safely decoded one arbitrary read chunk at a time.
 - Consequence: Human saves can surface a disk-conflict instead of overwriting an external edit. Binary, oversized, ignored, sensitive, and out-of-root files are not editable. Agent command permissions remain a separate later capability layer; this decision covers direct human IDE actions.
+
+## ADR-019 — Structural graph queries are bounded and evidence-bearing
+
+- Status: accepted
+- Decision: Every Project Brain structural query is scoped to a persisted repository identity and requires an explicit result limit. Recursive related-code and blast-radius queries additionally require a depth, with hard service maxima of 100 results and depth 5. Returned relationships retain confidence plus parser/source-span evidence suitable for direct source navigation.
+- Rationale: Local graph traversal is still an availability boundary, especially when invoked by an agent or rendered interactively. Fixed server-side ceilings make latency and payload size predictable, while evidence prevents a syntax-derived relationship from being presented as unexplained semantic truth.
+- Consequence: Clients cannot request an unbounded graph dump. Broader exploration must page or issue narrower follow-up queries, and future ranking/enrichment must preserve evidence even when it changes ordering or confidence.

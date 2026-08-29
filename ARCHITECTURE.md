@@ -1,7 +1,7 @@
 # Mars Architecture
 
-Status: proposed for MVP implementation  
-Last updated: 2026-08-28
+Status: MVP implementation in progress; Proof A implemented
+Last updated: 2026-08-29
 
 ## 1. Concrete MVP restatement
 
@@ -17,6 +17,8 @@ The MVP is proven only by six running vertical slices:
 | D | Complete work → extract reviewable memory → answer “why?” with provenance |
 | E | Claude implements → Codex reviews exact diff with shared compact context |
 | F | GitHub issue → task/worktree → pull request → checks/reviews in IDE |
+
+Proof A is implemented. A trusted Git repository can be browsed and edited through repository-scoped native services, used as the working directory of a native PTY, incrementally indexed into a tree-sitter/SQLite graph, and queried through bounded evidence-backed Project Brain tools. The React workspace composes the shadcn/ui Explorer and Brain surfaces with Monaco source navigation and xterm rendering. Proofs B through F remain planned.
 
 The editor, terminal, agents, context, graph, and Git lifecycle are one product. The MVP does not include an autonomous swarm, hosted collaboration, organization policy, non-GitHub forge parity, broad language support, or automatic merge.
 
@@ -74,7 +76,7 @@ flowchart TB
 - Domain crates own machine/repository/process lifecycle. They never depend on Tauri or React.
 - `packages/protocol` is the versioned command/event contract generated or checked against Rust types.
 - SQLite is the authoritative local metadata store. Source files and Git remain authoritative for code/history. Binary artifacts live in a content-addressed directory, with metadata in SQLite. The Rust build bundles a known SQLite version with FTS5 enabled instead of relying on the host SQLite feature set.
-- Long-running operations are persisted jobs with cancellation tokens and checkpoints. UI disconnects do not imply process cancellation.
+- Long-running operations are designed as persisted jobs with cancellation tokens and checkpoints. The Milestone A indexer already publishes transactionally and accepts cancellation, but its desktop command is still synchronous; durable command orchestration lands with the jobs/agent workflow. UI disconnects must not imply process cancellation once that orchestration is wired.
 
 ### Dependency rule
 
