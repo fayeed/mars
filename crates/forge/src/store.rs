@@ -274,32 +274,41 @@ impl ForgeStore {
     }
 
     pub fn latest_mutation(&self, task_id: &str) -> Result<Option<ForgeMutation>, ForgeError> {
+        Ok(self.list_mutations(task_id, 1)?.into_iter().next())
+    }
+
+    pub fn list_mutations(
+        &self,
+        task_id: &str,
+        limit: usize,
+    ) -> Result<Vec<ForgeMutation>, ForgeError> {
+        let limit = i64::try_from(limit.clamp(1, 50))
+            .map_err(|error| ForgeError::InvalidResponse(error.to_string()))?;
         Ok(self.storage.with_connection(|connection| {
             connection
-                .query_row(
+                .prepare(
                     "SELECT id, task_id, remote_id, operation, status, plan_fingerprint,
                             push_approved, forge_approved, details_json, error, started_at, finished_at
                      FROM forge_mutations WHERE task_id = ?1
-                     ORDER BY started_at DESC, id DESC LIMIT 1",
-                    [task_id],
-                    |row| {
-                        Ok(ForgeMutation {
-                            id: row.get(0)?,
-                            task_id: row.get(1)?,
-                            remote_id: row.get(2)?,
-                            operation: row.get(3)?,
-                            status: row.get(4)?,
-                            plan_fingerprint: row.get(5)?,
-                            push_approved: row.get(6)?,
-                            forge_approved: row.get(7)?,
-                            details_json: row.get(8)?,
-                            error: row.get(9)?,
-                            started_at: row.get(10)?,
-                            finished_at: row.get(11)?,
-                        })
-                    },
-                )
-                .optional()
+                     ORDER BY started_at DESC, id DESC LIMIT ?2",
+                )?
+                .query_map(params![task_id, limit], |row| {
+                    Ok(ForgeMutation {
+                        id: row.get(0)?,
+                        task_id: row.get(1)?,
+                        remote_id: row.get(2)?,
+                        operation: row.get(3)?,
+                        status: row.get(4)?,
+                        plan_fingerprint: row.get(5)?,
+                        push_approved: row.get(6)?,
+                        forge_approved: row.get(7)?,
+                        details_json: row.get(8)?,
+                        error: row.get(9)?,
+                        started_at: row.get(10)?,
+                        finished_at: row.get(11)?,
+                    })
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()
         })?)
     }
 

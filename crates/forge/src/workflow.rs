@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    CreatePullRequest, ForgeConnection, ForgeError, ForgeProvider, ForgeRepository, ForgeStore,
-    PullRequestSnapshot, RemoteRecord, StoredIssue, detect_repository,
+    CreatePullRequest, ForgeConnection, ForgeError, ForgeMutation, ForgeProvider, ForgeRepository,
+    ForgeStore, PullRequestSnapshot, RemoteRecord, StoredIssue, detect_repository,
 };
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -100,6 +100,14 @@ impl ForgeWorkflow {
 
     pub fn recover_interrupted(&self) -> Result<usize, ForgeError> {
         self.store.recover_interrupted_mutations()
+    }
+
+    pub fn list_task_mutations(
+        &self,
+        task_id: &str,
+        limit: usize,
+    ) -> Result<Vec<ForgeMutation>, ForgeError> {
+        self.store.list_mutations(task_id, limit)
     }
 
     pub fn refresh_pull_request(

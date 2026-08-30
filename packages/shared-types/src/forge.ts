@@ -88,3 +88,20 @@ export interface PullRequestSnapshot {
   comments: ReviewComment[];
   checks: CheckRun[];
 }
+
+export type ForgeMutationStatus = "started" | "completed" | "failed" | "interrupted";
+
+export interface ForgeMutation {
+  id: string;
+  taskId: string;
+  remoteId: string;
+  operation: "create_pull_request";
+  status: ForgeMutationStatus;
+  planFingerprint: string;
+  pushApproved: boolean;
+  forgeApproved: boolean;
+  detailsJson: string;
+  error: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+}

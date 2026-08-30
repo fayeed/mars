@@ -23,7 +23,7 @@ Recovery does not delete source files, worktrees, branches, or remote objects.
 4. Approve push and forge write separately. Re-pushing the same SHA is safe; GitHub `422` recovery accepts only an open PR matching the exact head and base.
 5. If the provider result remains ambiguous, inspect GitHub directly before retrying. Do not infer PR success from a successful branch push.
 
-The `forge_mutations` journal records `started`, `completed`, `failed`, and `interrupted` attempts with the reviewed plan fingerprint and approval flags. Error text is redacted before persistence.
+The task's **Publish history** surface shows the latest bounded `forge_mutations` records: `started`, `completed`, `failed`, and `interrupted` attempts with the reviewed plan fingerprint and approval flags. It can be refreshed without repeating a mutation. Error text is redacted before persistence.
 
 ## Database migration failure
 

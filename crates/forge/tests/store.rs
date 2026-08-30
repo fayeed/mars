@@ -169,6 +169,26 @@ fn persists_issue_task_and_pr_snapshot_idempotently() {
     assert_eq!(mutation.id, mutation_id);
     assert_eq!(mutation.status, "interrupted");
     assert!(mutation.finished_at.is_some());
+
+    let completed_id = store
+        .start_mutation("task", &remote.id, "new-fingerprint", true, true, "{}")
+        .expect("second mutation should start");
+    store
+        .finish_mutation(&completed_id, "completed", r#"{"stage":"confirmed"}"#, None)
+        .expect("second mutation should complete");
+    let mutations = store
+        .list_mutations("task", 20)
+        .expect("mutation history should load");
+    assert_eq!(mutations.len(), 2);
+    assert_eq!(mutations[0].id, completed_id);
+    assert_eq!(mutations[0].status, "completed");
+    assert_eq!(
+        store
+            .list_mutations("task", 1)
+            .expect("bounded mutation history should load")
+            .len(),
+        1
+    );
 }
 
 fn sample_issue() -> Issue {

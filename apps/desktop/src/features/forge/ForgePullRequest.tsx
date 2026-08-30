@@ -1,6 +1,7 @@
 import type {
   CommandFailure,
   ForgeConnection,
+  ForgeMutation,
   PullRequestPlan,
   PullRequestSnapshot,
   WorktreePlan,
@@ -11,15 +12,18 @@ import {
   CircleDotIcon,
   ExternalLinkIcon,
   GitPullRequestIcon,
+  HistoryIcon,
   LoaderCircleIcon,
+  RefreshCwIcon,
   ShieldAlertIcon,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 
-import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -47,7 +51,9 @@ export function ForgePullRequest({ onSendFollowup, task }: ForgePullRequestProps
   const [forgeApproved, setForgeApproved] = useState(false);
   const [plan, setPlan] = useState<PullRequestPlan | null>(null);
   const [snapshot, setSnapshot] = useState<PullRequestSnapshot | null>(null);
+  const [mutations, setMutations] = useState<ForgeMutation[]>([]);
   const [busy, setBusy] = useState(false);
+  const [historyBusy, setHistoryBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const snapshotId = snapshot?.id;
 
@@ -56,6 +62,13 @@ export function ForgePullRequest({ onSendFollowup, task }: ForgePullRequestProps
     void invoke<PullRequestSnapshot | null>("get_task_pull_request", { taskId: task.taskId })
       .then((stored) => {
         if (active) setSnapshot(stored);
+      })
+      .catch((caught) => {
+        if (active) setError(messageFor(caught));
+      });
+    void invoke<ForgeMutation[]>("list_task_forge_mutations", { taskId: task.taskId })
+      .then((stored) => {
+        if (active) setMutations(stored);
       })
       .catch((caught) => {
         if (active) setError(messageFor(caught));
@@ -77,6 +90,19 @@ export function ForgePullRequest({ onSendFollowup, task }: ForgePullRequestProps
     setPlan(null);
     setPushApproved(false);
     setForgeApproved(false);
+  }
+
+  async function loadMutations() {
+    setHistoryBusy(true);
+    try {
+      setMutations(await invoke<ForgeMutation[]>("list_task_forge_mutations", {
+        taskId: task.taskId,
+      }));
+    } catch (caught) {
+      setError(messageFor(caught));
+    } finally {
+      setHistoryBusy(false);
+    }
   }
 
   async function preview() {
@@ -116,6 +142,7 @@ export function ForgePullRequest({ onSendFollowup, task }: ForgePullRequestProps
       setError(messageFor(caught));
     } finally {
       setBusy(false);
+      void loadMutations();
     }
   }
 
@@ -253,9 +280,102 @@ export function ForgePullRequest({ onSendFollowup, task }: ForgePullRequestProps
           </Button>
         </>
       ) : null}
+      <PublishHistory
+        busy={historyBusy}
+        mutations={mutations}
+        onRefresh={() => void loadMutations()}
+      />
       {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
     </section>
   );
+}
+
+function PublishHistory({
+  busy,
+  mutations,
+  onRefresh,
+}: {
+  busy: boolean;
+  mutations: ForgeMutation[];
+  onRefresh: () => void;
+}) {
+  return (
+    <section aria-label="Publish history" className="flex flex-col gap-2">
+      <div className="flex items-center gap-2">
+        <HistoryIcon />
+        <h4 className="text-xs font-medium">Publish history</h4>
+        <Badge className="ml-auto" variant="outline">{mutations.length}</Badge>
+        <Button
+          aria-label="Refresh publish history"
+          disabled={busy}
+          onClick={onRefresh}
+          size="icon-sm"
+          type="button"
+          variant="ghost"
+        >
+          <RefreshCwIcon className={busy ? "animate-spin" : undefined} />
+        </Button>
+      </div>
+      {mutations.length ? (
+        <div className="flex flex-col gap-2">
+          {mutations.map((mutation) => (
+            <MutationEntry key={mutation.id} mutation={mutation} />
+          ))}
+        </div>
+      ) : (
+        <Empty className="min-h-24 p-3">
+          <EmptyHeader>
+            <EmptyMedia variant="icon"><HistoryIcon /></EmptyMedia>
+            <EmptyTitle>No publish attempts</EmptyTitle>
+            <EmptyDescription>Reviewed GitHub publish attempts will appear here.</EmptyDescription>
+          </EmptyHeader>
+        </Empty>
+      )}
+    </section>
+  );
+}
+
+function MutationEntry({ mutation }: { mutation: ForgeMutation }) {
+  const destructive = mutation.status === "failed";
+  const stage = mutationStage(mutation.detailsJson);
+  return (
+    <Alert variant={destructive ? "destructive" : "default"}>
+      {mutation.status === "completed" ? <CheckCircle2Icon /> : mutation.status === "started" ? <LoaderCircleIcon className="animate-spin" /> : <ShieldAlertIcon />}
+      <AlertTitle className="flex items-center gap-2">
+        Pull request publish
+        <Badge variant={mutationBadge(mutation.status)}>{mutation.status}</Badge>
+      </AlertTitle>
+      <AlertDescription>
+        <div className="flex flex-col gap-1">
+          <span>{stage} · <time dateTime={mutation.startedAt}>{formatTimestamp(mutation.startedAt)}</time></span>
+          <code className="text-[10px]">Plan {mutation.planFingerprint.slice(0, 12)}</code>
+          <span className="text-[10px]">Push approved · forge approved</span>
+          {mutation.error ? <span>{mutation.error}</span> : null}
+        </div>
+      </AlertDescription>
+    </Alert>
+  );
+}
+
+function mutationBadge(status: ForgeMutation["status"]): "default" | "secondary" | "destructive" | "outline" {
+  if (status === "completed") return "secondary";
+  if (status === "failed") return "destructive";
+  if (status === "interrupted") return "outline";
+  return "default";
+}
+
+function mutationStage(detailsJson: string) {
+  try {
+    const details = JSON.parse(detailsJson) as { stage?: unknown };
+    return typeof details.stage === "string" ? details.stage : "recorded";
+  } catch {
+    return "recorded";
+  }
+}
+
+function formatTimestamp(timestamp: string) {
+  const parsed = new Date(timestamp);
+  return Number.isNaN(parsed.valueOf()) ? timestamp : parsed.toLocaleString();
 }
 
 function PullRequestResult({

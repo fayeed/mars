@@ -27,8 +27,8 @@ use mars_core::projects::{OpenRepositoryOutcome, ProjectError, ProjectService};
 use mars_core::protocol::{CommandRequest, CommandResponse};
 use mars_core::terminal::{TerminalError, TerminalService, TerminalSessionInfo};
 use mars_forge::{
-    CredentialVault, ForgeConnection, ForgeError, ForgeProvider, ForgeWorkflow, OsCredentialVault,
-    PullRequestPlan, PullRequestSnapshot, StoredIssue,
+    CredentialVault, ForgeConnection, ForgeError, ForgeMutation, ForgeProvider, ForgeWorkflow,
+    OsCredentialVault, PullRequestPlan, PullRequestSnapshot, StoredIssue,
 };
 use mars_forge_github::GitHubProvider;
 use mars_git::{
@@ -1239,6 +1239,17 @@ fn get_task_pull_request(
 }
 
 #[tauri::command]
+fn list_task_forge_mutations(
+    task_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<ForgeMutation>, CommandFailure> {
+    state
+        .forge
+        .list_task_mutations(&task_id, 20)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
 fn create_github_pull_request(
     plan: PullRequestPlan,
     push_approved: bool,
@@ -1711,6 +1722,7 @@ fn main() {
             create_task_from_issue,
             preview_pull_request,
             get_task_pull_request,
+            list_task_forge_mutations,
             create_github_pull_request,
             refresh_github_pull_request,
             provision_task,

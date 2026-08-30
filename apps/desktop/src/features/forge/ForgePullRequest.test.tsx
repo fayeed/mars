@@ -1,4 +1,4 @@
-import type { PullRequestPlan, PullRequestSnapshot, WorktreePlan } from "@mars/shared-types";
+import type { ForgeMutation, PullRequestPlan, PullRequestSnapshot, WorktreePlan } from "@mars/shared-types";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
@@ -76,12 +76,28 @@ const snapshot: PullRequestSnapshot = {
   }],
 };
 
+const interruptedMutation: ForgeMutation = {
+  id: "mutation-1",
+  taskId: task.taskId,
+  remoteId: plan.remoteId,
+  operation: "create_pull_request",
+  status: "interrupted",
+  planFingerprint: plan.fingerprint,
+  pushApproved: true,
+  forgeApproved: true,
+  detailsJson: JSON.stringify({ stage: "approved" }),
+  error: "application stopped before confirmation",
+  startedAt: "2026-08-30T00:00:00Z",
+  finishedAt: "2026-08-30T00:01:00Z",
+};
+
 afterEach(() => vi.clearAllMocks());
 
 it("requires review and explicit approval before publishing the PR", async () => {
   const user = userEvent.setup();
   mocks.invoke.mockImplementation((command: string) => {
     if (command === "get_task_pull_request") return Promise.resolve(null);
+    if (command === "list_task_forge_mutations") return Promise.resolve([]);
     if (command === "preview_pull_request") return Promise.resolve(plan);
     if (command === "connect_github") return Promise.resolve({
       id: "connection-1",
@@ -109,11 +125,28 @@ it("requires review and explicit approval before publishing the PR", async () =>
   expect(publish).toBeEnabled();
   await user.click(publish);
 
-  expect(mocks.invoke).toHaveBeenLastCalledWith("create_github_pull_request", {
+  expect(mocks.invoke).toHaveBeenCalledWith("create_github_pull_request", {
     plan,
     pushApproved: true,
     forgeApproved: true,
   });
   expect(await screen.findByText("test · success")).toBeVisible();
   expect(screen.getByText("Looks good")).toBeVisible();
+});
+
+it("surfaces interrupted publish attempts with recovery evidence", async () => {
+  const user = userEvent.setup();
+  mocks.invoke.mockImplementation((command: string) => {
+    if (command === "get_task_pull_request") return Promise.resolve(null);
+    if (command === "list_task_forge_mutations") return Promise.resolve([interruptedMutation]);
+    return Promise.reject(new Error(`Unexpected command: ${command}`));
+  });
+
+  render(<ForgePullRequest task={task} />);
+
+  expect(await screen.findByText("interrupted")).toBeVisible();
+  expect(screen.getByText("application stopped before confirmation")).toBeVisible();
+  expect(screen.getByText(`Plan ${plan.fingerprint.slice(0, 12)}`)).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "Refresh publish history" }));
+  expect(mocks.invoke).toHaveBeenCalledWith("list_task_forge_mutations", { taskId: task.taskId });
 });

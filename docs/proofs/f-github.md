@@ -16,6 +16,7 @@ Status: deterministic production path passes; live external-write gate pending
 - server-side plan reconstruction plus separate push and forge approvals before any external write;
 - system-Git push to the exact reviewed URL, GitHub PR creation/recovery, durable restart-safe snapshots, foreground 30-second refresh, deep links, and review-comment → agent follow-up routing;
 - durable pre-effect permission decisions and forge mutation journaling with failed/interrupted recovery, redacted diagnostics, and immediate persistence of confirmed PR identity;
+- a bounded shadcn publish-history surface showing task attempts, reviewed-plan identity, approval state, redacted failure, and manual refresh;
 - shadcn/ui issue-import, PR-preview, approvals, checks/comments, refresh, and overlap-warning surfaces.
 
 ## Deterministic evidence
@@ -45,7 +46,7 @@ pnpm check:protocol
 git diff --check
 ```
 
-Result: 90 non-ignored Rust tests, 20 desktop interaction tests, and all builds/protocol checks pass. Eight authenticated/network tests remain ignored by default.
+Result: 90 non-ignored Rust tests, 21 desktop interaction tests, and all builds/protocol checks pass. Eight authenticated/network tests remain ignored by default.
 
 ## Live gate not claimed
 
@@ -56,7 +57,7 @@ This checkout has no Git remote, no `gh` executable, and no user-authorized disp
 - GitHub requests paginate but do not yet persist ETags, conditional-request cache state, rate-limit headers, or opaque raw payloads.
 - The UI imports a known issue number; repository-wide issue browsing/filtering is not implemented.
 - Polling is foreground-only at 30 seconds and stops with the component; no durable background forge job exists.
-- Push and PR approvals are separately explicit and execute sequentially inside one native command; their decisions and mutation outcome are now durable, while a richer user-facing audit browser remains future work.
+- Push and PR approvals are separately explicit and execute sequentially inside one native command; their decisions and mutation outcome are durable and visible per task. Cross-project filtering/export remains future work.
 - If push succeeds and PR creation fails, the failed attempt remains visible in the durable journal; retrying a fresh plan safely re-pushes the same SHA and recovers a matching existing PR on GitHub 422. Other ambiguous network failures remain visible and require provider inspection or retry.
 - GitHub Enterprise uses explicit GitHub connection onboarding for an arbitrary host; automatic enterprise-product discovery is not implemented.
 - OS-keychain behavior is compiled through the platform-native backend but needs runtime proof in the final desktop/live GitHub gate.
