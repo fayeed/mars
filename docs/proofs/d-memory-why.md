@@ -13,6 +13,7 @@ Milestone D establishes one production path that:
 - stores extracted summaries, decisions, constraints, attempts, risks, questions, tests, and commits as candidates rather than trusted facts;
 - requires human provenance for approve, correct/supersede, reject, stale, pin, and unpin actions, preserving history and code relationships across correction;
 - answers “Why?” from approved evidence with separate facts/inferences, conflict and staleness warnings, hard depth/path limits, and source locations that can reopen diff code;
+- appends a separate task → exact head commit → hosted PR path when the task has been published, without promoting hosted metadata into a knowledge fact;
 - exposes extraction and review in a shadcn/ui dialog and “Ask why this exists” in the symbol inspector.
 
 No hidden chain-of-thought is requested or stored. The durable body is concise rationale/outcome text with evidence references.
@@ -79,7 +80,7 @@ This comprises 69 passing non-ignored Rust tests, 16 passing desktop interaction
 
 - The desktop extraction command currently waits synchronously for the provider CLI. It must move to the persisted background-job/event model so closing a dialog or webview cannot strand UX state.
 - The command persists each extracted claim and link through individually safe service operations, but the whole multi-claim batch is not yet one transaction; a mid-batch failure can leave a reviewable partial set.
-- “Why?” follows direct subject ↔ knowledge links and each fact’s provenance/task/evidence chain. It does not yet perform a ranked general graph explanation across commits, PRs, or transitive decisions.
+- “Why?” follows direct subject ↔ knowledge links, each fact’s provenance/task/evidence chain, and exact task publication metadata. It does not yet perform a ranked general graph explanation across transitive decisions or unrelated commits/PRs.
 - The response contract separates facts from inferences, but the current deterministic service emits no synthesized inference text. It favors honest source-backed facts over generating prose.
 - Diff sources navigate directly to code. Session/task/knowledge source buttons currently show the exact logical source inline; dedicated timeline/task/memory deep links remain UI work.
 - The real proof uses Codex for implementation and extraction. Claude shares the same normalized service boundary and fixture coverage, while the cross-provider live path is Milestone E.

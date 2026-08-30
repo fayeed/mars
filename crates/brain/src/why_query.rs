@@ -201,10 +201,10 @@ impl WhyService {
                     location: source_location,
                 },
             ];
-            if let Some((task_id, title)) = task {
+            if let Some((task_id, title)) = &task {
                 base.push(WhyPathStep {
                     kind: "task".into(),
-                    label: title,
+                    label: title.clone(),
                     location: format!("task:{task_id}"),
                 });
             }
@@ -231,6 +231,57 @@ impl WhyService {
                         break;
                     }
                 }
+            }
+            if paths.len() >= request.max_paths {
+                break;
+            }
+            if let Some((task_id, title)) = task
+                && let Some(hosted) = self.hosted_context(&task_id)?
+            {
+                let mut steps = vec![
+                    WhyPathStep {
+                        kind: entity_kind_name(request.subject.kind).into(),
+                        label: request.subject.id.clone(),
+                        location: format!(
+                            "{}:{}",
+                            entity_kind_name(request.subject.kind),
+                            request.subject.id
+                        ),
+                    },
+                    WhyPathStep {
+                        kind: "knowledge".into(),
+                        label: record.title.clone(),
+                        location: format!("knowledge:{}", record.id),
+                    },
+                    WhyPathStep {
+                        kind: "task".into(),
+                        label: title,
+                        location: format!("task:{task_id}"),
+                    },
+                    WhyPathStep {
+                        kind: "commit".into(),
+                        label: short_revision(&hosted.head_sha),
+                        location: format!("commit:{}", hosted.head_sha),
+                    },
+                    WhyPathStep {
+                        kind: "pull_request".into(),
+                        label: format!("PR #{} ({})", hosted.number, hosted.state),
+                        location: hosted.url.clone(),
+                    },
+                ];
+                steps.truncate(request.max_depth);
+                paths.push(WhyPath {
+                    relation: "PUBLISHED_AS".into(),
+                    steps,
+                });
+                sources.push(WhySource {
+                    label: "Published commit".into(),
+                    location: format!("commit:{}", hosted.head_sha),
+                });
+                sources.push(WhySource {
+                    label: "Hosted pull request".into(),
+                    location: hosted.url,
+                });
             }
             if paths.len() >= request.max_paths {
                 break;
@@ -290,6 +341,34 @@ impl WhyService {
         };
         Ok(task)
     }
+
+    fn hosted_context(&self, task_id: &str) -> Result<Option<HostedContext>, WhyError> {
+        Ok(self.storage.with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT number, state, url, head_sha
+                     FROM pull_requests WHERE task_id = ?1
+                     ORDER BY updated_at DESC, id DESC LIMIT 1",
+                    [task_id],
+                    |row| {
+                        Ok(HostedContext {
+                            number: row.get(0)?,
+                            state: row.get(1)?,
+                            url: row.get(2)?,
+                            head_sha: row.get(3)?,
+                        })
+                    },
+                )
+                .optional()
+        })?)
+    }
+}
+
+struct HostedContext {
+    number: i64,
+    state: String,
+    url: String,
+    head_sha: String,
 }
 
 use rusqlite::OptionalExtension;
@@ -335,6 +414,10 @@ fn normalize(value: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
         .to_lowercase()
+}
+
+fn short_revision(revision: &str) -> String {
+    revision.chars().take(12).collect()
 }
 
 fn entity_kind_name(kind: EntityKind) -> &'static str {

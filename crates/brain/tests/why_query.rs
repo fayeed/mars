@@ -44,6 +44,30 @@ fn why_traces_code_to_decision_task_session_and_diff_evidence() {
             1.0,
         )
         .expect("decision should link to code");
+    fixture
+        .storage
+        .with_connection(|connection| {
+            connection.execute(
+                "INSERT INTO remotes
+                 (id, repository_id, name, fetch_url, provider, host, owner, repository_name, created_at, updated_at)
+                 VALUES ('why-remote', ?1, 'origin', 'git@github.com:acme/mars.git', 'github',
+                         'github.com', 'acme', 'mars', '2026-08-29T00:12:00Z', '2026-08-29T00:12:00Z')",
+                [&fixture.repository_id],
+            )?;
+            connection.execute(
+                "INSERT INTO pull_requests
+                 (id, remote_id, task_id, issue_id, provider_id, number, title, body, state, url,
+                  head, base, draft, mergeable, head_sha, provider_updated_at, created_at, updated_at)
+                 VALUES ('why-pr', 'why-remote', 'why-task', NULL, 'provider-pr-9', 9,
+                         'Guard add', 'Preserve local validation', 'open',
+                         'https://github.com/acme/mars/pull/9', 'mars/guard-add', 'main', 0, 1,
+                         'abcdef1234567890abcdef1234567890abcdef12', '2026-08-29T00:13:00Z',
+                         '2026-08-29T00:13:00Z', '2026-08-29T00:13:00Z')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("hosted provenance should seed");
 
     let answer = WhyService::new(fixture.storage.clone())
         .ask(WhyRequest {
@@ -77,6 +101,31 @@ fn why_traces_code_to_decision_task_session_and_diff_evidence() {
             .iter()
             .all(|source| !source.location.is_empty())
     );
+    let published = answer
+        .paths
+        .iter()
+        .find(|path| path.relation == "PUBLISHED_AS")
+        .expect("hosted publication path should exist");
+    assert_eq!(
+        published
+            .steps
+            .iter()
+            .map(|step| step.kind.as_str())
+            .collect::<Vec<_>>(),
+        vec!["symbol", "knowledge", "task", "commit", "pull_request"]
+    );
+    assert_eq!(
+        published.steps[3].location,
+        "commit:abcdef1234567890abcdef1234567890abcdef12"
+    );
+    assert_eq!(
+        published.steps[4].location,
+        "https://github.com/acme/mars/pull/9"
+    );
+    assert!(answer.sources.iter().any(|source| {
+        source.label == "Hosted pull request"
+            && source.location == "https://github.com/acme/mars/pull/9"
+    }));
 }
 
 #[test]
