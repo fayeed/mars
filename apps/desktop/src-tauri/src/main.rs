@@ -15,9 +15,10 @@ use mars_brain::tools::{BrainEdge, BrainNeighborhood, BrainSymbol, Dependency};
 use mars_brain::{
     BrainError, BrainService, ContextPack, ContextPackError, ContextPackRequest,
     ContextPackService, EntityKind, EntityRef, ExtractionError, ExtractionProvider,
-    ExtractionRequest, ExtractionService, KnowledgeError, KnowledgeKind, KnowledgeRecord,
-    KnowledgeService, MemoryCategory, NewKnowledge, NewProvenance, ProvenanceKind, WhyAnswer,
-    WhyError, WhyRequest, WhyService, render_context_pack, render_extraction_prompt,
+    ExtractionRequest, ExtractionService, FindingStatus, KnowledgeError, KnowledgeKind,
+    KnowledgeRecord, KnowledgeService, MemoryCategory, NewKnowledge, NewProvenance, ProvenanceKind,
+    ReviewError, ReviewHandoff, ReviewHandoffRequest, ReviewProvider, ReviewRecord, ReviewService,
+    WhyAnswer, WhyError, WhyRequest, WhyService, render_context_pack, render_extraction_prompt,
 };
 use mars_context::{CaptureError, ContextItem, ContextService};
 use mars_core::Core;
@@ -50,6 +51,7 @@ struct AppState {
     indexer: Indexer,
     knowledge: KnowledgeService,
     projects: ProjectService,
+    reviews: ReviewService,
     permissions: PermissionEngine,
     skills: SkillService,
     tasks: TaskWorktreeService,
@@ -192,6 +194,12 @@ impl From<WhyError> for CommandFailure {
     }
 }
 
+impl From<ReviewError> for CommandFailure {
+    fn from(error: ReviewError) -> Self {
+        Self::new("review.invalid", error.to_string())
+    }
+}
+
 impl From<TaskWorktreeError> for CommandFailure {
     fn from(error: TaskWorktreeError) -> Self {
         let code = match error {
@@ -330,6 +338,46 @@ struct MemoryResolutionInput {
 struct CliExtractionProvider {
     adapter: AdapterKind,
     cwd: std::path::PathBuf,
+}
+
+struct CliReviewProvider {
+    adapter: AdapterKind,
+    cwd: std::path::PathBuf,
+}
+
+impl ReviewProvider for CliReviewProvider {
+    fn review(&self, prompt: &str) -> Result<String, String> {
+        let adapter = adapter_for(self.adapter);
+        let command = adapter
+            .command(&AgentLaunchRequest {
+                executable: executable_name(self.adapter).into(),
+                cwd: self.cwd.clone(),
+                prompt: prompt.into(),
+                resume_session_id: None,
+                allowed_tools: Vec::new(),
+                allow_write: false,
+            })
+            .map_err(|error| error.to_string())?;
+        let output = std::process::Command::new(command.program)
+            .args(command.arguments)
+            .current_dir(command.cwd)
+            .output()
+            .map_err(|error| error.to_string())?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
+        }
+        let mut decoder = JsonLineDecoder::new();
+        let mut events = decoder.push(&output.stdout, adapter.as_ref());
+        events.extend(decoder.finish(adapter.as_ref()));
+        events
+            .into_iter()
+            .filter_map(|event| match event {
+                NormalizedAgentEvent::Text { text } => Some(strip_json_fence(&text)),
+                _ => None,
+            })
+            .next_back()
+            .ok_or_else(|| "reviewer returned no review JSON".into())
+    }
 }
 
 impl ExtractionProvider for CliExtractionProvider {
@@ -920,6 +968,116 @@ fn why_query(
 }
 
 #[tauri::command]
+fn build_review_handoff(
+    task_id: String,
+    reviewer_adapter: AdapterKind,
+    max_bytes: usize,
+    state: State<'_, AppState>,
+) -> Result<ReviewHandoff, CommandFailure> {
+    let task = state.tasks.get(&task_id)?;
+    let reviewer_name = adapter_name(reviewer_adapter);
+    let implementation_session_id: String = state
+        .storage
+        .with_connection(|connection| {
+            connection.query_row(
+                "SELECT id FROM agent_sessions
+                 WHERE task_id = ?1 AND status = 'completed' AND adapter_kind != ?2
+                 ORDER BY COALESCE(ended_at, started_at) DESC, id DESC LIMIT 1",
+                [task_id.as_str(), reviewer_name],
+                |row| row.get(0),
+            )
+        })
+        .map_err(|error| CommandFailure::new("review.session", error.to_string()))?;
+    let diff = mars_git::command::run(
+        &task.worktree_path,
+        ["diff", "--no-ext-diff", "--unified=3", "HEAD"],
+    )
+    .map_err(|error| CommandFailure::new("review.diff", error.to_string()))?
+    .stdout_text();
+    state
+        .reviews
+        .build_handoff(ReviewHandoffRequest {
+            task_id,
+            implementation_session_id,
+            reviewer_adapter: reviewer_name.into(),
+            diff,
+            max_bytes,
+        })
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+fn run_cross_agent_review(
+    handoff: ReviewHandoff,
+    model_permission: bool,
+    state: State<'_, AppState>,
+) -> Result<ReviewRecord, CommandFailure> {
+    let task = state.tasks.get(&handoff.task_id)?;
+    let reviewer_adapter = parse_adapter(&handoff.reviewer_adapter)?;
+    let diff = mars_git::command::run(
+        &task.worktree_path,
+        ["diff", "--no-ext-diff", "--unified=3", "HEAD"],
+    )
+    .map_err(|error| CommandFailure::new("review.diff", error.to_string()))?
+    .stdout_text();
+    let verified = state.reviews.build_handoff(ReviewHandoffRequest {
+        task_id: handoff.task_id.clone(),
+        implementation_session_id: handoff.implementation_session_id.clone(),
+        reviewer_adapter: handoff.reviewer_adapter.clone(),
+        diff,
+        max_bytes: handoff.max_bytes,
+    })?;
+    if verified != handoff {
+        return Err(CommandFailure::new(
+            "review.handoff_stale",
+            "implementation evidence changed after preview; review the refreshed handoff",
+        ));
+    }
+    state
+        .reviews
+        .run_review(
+            &verified,
+            model_permission,
+            &CliReviewProvider {
+                adapter: reviewer_adapter,
+                cwd: task.worktree_path,
+            },
+        )
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+fn list_task_reviews(
+    task_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<ReviewRecord>, CommandFailure> {
+    state.reviews.list_for_task(&task_id).map_err(Into::into)
+}
+
+#[tauri::command]
+fn set_review_finding_status(
+    finding_id: String,
+    status: FindingStatus,
+    state: State<'_, AppState>,
+) -> Result<mars_brain::ReviewFinding, CommandFailure> {
+    state
+        .reviews
+        .set_finding_status(&finding_id, status)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+fn review_followup(
+    review_id: String,
+    state: State<'_, AppState>,
+) -> Result<String, CommandFailure> {
+    state
+        .reviews
+        .render_followup(&review_id)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
 fn build_context_pack(
     request: ContextPackRequest,
     state: State<'_, AppState>,
@@ -1102,6 +1260,24 @@ fn executable_name(kind: AdapterKind) -> &'static str {
     }
 }
 
+fn adapter_name(kind: AdapterKind) -> &'static str {
+    match kind {
+        AdapterKind::Claude => "claude",
+        AdapterKind::Codex => "codex",
+    }
+}
+
+fn parse_adapter(value: &str) -> Result<AdapterKind, CommandFailure> {
+    match value {
+        "claude" => Ok(AdapterKind::Claude),
+        "codex" => Ok(AdapterKind::Codex),
+        _ => Err(CommandFailure::new(
+            "review.adapter",
+            "review adapter must be claude or codex",
+        )),
+    }
+}
+
 fn strip_json_fence(value: &str) -> String {
     let trimmed = value.trim();
     trimmed
@@ -1281,6 +1457,7 @@ fn main() {
                 indexer: Indexer::new(storage.clone()),
                 knowledge: KnowledgeService::new(storage.clone()),
                 projects: ProjectService::new(storage.clone()),
+                reviews: ReviewService::new(storage.clone()),
                 permissions: PermissionEngine::new(),
                 skills: SkillService::new(storage.clone(), skill_registry, data_dir.join("skills")),
                 tasks: TaskWorktreeService::new(storage.clone(), data_dir.join("worktrees")),
@@ -1322,6 +1499,11 @@ fn main() {
             extract_task_memory,
             resolve_memory,
             why_query,
+            build_review_handoff,
+            run_cross_agent_review,
+            list_task_reviews,
+            set_review_finding_status,
+            review_followup,
             build_context_pack,
             list_tasks,
             create_task,

@@ -24,6 +24,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { AgentTimeline } from "@/features/agents/AgentTimeline";
 import { ContextPackPreview } from "@/features/agents/ContextPackPreview";
+import { CrossAgentReview } from "@/features/agents/CrossAgentReview";
 import { PermissionPrompt } from "@/features/agents/PermissionPrompt";
 import { ContextTray } from "@/features/context/ContextTray";
 import { MemoryReview } from "@/features/brain/MemoryReview";
@@ -230,6 +231,13 @@ export function TaskDetail({ onOpenWorktree, onTaskChanged, task }: TaskDetailPr
     }
   }
 
+  function useReviewFollowup(nextPrompt: string, implementationAdapter: AdapterKind) {
+    setAdapter(implementationAdapter);
+    setPrompt(nextPrompt);
+    setContextPack(null);
+    setPackExclusions([]);
+  }
+
   if (task.state === "planned") {
     return (
       <section className="grid gap-4 p-4" aria-label="Task plan">
@@ -258,6 +266,12 @@ export function TaskDetail({ onOpenWorktree, onTaskChanged, task }: TaskDetailPr
         <ContextTray repositoryId={task.repositoryId} taskId={task.taskId} />
         <SkillBrowser repositoryId={task.repositoryId} taskId={task.taskId} />
         <MemoryReview adapter={adapter} taskId={task.taskId} />
+        <CrossAgentReview
+          disabled={busy || running}
+          implementationAdapter={adapter}
+          onSendFollowup={useReviewFollowup}
+          taskId={task.taskId}
+        />
         <Button className="justify-start" disabled={busy} onClick={() => void openWorktree()} type="button" variant="outline">
           <ExternalLinkIcon /> Open worktree in editor and terminal
         </Button>

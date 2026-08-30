@@ -28,7 +28,7 @@ pub struct ReviewHandoffRequest {
     pub max_bytes: usize,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HandoffEvent {
     pub sequence: i64,
@@ -37,7 +37,7 @@ pub struct HandoffEvent {
     pub source_location: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewHandoff {
     pub task_id: String,
@@ -125,7 +125,7 @@ pub struct ReviewDraft {
     pub findings: Vec<ReviewFindingDraft>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReviewStatus {
     Candidate,
@@ -160,7 +160,7 @@ pub struct ReviewRecord {
     pub updated_at: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FindingStatus {
     Open,
