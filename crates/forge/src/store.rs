@@ -54,6 +54,23 @@ pub struct PullRequestSnapshot {
     pub checks: Vec<CheckRun>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForgeMutation {
+    pub id: String,
+    pub task_id: String,
+    pub remote_id: String,
+    pub operation: String,
+    pub status: String,
+    pub plan_fingerprint: String,
+    pub push_approved: bool,
+    pub forge_approved: bool,
+    pub details_json: String,
+    pub error: Option<String>,
+    pub started_at: String,
+    pub finished_at: Option<String>,
+}
+
 pub struct ForgeStore {
     storage: Arc<Storage>,
 }
@@ -173,6 +190,112 @@ impl ForgeStore {
                             api_base: row.get(3)?,
                             account_login: row.get(4)?,
                             credential_ref: row.get(5)?,
+                        })
+                    },
+                )
+                .optional()
+        })?)
+    }
+
+    pub fn start_mutation(
+        &self,
+        task_id: &str,
+        remote_id: &str,
+        plan_fingerprint: &str,
+        push_approved: bool,
+        forge_approved: bool,
+        details_json: &str,
+    ) -> Result<String, ForgeError> {
+        let id = Uuid::now_v7().to_string();
+        let started_at = now()?;
+        self.storage.with_connection(|connection| {
+            connection.execute(
+                "INSERT INTO forge_mutations
+                 (id, task_id, remote_id, operation, status, plan_fingerprint, push_approved,
+                  forge_approved, details_json, error, started_at, finished_at)
+                 VALUES (?1, ?2, ?3, 'create_pull_request', 'started', ?4, ?5, ?6, ?7, NULL, ?8, NULL)",
+                params![
+                    id,
+                    task_id,
+                    remote_id,
+                    plan_fingerprint,
+                    push_approved,
+                    forge_approved,
+                    details_json,
+                    started_at
+                ],
+            )?;
+            Ok(())
+        })?;
+        Ok(id)
+    }
+
+    pub fn finish_mutation(
+        &self,
+        id: &str,
+        status: &str,
+        details_json: &str,
+        error: Option<&str>,
+    ) -> Result<(), ForgeError> {
+        if !matches!(status, "completed" | "failed") {
+            return Err(ForgeError::InvalidResponse(format!(
+                "invalid terminal forge mutation status `{status}`"
+            )));
+        }
+        let finished_at = now()?;
+        let changed = self.storage.with_connection(|connection| {
+            connection.execute(
+                "UPDATE forge_mutations
+                 SET status = ?2, details_json = ?3, error = ?4, finished_at = ?5
+                 WHERE id = ?1 AND status = 'started'",
+                params![id, status, details_json, error, finished_at],
+            )
+        })?;
+        if changed != 1 {
+            return Err(ForgeError::InvalidResponse(format!(
+                "active forge mutation `{id}` was not found"
+            )));
+        }
+        Ok(())
+    }
+
+    pub fn recover_interrupted_mutations(&self) -> Result<usize, ForgeError> {
+        let finished_at = now()?;
+        let changed = self.storage.with_connection(|connection| {
+            connection.execute(
+                "UPDATE forge_mutations
+                 SET status = 'interrupted', error = 'application stopped before confirmation',
+                     finished_at = ?1
+                 WHERE status = 'started'",
+                [finished_at],
+            )
+        })?;
+        Ok(changed)
+    }
+
+    pub fn latest_mutation(&self, task_id: &str) -> Result<Option<ForgeMutation>, ForgeError> {
+        Ok(self.storage.with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT id, task_id, remote_id, operation, status, plan_fingerprint,
+                            push_approved, forge_approved, details_json, error, started_at, finished_at
+                     FROM forge_mutations WHERE task_id = ?1
+                     ORDER BY started_at DESC, id DESC LIMIT 1",
+                    [task_id],
+                    |row| {
+                        Ok(ForgeMutation {
+                            id: row.get(0)?,
+                            task_id: row.get(1)?,
+                            remote_id: row.get(2)?,
+                            operation: row.get(3)?,
+                            status: row.get(4)?,
+                            plan_fingerprint: row.get(5)?,
+                            push_approved: row.get(6)?,
+                            forge_approved: row.get(7)?,
+                            details_json: row.get(8)?,
+                            error: row.get(9)?,
+                            started_at: row.get(10)?,
+                            finished_at: row.get(11)?,
                         })
                     },
                 )

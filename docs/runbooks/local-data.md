@@ -34,7 +34,7 @@ Source repositories and Git worktrees are not stored in this database and requir
 
 ## Recovery behavior
 
-On startup, any job left in `running` or `cancel_requested` state is marked `interrupted`; its ordered events remain available for diagnosis. Queued and terminal jobs are unchanged. Recovery never deletes a worktree or source file.
+On startup, any job left in `running` or `cancel_requested` state is marked `interrupted`; its ordered events remain available for diagnosis. A forge mutation left in `started` is likewise marked `interrupted` without claiming the remote operation succeeded. Queued and terminal jobs are unchanged. Recovery never deletes a worktree, source file, branch, or hosted object.
 
 Current limitations:
 

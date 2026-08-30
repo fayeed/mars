@@ -4,6 +4,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use ignore::WalkBuilder;
+use mars_security::{is_default_ignored_directory, is_sensitive_filename};
 use mars_storage::Storage;
 use mars_storage::projects::ProjectRepository;
 use serde::Serialize;
@@ -13,7 +14,6 @@ use uuid::Uuid;
 
 pub const MAX_EDITABLE_FILE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_PAGE_SIZE: usize = 1_000;
-const DEFAULT_IGNORED_DIRECTORIES: [&str; 5] = [".git", "node_modules", "target", "dist", "build"];
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -167,9 +167,7 @@ fn walk_files(root: &Path) -> Result<Vec<FileEntry>, FileError> {
             .path()
             .file_name()
             .and_then(|name| name.to_str())
-            .is_none_or(|name| {
-                !DEFAULT_IGNORED_DIRECTORIES.contains(&name) && !is_sensitive_name(name)
-            })
+            .is_none_or(|name| !is_default_ignored_directory(name) && !is_sensitive_filename(name))
     });
 
     let mut files = Vec::new();
@@ -193,13 +191,6 @@ fn walk_files(root: &Path) -> Result<Vec<FileEntry>, FileError> {
         });
     }
     Ok(files)
-}
-
-fn is_sensitive_name(name: &str) -> bool {
-    (name == ".env" || name.starts_with(".env.")) && name != ".env.example"
-        || matches!(name, "id_rsa" | "id_ed25519" | "credentials")
-        || name.ends_with(".pem")
-        || name.ends_with(".key")
 }
 
 fn resolve_file(root: &Path, relative_path: &str) -> Result<PathBuf, FileError> {

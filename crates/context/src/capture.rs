@@ -459,44 +459,11 @@ fn scan_file_for_secret(source: &Path, mime_type: &str) -> Result<Option<String>
 }
 
 fn detect_secret(text: &str) -> Option<String> {
-    let upper = text.to_ascii_uppercase();
-    if upper.contains("-----BEGIN") && upper.contains("PRIVATE KEY-----") {
-        return Some("private key material detected".into());
-    }
-    if text
-        .split(|character: char| !character.is_ascii_alphanumeric())
-        .any(|word| {
-            word.starts_with("AKIA")
-                && word.len() == 20
-                && word
-                    .chars()
-                    .all(|character| character.is_ascii_uppercase() || character.is_ascii_digit())
-        })
-    {
-        return Some("AWS access key pattern detected".into());
-    }
-    if text.split_whitespace().any(|word| {
-        (word.starts_with("sk-") && word.len() >= 20)
-            || (word.starts_with("ghp_") && word.len() >= 20)
-    }) {
-        return Some("API token pattern detected".into());
-    }
-    for line in upper.lines() {
-        if [
-            "API_KEY",
-            "ACCESS_TOKEN",
-            "AUTH_TOKEN",
-            "PASSWORD",
-            "SECRET_KEY",
-        ]
-        .iter()
-        .any(|name| line.contains(name))
-            && (line.contains('=') || line.contains(':'))
-        {
-            return Some("credential assignment pattern detected".into());
-        }
-    }
-    None
+    mars_security::detect_secret(text).map(|kind| match kind {
+        "credential assignment" => "credential assignment pattern detected".into(),
+        "API token" => "API token pattern detected".into(),
+        _ => format!("{kind} detected"),
+    })
 }
 
 fn now() -> Result<String, time::error::Format> {

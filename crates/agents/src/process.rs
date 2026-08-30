@@ -185,7 +185,7 @@ impl ProcessSupervisor {
             storage,
             256,
             Duration::from_secs(2),
-            Arc::new(str::to_owned),
+            Arc::new(mars_security::redact),
         )
     }
 

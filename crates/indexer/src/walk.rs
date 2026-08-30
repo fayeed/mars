@@ -3,11 +3,10 @@ use std::path::Path;
 use std::time::UNIX_EPOCH;
 
 use ignore::WalkBuilder;
+use mars_security::{is_default_ignored_directory, is_sensitive_filename};
 use sha2::{Digest, Sha256};
 
 use crate::IndexError;
-
-const IGNORED_DIRECTORIES: [&str; 5] = [".git", "node_modules", "target", "dist", "build"];
 
 #[derive(Clone, Debug)]
 pub struct SourceFile {
@@ -28,7 +27,7 @@ pub fn source_files(root: &Path) -> Result<Vec<SourceFile>, IndexError> {
             .path()
             .file_name()
             .and_then(|name| name.to_str())
-            .is_none_or(|name| !IGNORED_DIRECTORIES.contains(&name) && !is_sensitive(name))
+            .is_none_or(|name| !is_default_ignored_directory(name) && !is_sensitive_filename(name))
     });
 
     let mut sources = Vec::new();
@@ -82,11 +81,4 @@ fn language_for(path: &Path) -> Option<&'static str> {
         "jsx" => Some("jsx"),
         _ => None,
     }
-}
-
-fn is_sensitive(name: &str) -> bool {
-    ((name == ".env" || name.starts_with(".env.")) && name != ".env.example")
-        || matches!(name, "id_rsa" | "id_ed25519" | "credentials")
-        || name.ends_with(".pem")
-        || name.ends_with(".key")
 }

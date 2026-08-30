@@ -152,6 +152,23 @@ fn persists_issue_task_and_pr_snapshot_idempotently() {
         })
         .expect("counts should query");
     assert_eq!(counts, (1, 1, 1, 1));
+
+    let mutation_id = store
+        .start_mutation("task", &remote.id, "fingerprint", true, true, "{}")
+        .expect("mutation should start");
+    assert_eq!(
+        store
+            .recover_interrupted_mutations()
+            .expect("mutation should recover"),
+        1
+    );
+    let mutation = store
+        .latest_mutation("task")
+        .expect("mutation should load")
+        .expect("mutation should exist");
+    assert_eq!(mutation.id, mutation_id);
+    assert_eq!(mutation.status, "interrupted");
+    assert!(mutation.finished_at.is_some());
 }
 
 fn sample_issue() -> Issue {

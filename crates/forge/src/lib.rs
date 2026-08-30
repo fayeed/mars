@@ -6,7 +6,9 @@ mod store;
 mod workflow;
 
 pub use credentials::{CredentialVault, OsCredentialVault};
-pub use store::{ForgeConnection, ForgeStore, PullRequestSnapshot, RemoteRecord, StoredIssue};
+pub use store::{
+    ForgeConnection, ForgeMutation, ForgeStore, PullRequestSnapshot, RemoteRecord, StoredIssue,
+};
 pub use workflow::{ForgeWorkflow, PullRequestPlan};
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -102,7 +104,7 @@ pub enum ForgeError {
     Storage(#[from] mars_storage::StorageError),
     #[error("failed to encode forge data: {0}")]
     Json(#[from] serde_json::Error),
-    #[error("remote URL is not supported: {0}")]
+    #[error("remote URL is not supported")]
     UnsupportedRemote(String),
     #[error("forge request failed: {0}")]
     Request(String),

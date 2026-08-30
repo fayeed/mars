@@ -98,6 +98,10 @@ impl ForgeWorkflow {
         self.store.get_connection(remote_id)
     }
 
+    pub fn recover_interrupted(&self) -> Result<usize, ForgeError> {
+        self.store.recover_interrupted_mutations()
+    }
+
     pub fn refresh_pull_request(
         &self,
         task_id: &str,
@@ -141,6 +145,7 @@ impl ForgeWorkflow {
             &context.worktree_path,
             &["remote", "get-url", "--push", remote_name],
         )?;
+        reject_authenticated_http_url(&push_url)?;
         let head_sha = git(&context.worktree_path, &["rev-parse", "HEAD"])?;
         let commits_ahead = git(
             &context.worktree_path,
@@ -216,32 +221,76 @@ impl ForgeWorkflow {
         if provider.repository() != &current.repository {
             return Err(ForgeError::RepositoryMismatch);
         }
-        git(
-            &current.worktree_path,
-            &[
-                "push",
-                &current.push_url,
-                &format!("HEAD:refs/heads/{}", current.head),
-            ],
-        )?;
-        let pull_request = provider.create_pull_request(&CreatePullRequest {
-            title: current.title.clone(),
-            body: current.body.clone(),
-            head: current.head.clone(),
-            base: current.base.clone(),
-            draft: current.draft,
-        })?;
-        let comments = provider.list_review_comments(pull_request.number)?;
-        let checks = provider.list_checks(&pull_request.head_sha)?;
-        let issue_id = self.issue_for_task(&current.task_id)?;
-        self.store.record_pull_request(
+        let started_details = serde_json::json!({
+            "stage": "approved",
+            "head": current.head,
+            "base": current.base,
+            "headSha": current.head_sha,
+            "draft": current.draft,
+        });
+        let mutation_id = self.store.start_mutation(
+            &current.task_id,
             &current.remote_id,
-            Some(&current.task_id),
-            issue_id.as_deref(),
-            &pull_request,
-            &comments,
-            &checks,
-        )
+            &current.fingerprint,
+            push_approved,
+            forge_approved,
+            &serde_json::to_string(&started_details)?,
+        )?;
+        let result = (|| {
+            git(
+                &current.worktree_path,
+                &[
+                    "push",
+                    &current.push_url,
+                    &format!("HEAD:refs/heads/{}", current.head),
+                ],
+            )?;
+            let pull_request = provider.create_pull_request(&CreatePullRequest {
+                title: current.title.clone(),
+                body: current.body.clone(),
+                head: current.head.clone(),
+                base: current.base.clone(),
+                draft: current.draft,
+            })?;
+            let issue_id = self.issue_for_task(&current.task_id)?;
+            self.store.record_pull_request(
+                &current.remote_id,
+                Some(&current.task_id),
+                issue_id.as_deref(),
+                &pull_request,
+                &[],
+                &[],
+            )?;
+            let comments = provider.list_review_comments(pull_request.number)?;
+            let checks = provider.list_checks(&pull_request.head_sha)?;
+            self.store.record_pull_request(
+                &current.remote_id,
+                Some(&current.task_id),
+                issue_id.as_deref(),
+                &pull_request,
+                &comments,
+                &checks,
+            )
+        })();
+        match result {
+            Ok(snapshot) => {
+                let details = serde_json::to_string(&serde_json::json!({
+                    "stage": "confirmed",
+                    "pullRequestNumber": snapshot.pull_request.number,
+                    "pullRequestUrl": snapshot.pull_request.url,
+                }))?;
+                self.store
+                    .finish_mutation(&mutation_id, "completed", &details, None)?;
+                Ok(snapshot)
+            }
+            Err(error) => {
+                let safe_error = mars_security::redact(&error.to_string());
+                let details = serde_json::to_string(&serde_json::json!({ "stage": "failed" }))?;
+                self.store
+                    .finish_mutation(&mutation_id, "failed", &details, Some(&safe_error))?;
+                Err(redacted_error(error))
+            }
+        }
     }
 
     pub fn resolve_remote(
@@ -347,5 +396,35 @@ fn shell_word(value: &str) -> String {
         value.into()
     } else {
         format!("'{}'", value.replace('\'', "'\\''"))
+    }
+}
+
+fn reject_authenticated_http_url(value: &str) -> Result<(), ForgeError> {
+    let authority = value
+        .strip_prefix("https://")
+        .or_else(|| value.strip_prefix("http://"))
+        .and_then(|rest| rest.split('/').next());
+    if authority.is_some_and(|authority| authority.contains('@')) {
+        return Err(ForgeError::UnsupportedRemote(value.into()));
+    }
+    Ok(())
+}
+
+fn redacted_error(error: ForgeError) -> ForgeError {
+    match error {
+        ForgeError::UnsupportedRemote(value) => {
+            ForgeError::UnsupportedRemote(mars_security::redact(&value))
+        }
+        ForgeError::Request(message) => ForgeError::Request(mars_security::redact(&message)),
+        ForgeError::Http { status, message } => ForgeError::Http {
+            status,
+            message: mars_security::redact(&message),
+        },
+        ForgeError::InvalidResponse(message) => {
+            ForgeError::InvalidResponse(mars_security::redact(&message))
+        }
+        ForgeError::Git(message) => ForgeError::Git(mars_security::redact(&message)),
+        ForgeError::Credential(message) => ForgeError::Credential(mars_security::redact(&message)),
+        other => other,
     }
 }

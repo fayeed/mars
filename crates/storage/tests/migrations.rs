@@ -95,13 +95,23 @@ fn fresh_database_applies_each_migration_once() {
             )
         })
         .expect("pull requests table should exist");
+    let forge_mutations_table: String = storage
+        .with_connection(|connection| {
+            connection.query_row(
+                "SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'forge_mutations'",
+                [],
+                |row| row.get(0),
+            )
+        })
+        .expect("forge mutations table should exist");
 
-    assert_eq!(applied, 11);
+    assert_eq!(applied, 12);
     assert_eq!(jobs_table, "jobs");
     assert_eq!(tasks_table, "tasks");
     assert_eq!(context_table, "context_items");
     assert_eq!(reviews_table, "reviews");
     assert_eq!(pull_requests_table, "pull_requests");
+    assert_eq!(forge_mutations_table, "forge_mutations");
 
     drop(storage);
     let reopened = Storage::open(database.path()).expect("migrated database should reopen");
@@ -112,7 +122,7 @@ fn fresh_database_applies_each_migration_once() {
             })
         })
         .expect("migration journal should remain readable");
-    assert_eq!(applied_after_reopen, 11);
+    assert_eq!(applied_after_reopen, 12);
 }
 
 #[test]

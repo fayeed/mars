@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use mars_forge::{
-    CheckRun, CreatePullRequest, ForgeError, ForgeProvider, ForgeRepository, ForgeUser,
+    CheckRun, CreatePullRequest, ForgeError, ForgeProvider, ForgeRepository, ForgeStore, ForgeUser,
     ForgeWorkflow, Issue, PullRequest, ReviewComment,
 };
 use mars_storage::Storage;
@@ -79,6 +79,8 @@ impl Drop for Fixture {
 struct FakeProvider {
     repository: ForgeRepository,
     head_sha: String,
+    fail_create: bool,
+    fail_comments: bool,
 }
 
 impl ForgeProvider for FakeProvider {
@@ -108,6 +110,11 @@ impl ForgeProvider for FakeProvider {
     }
 
     fn create_pull_request(&self, input: &CreatePullRequest) -> Result<PullRequest, ForgeError> {
+        if self.fail_create {
+            return Err(ForgeError::Request(
+                "ambiguous provider failure Authorization: Bearer ghp_supersecretvalue".into(),
+            ));
+        }
         Ok(PullRequest {
             provider_id: "pr-9".into(),
             number: 9,
@@ -142,6 +149,9 @@ impl ForgeProvider for FakeProvider {
     }
 
     fn list_review_comments(&self, _number: u64) -> Result<Vec<ReviewComment>, ForgeError> {
+        if self.fail_comments {
+            return Err(ForgeError::Request("comment refresh failed".into()));
+        }
         Ok(vec![ReviewComment {
             provider_id: "comment-1".into(),
             author: "reviewer".into(),
@@ -172,10 +182,13 @@ fn requires_approval_revalidates_and_pushes_exact_reviewed_plan() {
     let database = fixture.root.join("mars.sqlite3");
     let storage = Arc::new(Storage::open(database).expect("database should open"));
     seed(&storage, &fixture.repository);
-    let workflow = ForgeWorkflow::new(storage);
+    let workflow = ForgeWorkflow::new(storage.clone());
+    let store = ForgeStore::new(storage);
     let issue_provider = FakeProvider {
         repository: repository(),
         head_sha: git_output(&fixture.repository, &["rev-parse", "HEAD"]),
+        fail_create: false,
+        fail_comments: false,
     };
     let issue = workflow
         .import_issue("repository", "origin", 7, &issue_provider)
@@ -196,6 +209,79 @@ fn requires_approval_revalidates_and_pushes_exact_reviewed_plan() {
     ));
     assert!(!remote_has_branch(&fixture.bare, "mars/fix-sync"));
 
+    let failed = workflow.apply_pull_request(
+        &plan,
+        true,
+        true,
+        &FakeProvider {
+            repository: repository(),
+            head_sha: plan.head_sha.clone(),
+            fail_create: true,
+            fail_comments: false,
+        },
+    );
+    let Err(ForgeError::Request(failed_message)) = failed else {
+        panic!("provider failure should be preserved");
+    };
+    assert!(failed_message.contains("[REDACTED]"));
+    assert!(!failed_message.contains("ghp_supersecretvalue"));
+    assert!(remote_has_branch(&fixture.bare, "mars/fix-sync"));
+    assert!(
+        workflow
+            .get_task_pull_request("task")
+            .expect("stored PR lookup should work")
+            .is_none(),
+        "an ambiguous provider failure must not be reported as a persisted PR"
+    );
+    let failed_mutation = store
+        .latest_mutation("task")
+        .expect("mutation should load")
+        .expect("failed mutation should exist");
+    assert_eq!(failed_mutation.status, "failed");
+    assert!(failed_mutation.push_approved);
+    assert!(failed_mutation.forge_approved);
+    assert!(
+        failed_mutation
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("[REDACTED]")
+    );
+    assert!(
+        !failed_mutation
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("ghp_supersecretvalue")
+    );
+
+    let partial = workflow.apply_pull_request(
+        &plan,
+        true,
+        true,
+        &FakeProvider {
+            repository: repository(),
+            head_sha: plan.head_sha.clone(),
+            fail_create: false,
+            fail_comments: true,
+        },
+    );
+    assert!(matches!(partial, Err(ForgeError::Request(_))));
+    let confirmed = workflow
+        .get_task_pull_request("task")
+        .expect("stored PR lookup should work")
+        .expect("confirmed PR identity should survive refresh failure");
+    assert_eq!(confirmed.pull_request.number, 9);
+    assert!(confirmed.comments.is_empty());
+    assert_eq!(
+        store
+            .latest_mutation("task")
+            .expect("mutation should load")
+            .expect("partial mutation should exist")
+            .status,
+        "failed"
+    );
+
     let snapshot = workflow
         .apply_pull_request(&plan, true, true, &issue_provider)
         .expect("approved PR should publish");
@@ -203,10 +289,40 @@ fn requires_approval_revalidates_and_pushes_exact_reviewed_plan() {
     assert_eq!(snapshot.comments.len(), 1);
     assert_eq!(snapshot.checks.len(), 1);
     assert!(remote_has_branch(&fixture.bare, "mars/fix-sync"));
+    let completed_mutation = store
+        .latest_mutation("task")
+        .expect("mutation should load")
+        .expect("completed mutation should exist");
+    assert_eq!(completed_mutation.status, "completed");
+    assert!(completed_mutation.error.is_none());
     let refreshed = workflow
         .refresh_pull_request("task", &issue_provider)
         .expect("stored PR should refresh");
     assert_eq!(refreshed.pull_request.number, 9);
+}
+
+#[test]
+fn rejects_credentials_embedded_in_an_http_push_url() {
+    let fixture = Fixture::new();
+    let database = fixture.root.join("mars.sqlite3");
+    let storage = Arc::new(Storage::open(database).expect("database should open"));
+    seed(&storage, &fixture.repository);
+    git(
+        &fixture.repository,
+        &[
+            "remote",
+            "set-url",
+            "--push",
+            "origin",
+            "https://ghp_supersecretvalue@github.test/acme/mars.git",
+        ],
+    );
+    let workflow = ForgeWorkflow::new(storage);
+    let error = workflow
+        .plan_pull_request("task", "origin", "Fix sync", "Closes #7", false)
+        .expect_err("authenticated push URL should be rejected");
+    assert!(matches!(error, ForgeError::UnsupportedRemote(_)));
+    assert!(!error.to_string().contains("ghp_supersecretvalue"));
 }
 
 fn repository() -> ForgeRepository {

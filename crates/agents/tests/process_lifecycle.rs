@@ -69,6 +69,37 @@ fn streams_redacted_stdout_and_stderr_in_order_and_captures_nonzero_exit() {
 }
 
 #[test]
+fn production_supervisor_redacts_secrets_without_custom_configuration() {
+    runtime().block_on(async {
+        let fixture = ProcessFixture::new();
+        let supervisor = ProcessSupervisor::new(fixture.storage.clone());
+        let secret = "ghp_abcdefghijklmnopqrstuvwxyz";
+        let mut launched = supervisor
+            .launch(shell(
+                fixture.path(),
+                &format!("printf 'GITHUB_TOKEN={secret}\\n'"),
+            ))
+            .expect("process should launch");
+        collect_until_exit(&mut launched.events).await;
+        let events = supervisor
+            .events(&launched.session_id)
+            .expect("events should load");
+        let stored_command: String = fixture
+            .storage
+            .with_connection(|connection| {
+                connection.query_row(
+                    "SELECT command_json FROM agent_sessions WHERE id = ?1",
+                    [&launched.session_id],
+                    |row| row.get(0),
+                )
+            })
+            .expect("command should load");
+        assert!(!format!("{events:?}{stored_command}").contains(secret));
+        assert!(format!("{events:?}{stored_command}").contains("[REDACTED]"));
+    });
+}
+
+#[test]
 fn cancellation_escalates_for_an_uncooperative_process_group() {
     runtime().block_on(async {
         let fixture = ProcessFixture::new();

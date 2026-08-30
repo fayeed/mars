@@ -2328,6 +2328,7 @@ name = "mars-forge"
 version = "0.1.0"
 dependencies = [
  "keyring",
+ "mars-security",
  "mars-storage",
  "rusqlite",
  "serde",
@@ -2388,7 +2389,9 @@ dependencies = [
 name = "mars-security"
 version = "0.1.0"
 dependencies = [
+ "mars-storage",
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "uuid",
 ]

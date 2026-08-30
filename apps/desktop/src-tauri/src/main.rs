@@ -38,7 +38,7 @@ use mars_git::{
 use mars_indexer::{IndexError, IndexSummary, Indexer};
 use mars_security::TrustDecision;
 use mars_security::permissions::{
-    Capability, PermissionDecision, PermissionEngine, PermissionError, PermissionOutcome,
+    Capability, PermissionAudit, PermissionDecision, PermissionError, PermissionOutcome,
     PermissionRequest, PermissionScope,
 };
 use mars_skills::{
@@ -63,7 +63,7 @@ struct AppState {
     overlaps: TaskOverlapService,
     projects: ProjectService,
     reviews: ReviewService,
-    permissions: PermissionEngine,
+    permissions: PermissionAudit,
     skills: SkillService,
     tasks: TaskWorktreeService,
     terminals: TerminalService,
@@ -1499,7 +1499,7 @@ fn knowledge_kind(category: MemoryCategory) -> KnowledgeKind {
 }
 
 fn authorize_agent(
-    engine: &PermissionEngine,
+    audit: &PermissionAudit,
     task: &WorktreePlan,
     adapter: AdapterKind,
     permissions: AgentPermissions,
@@ -1507,7 +1507,7 @@ fn authorize_agent(
 ) -> Result<Vec<String>, CommandFailure> {
     let mut tools = vec!["Read".to_owned()];
     record_permission(
-        engine,
+        audit,
         PermissionRequest::new(
             Capability::ReadFiles,
             PermissionScope::Worktree {
@@ -1518,7 +1518,7 @@ fn authorize_agent(
         true,
     )?;
     if record_permission(
-        engine,
+        audit,
         PermissionRequest::new(
             Capability::WriteFiles,
             PermissionScope::Worktree {
@@ -1531,7 +1531,7 @@ fn authorize_agent(
         tools.extend(["Edit".into(), "Write".into()]);
     }
     if record_permission(
-        engine,
+        audit,
         PermissionRequest::new(
             Capability::RunCommand,
             PermissionScope::Command {
@@ -1545,7 +1545,7 @@ fn authorize_agent(
         tools.push("Bash".into());
     }
     if record_permission(
-        engine,
+        audit,
         PermissionRequest::new(
             Capability::Network,
             PermissionScope::NetworkHost { host: "*".into() },
@@ -1559,20 +1559,17 @@ fn authorize_agent(
 }
 
 fn record_permission(
-    engine: &PermissionEngine,
+    audit: &PermissionAudit,
     request: PermissionRequest,
     allowed: bool,
 ) -> Result<bool, CommandFailure> {
-    engine.record_decision(
-        &request,
-        if allowed {
-            PermissionDecision::AllowSession
-        } else {
-            PermissionDecision::Deny
-        },
-    )?;
+    let decision = if allowed {
+        PermissionDecision::AllowSession
+    } else {
+        PermissionDecision::Deny
+    };
     Ok(matches!(
-        engine.evaluate(&request, None)?,
+        audit.record(&request, decision)?,
         PermissionOutcome::Allowed(_)
     ))
 }
@@ -1643,6 +1640,8 @@ fn main() {
             let storage = Arc::new(Storage::open(data_dir.join("mars.sqlite3"))?);
             let agents = ProcessSupervisor::new(storage.clone());
             agents.recover_interrupted()?;
+            let forge = ForgeWorkflow::new(storage.clone());
+            forge.recover_interrupted()?;
             let skill_registry = Arc::new(SkillsShRegistry::new()?);
             app.manage(AppState {
                 agents,
@@ -1651,13 +1650,13 @@ fn main() {
                 context: ContextService::new(storage.clone(), data_dir.join("artifacts")),
                 credentials: OsCredentialVault,
                 files: FileService::new(storage.clone()),
-                forge: ForgeWorkflow::new(storage.clone()),
+                forge,
                 indexer: Indexer::new(storage.clone()),
                 knowledge: KnowledgeService::new(storage.clone()),
                 overlaps: TaskOverlapService::new(storage.clone()),
                 projects: ProjectService::new(storage.clone()),
                 reviews: ReviewService::new(storage.clone()),
-                permissions: PermissionEngine::new(),
+                permissions: PermissionAudit::new(storage.clone()),
                 skills: SkillService::new(storage.clone(), skill_registry, data_dir.join("skills")),
                 tasks: TaskWorktreeService::new(storage.clone(), data_dir.join("worktrees")),
                 terminals: TerminalService::new(storage.clone()),

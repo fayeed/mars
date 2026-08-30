@@ -1,6 +1,11 @@
 //! Repository trust and capability policy types.
 
+pub mod ignore_policy;
 pub mod permissions;
+pub mod redaction;
+
+pub use ignore_policy::{is_default_ignored_directory, is_sensitive_filename};
+pub use redaction::{detect_secret, redact};
 
 use serde::{Deserialize, Serialize};
 

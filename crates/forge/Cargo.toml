@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 keyring.workspace = true
+mars-security.workspace = true
 mars-storage.workspace = true
 rusqlite.workspace = true
 serde.workspace = true

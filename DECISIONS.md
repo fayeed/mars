@@ -140,7 +140,7 @@ Status values: proposed, accepted, superseded. These decisions are proposed toge
 - Status: accepted
 - Decision: Launch provider CLIs only inside a ready task worktree and translate the user-approved file, command, and provider-tool grants into the narrowest supported CLI arguments. Never use dangerous permission-bypass flags. Codex uses `read-only` or `workspace-write` sandboxing; Claude receives an explicit allowed-tool set. Mars still supervises the process group, redacts persisted command/output data, and owns cancellation independently of provider behavior.
 - Rationale: Provider-native permissions differ and can drift, so they are defense in depth rather than the product authorization source. A provider cannot widen the capability decision recorded before launch.
-- Consequence: Adapter contract fixtures and opt-in real CLI proofs must cover command construction and stream drift. Unsupported fine-grained provider controls remain denied or are disclosed as coarse grants; durable permission-decision audit wiring is required before remote Git or forge mutations.
+- Consequence: Adapter contract fixtures and opt-in real CLI proofs must cover command construction and stream drift. Unsupported fine-grained provider controls remain denied or are disclosed as coarse grants. Launch decisions are durably recorded before the in-memory grant is applied.
 
 ## ADR-021 — Agent launch revalidates the exact visible context pack
 
@@ -168,7 +168,7 @@ Status values: proposed, accepted, superseded. These decisions are proposed toge
 - Status: accepted
 - Decision: Keep normalized forge entities and workflows in `mars-forge`, with GitHub HTTP details isolated in `mars-forge-github`. Verify account tokens before placing them in the native OS keychain; SQLite stores only opaque credential references. A PR plan captures and fingerprints the fetch URL, actual Git `pushurl`, worktree, head SHA, commit count, cleanliness, head/base/title/body, and draft state. Immediately rebuild that plan, require separate push and forge approvals, push the exact reviewed URL with system Git, then create the hosted PR. Persist issues, PRs, checks, and comments idempotently.
 - Rationale: A Git remote name can hide a distinct `pushurl`, webview state is not authority, and a successful push followed by an ambiguous API response must be safely recoverable without silently targeting or duplicating the wrong object.
-- Consequence: Changing Git config, commit state, or PR fields invalidates approval. A GitHub 422 after retry is recovered only when the provider returns an open PR with the exact reviewed head/base. Tokens do not enter SQLite or logs. Conditional ETags/rate metadata and durable forge-write permission audit events remain required hardening.
+- Consequence: Changing Git config, commit state, or PR fields invalidates approval. A GitHub 422 after retry is recovered only when the provider returns an open PR with the exact reviewed head/base. Tokens do not enter SQLite or logs. Conditional ETags and rate metadata remain future hardening.
 
 ## ADR-025 — Parallel-work warnings are advisory graph-backed evidence
 
@@ -176,3 +176,10 @@ Status values: proposed, accepted, superseded. These decisions are proposed toge
 - Decision: Compare every ready/active/review worktree from its task base through the current working diff. Emit non-blocking exact-file and rename conflicts plus changed-symbol and one-hop dependency warnings derived from the latest local index. Every warning includes the other task/worktree, evidence identifiers, severity, and refresh time; an incomplete index produces an explicit unknown warning.
 - Rationale: Different worktrees prevent filesystem collisions but not semantic conflict. The index is useful as a warning signal, not authoritative enough to block work automatically.
 - Consequence: Symbol overlap is conservatively mapped from zero-context diff hunks to stored spans and can produce false positives after large line shifts. Users can refresh at any time, and source/Git remain truth.
+
+## ADR-026 — Security decisions and forge mutations are durable before effect
+
+- Status: accepted
+- Decision: Centralize default sensitive-path policy and credential redaction in `mars-security`. Persist every agent capability decision before applying its in-memory grant. For an approved PR publish, insert a forge mutation journal row before Git push, mark it completed or failed after the provider result, and convert abandoned started rows to interrupted at startup. Persist a minimal confirmed PR snapshot before fetching optional comments and checks.
+- Rationale: A crash or partial network failure must not turn an attempted external write into an implied success, and a database failure must not produce an unaudited agent grant. Shared redaction prevents diagnostic paths from drifting into inconsistent secret handling.
+- Consequence: Recovery exposes uncertainty instead of guessing. Retrying requires a fresh exact preview and approvals; a confirmed provider identity survives secondary refresh failure. The journal stores bounded normalized details and redacted errors, not credentials or full provider payloads.

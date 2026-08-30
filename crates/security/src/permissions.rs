@@ -1,7 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 
+use mars_storage::Storage;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
@@ -138,8 +139,71 @@ struct PermissionState {
 
 #[derive(Debug, Error)]
 pub enum PermissionError {
+    #[error(transparent)]
+    Storage(#[from] mars_storage::StorageError),
+    #[error("failed to encode permission audit data: {0}")]
+    Json(#[from] serde_json::Error),
     #[error("permission state lock was poisoned")]
     StatePoisoned,
+}
+
+pub struct PermissionAudit {
+    engine: PermissionEngine,
+    storage: Arc<Storage>,
+}
+
+impl PermissionAudit {
+    #[must_use]
+    pub fn new(storage: Arc<Storage>) -> Self {
+        Self {
+            engine: PermissionEngine::new(),
+            storage,
+        }
+    }
+
+    pub fn record(
+        &self,
+        request: &PermissionRequest,
+        decision: PermissionDecision,
+    ) -> Result<PermissionOutcome, PermissionError> {
+        let scope = serde_json::to_string(&request.scope)?;
+        self.storage.with_connection(|connection| {
+            connection.execute(
+                "INSERT INTO permission_decisions
+                 (id, session_id, request_id, capability, scope_json, decision, decided_at)
+                 VALUES (?1, NULL, ?2, ?3, ?4, ?5, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+                (
+                    format!("decision:{}", request.id),
+                    &request.id,
+                    capability_name(request.capability),
+                    scope,
+                    decision_name(decision),
+                ),
+            )?;
+            Ok(())
+        })?;
+        self.engine.record_decision(request, decision)?;
+        self.engine.evaluate(request, None)
+    }
+}
+
+fn capability_name(capability: Capability) -> &'static str {
+    match capability {
+        Capability::ReadFiles => "read_files",
+        Capability::WriteFiles => "write_files",
+        Capability::RunCommand => "run_command",
+        Capability::Network => "network",
+        Capability::MutateGit => "mutate_git",
+    }
+}
+
+fn decision_name(decision: PermissionDecision) -> &'static str {
+    match decision {
+        PermissionDecision::Deny => "deny",
+        PermissionDecision::Ask => "ask",
+        PermissionDecision::AllowOnce => "allow_once",
+        PermissionDecision::AllowSession => "allow_session",
+    }
 }
 
 #[derive(Default)]
