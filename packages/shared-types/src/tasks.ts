@@ -18,6 +18,24 @@ export interface WorktreePlan {
   state: WorktreeState;
 }
 
+export type OverlapKind =
+  | "exact_file"
+  | "rename"
+  | "changed_symbol"
+  | "dependency"
+  | "unknown_index";
+
+export interface OverlapWarning {
+  kind: OverlapKind;
+  severity: "error" | "warning" | "info";
+  message: string;
+  evidence: string[];
+  otherTaskId: string;
+  otherTaskTitle: string;
+  otherWorktreePath: string;
+  refreshedAt: string;
+}
+
 export type AdapterKind = "claude" | "codex";
 
 export interface AdapterProbe {

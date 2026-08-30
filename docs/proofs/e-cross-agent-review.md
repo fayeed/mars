@@ -15,6 +15,7 @@ Milestone E establishes one production path that:
 - rebuilds and byte-compares current context and diff server-side immediately before invoking a read-only reviewer;
 - validates reviewer output against a strict schema, exact diff-hunk IDs, source paths/lines, verdict consistency, and duplicate suppression;
 - persists review findings atomically and supports open/sent/resolved/dismissed lifecycle plus an evidence-backed implementer follow-up prompt.
+- compares active real worktree diffs for exact-file and rename intersections, maps changed hunks to indexed symbols, follows one-hop graph dependencies, and exposes incomplete-index uncertainty without blocking work.
 
 ## Real vertical evidence
 
@@ -42,6 +43,8 @@ milestone-e proof: implementation_ms=31076, review_ms=5355, handoff_bytes=5928, 
 
 The deterministic review fixture separately proves the changes-requested branch: an exact hunk/line-backed finding persists, renders in the UI, becomes a compact follow-up for the original implementer, and transitions to `sent`.
 
+The deterministic overlap fixture provisions two real task worktrees from one repository, changes a shared file plus graph-connected symbols in separate files, and observes exact-file, changed-symbol, and dependency warnings through the same service used by the desktop. Pure contract cases additionally cover rename and incomplete-index warnings.
+
 ## Gate results
 
 The complete gate commands are:
@@ -58,7 +61,7 @@ pnpm check:protocol
 git diff --check
 ```
 
-They pass with 74 non-ignored Rust tests and 17 desktop interaction tests. Eight network/authenticated Rust tests remain intentionally ignored by default, including the now-passing Milestone E proof.
+The current repository gate passes with 82 non-ignored Rust tests and 20 desktop interaction tests. Eight network/authenticated Rust tests remain intentionally ignored by default, including the now-passing Milestone E proof.
 
 ## Shortcuts and technical debt
 

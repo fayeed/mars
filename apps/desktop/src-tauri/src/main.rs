@@ -26,7 +26,15 @@ use mars_core::files::{FileDocument, FileError, FilePage, FileService};
 use mars_core::projects::{OpenRepositoryOutcome, ProjectError, ProjectService};
 use mars_core::protocol::{CommandRequest, CommandResponse};
 use mars_core::terminal::{TerminalError, TerminalService, TerminalSessionInfo};
-use mars_git::{TaskWorktreeError, TaskWorktreeService, WorktreePlan};
+use mars_forge::{
+    CredentialVault, ForgeConnection, ForgeError, ForgeProvider, ForgeWorkflow, OsCredentialVault,
+    PullRequestPlan, PullRequestSnapshot, StoredIssue,
+};
+use mars_forge_github::GitHubProvider;
+use mars_git::{
+    OverlapError, OverlapWarning, TaskOverlapService, TaskWorktreeError, TaskWorktreeService,
+    WorktreePlan,
+};
 use mars_indexer::{IndexError, IndexSummary, Indexer};
 use mars_security::TrustDecision;
 use mars_security::permissions::{
@@ -47,9 +55,12 @@ struct AppState {
     brain: BrainService,
     context_packs: ContextPackService,
     context: ContextService,
+    credentials: OsCredentialVault,
     files: FileService,
+    forge: ForgeWorkflow,
     indexer: Indexer,
     knowledge: KnowledgeService,
+    overlaps: TaskOverlapService,
     projects: ProjectService,
     reviews: ReviewService,
     permissions: PermissionEngine,
@@ -200,6 +211,26 @@ impl From<ReviewError> for CommandFailure {
     }
 }
 
+impl From<ForgeError> for CommandFailure {
+    fn from(error: ForgeError) -> Self {
+        let code = match error {
+            ForgeError::ApprovalRequired => "forge.approval_required",
+            ForgeError::StalePlan => "forge.stale_plan",
+            ForgeError::NoCommits(_) => "forge.no_commits",
+            ForgeError::TaskNotReady(_) => "forge.task_not_ready",
+            ForgeError::RepositoryMismatch => "forge.repository_mismatch",
+            ForgeError::UnsupportedRemote(_) => "forge.unsupported_remote",
+            ForgeError::Http { .. } => "forge.http",
+            ForgeError::Git(_) => "forge.git",
+            ForgeError::Request(_) => "forge.request",
+            ForgeError::InvalidResponse(_) | ForgeError::Json(_) => "forge.invalid_response",
+            ForgeError::Storage(_) => "forge.storage",
+            ForgeError::Credential(_) => "forge.credential",
+        };
+        Self::new(code, error.to_string())
+    }
+}
+
 impl From<TaskWorktreeError> for CommandFailure {
     fn from(error: TaskWorktreeError) -> Self {
         let code = match error {
@@ -217,6 +248,12 @@ impl From<TaskWorktreeError> for CommandFailure {
             TaskWorktreeError::Json(_) => "task.json",
         };
         Self::new(code, error.to_string())
+    }
+}
+
+impl From<OverlapError> for CommandFailure {
+    fn from(error: OverlapError) -> Self {
+        Self::new("overlap.inspect", error.to_string())
     }
 }
 
@@ -1108,6 +1145,165 @@ fn create_task(
 }
 
 #[tauri::command]
+fn task_overlap_warnings(
+    task_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<OverlapWarning>, CommandFailure> {
+    state.overlaps.warnings(&task_id).map_err(Into::into)
+}
+
+#[tauri::command]
+fn import_github_issue(
+    repository_id: String,
+    remote_name: String,
+    issue_number: u64,
+    state: State<'_, AppState>,
+) -> Result<StoredIssue, CommandFailure> {
+    let remote = state.forge.resolve_remote(&repository_id, &remote_name)?;
+    let provider = connected_github_provider(&state, &remote.id)?;
+    state
+        .forge
+        .import_issue(&repository_id, &remote_name, issue_number, &provider)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+fn connect_github(
+    repository_id: String,
+    remote_name: String,
+    token: String,
+    state: State<'_, AppState>,
+) -> Result<ForgeConnection, CommandFailure> {
+    let remote = state.forge.resolve_remote(&repository_id, &remote_name)?;
+    let api_base = github_api_base(&remote.repository);
+    let provider = github_provider(remote.repository, &token)?;
+    let user = provider.current_user()?;
+    let credential_ref = format!("github:{}:{}", remote.id, user.login);
+    state.credentials.set(&credential_ref, token.trim())?;
+    match state.forge.save_connection(
+        &remote.id,
+        "github",
+        &api_base,
+        Some(&user.login),
+        &credential_ref,
+    ) {
+        Ok(connection) => Ok(connection),
+        Err(error) => {
+            let _ = state.credentials.delete(&credential_ref);
+            Err(error.into())
+        }
+    }
+}
+
+#[tauri::command]
+fn create_task_from_issue(
+    issue_id: String,
+    base_ref: String,
+    state: State<'_, AppState>,
+) -> Result<WorktreePlan, CommandFailure> {
+    let issue = state.forge.get_issue(&issue_id)?;
+    let task = state.tasks.create_task(
+        &issue.repository_id,
+        &issue.issue.title,
+        &issue.issue.body,
+        &base_ref,
+    )?;
+    state.forge.link_issue_task(&issue.id, &task.task_id)?;
+    Ok(task)
+}
+
+#[tauri::command]
+fn preview_pull_request(
+    task_id: String,
+    remote_name: String,
+    title: String,
+    body: String,
+    draft: bool,
+    state: State<'_, AppState>,
+) -> Result<PullRequestPlan, CommandFailure> {
+    state
+        .forge
+        .plan_pull_request(&task_id, &remote_name, &title, &body, draft)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+fn get_task_pull_request(
+    task_id: String,
+    state: State<'_, AppState>,
+) -> Result<Option<PullRequestSnapshot>, CommandFailure> {
+    state
+        .forge
+        .get_task_pull_request(&task_id)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+fn create_github_pull_request(
+    plan: PullRequestPlan,
+    push_approved: bool,
+    forge_approved: bool,
+    state: State<'_, AppState>,
+) -> Result<PullRequestSnapshot, CommandFailure> {
+    let provider = connected_github_provider(&state, &plan.remote_id)?;
+    state
+        .forge
+        .apply_pull_request(&plan, push_approved, forge_approved, &provider)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+fn refresh_github_pull_request(
+    task_id: String,
+    state: State<'_, AppState>,
+) -> Result<PullRequestSnapshot, CommandFailure> {
+    let stored = state
+        .forge
+        .get_task_pull_request(&task_id)?
+        .ok_or_else(|| CommandFailure::new("forge.pr_not_found", "Task has no pull request"))?;
+    let provider = connected_github_provider(&state, &stored.remote_id)?;
+    state
+        .forge
+        .refresh_pull_request(&task_id, &provider)
+        .map_err(Into::into)
+}
+
+fn github_provider(
+    repository: mars_forge::ForgeRepository,
+    token: &str,
+) -> Result<GitHubProvider, CommandFailure> {
+    if token.trim().is_empty() {
+        return Err(CommandFailure::new(
+            "forge.missing_token",
+            "A GitHub access token is required for this operation",
+        ));
+    }
+    let api_base = github_api_base(&repository);
+    GitHubProvider::new(repository, api_base, token).map_err(Into::into)
+}
+
+fn connected_github_provider(
+    state: &AppState,
+    remote_id: &str,
+) -> Result<GitHubProvider, CommandFailure> {
+    let connection = state
+        .forge
+        .get_connection(remote_id)?
+        .ok_or_else(|| CommandFailure::new("forge.not_connected", "Connect GitHub first"))?;
+    let remote = state.forge.get_remote(remote_id)?;
+    let token = state.credentials.get(&connection.credential_ref)?;
+    GitHubProvider::new(remote.repository, connection.api_base, &token).map_err(Into::into)
+}
+
+fn github_api_base(repository: &mars_forge::ForgeRepository) -> String {
+    if repository.host == "github.com" {
+        "https://api.github.com".into()
+    } else {
+        format!("https://{}/api/v3", repository.host)
+    }
+}
+
+#[tauri::command]
 fn provision_task(
     task_id: String,
     state: State<'_, AppState>,
@@ -1453,9 +1649,12 @@ fn main() {
                 brain: BrainService::new(storage.clone()),
                 context_packs: ContextPackService::new(storage.clone()),
                 context: ContextService::new(storage.clone(), data_dir.join("artifacts")),
+                credentials: OsCredentialVault,
                 files: FileService::new(storage.clone()),
+                forge: ForgeWorkflow::new(storage.clone()),
                 indexer: Indexer::new(storage.clone()),
                 knowledge: KnowledgeService::new(storage.clone()),
+                overlaps: TaskOverlapService::new(storage.clone()),
                 projects: ProjectService::new(storage.clone()),
                 reviews: ReviewService::new(storage.clone()),
                 permissions: PermissionEngine::new(),
@@ -1507,6 +1706,14 @@ fn main() {
             build_context_pack,
             list_tasks,
             create_task,
+            task_overlap_warnings,
+            connect_github,
+            import_github_issue,
+            create_task_from_issue,
+            preview_pull_request,
+            get_task_pull_request,
+            create_github_pull_request,
+            refresh_github_pull_request,
             provision_task,
             remove_task_worktree,
             open_task_worktree,

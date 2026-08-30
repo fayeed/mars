@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { CreateTaskDialog } from "@/features/tasks/CreateTaskDialog";
+import { ImportGitHubIssueDialog } from "@/features/forge/ImportGitHubIssueDialog";
 
 interface TaskListProps {
   onCreated: (task: WorktreePlan) => void;
@@ -19,7 +20,10 @@ export function TaskList({ onCreated, onSelect, repositoryId, selectedTaskId, ta
     <section className="flex min-h-0 flex-1 flex-col" aria-label="Tasks">
       <header className="flex items-center justify-between gap-2 border-b p-2">
         <span className="text-xs font-medium">Isolated work</span>
-        <CreateTaskDialog onCreated={onCreated} repositoryId={repositoryId} />
+        <div className="flex gap-1.5">
+          <ImportGitHubIssueDialog onCreated={onCreated} repositoryId={repositoryId} />
+          <CreateTaskDialog onCreated={onCreated} repositoryId={repositoryId} />
+        </div>
       </header>
       <ScrollArea className="min-h-0 flex-1">
         <div className="flex flex-col gap-1 p-2">

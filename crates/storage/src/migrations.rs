@@ -62,6 +62,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "reviews",
         sql: include_str!("../migrations/0010_reviews.sql"),
     },
+    Migration {
+        version: 11,
+        name: "forge",
+        sql: include_str!("../migrations/0011_forge.sql"),
+    },
 ];
 
 pub(crate) fn apply_all(connection: &mut Connection) -> Result<()> {

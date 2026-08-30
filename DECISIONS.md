@@ -162,3 +162,17 @@ Status values: proposed, accepted, superseded. These decisions are proposed toge
 - Decision: Persist provider-neutral implementation events and build review handoffs from a completed session, the normal deterministic task context pack, selected concise events, and the exact untruncated Git diff with SHA-256 identity. Require a different reviewer adapter, preview the payload, then reconstruct and compare it in the native layer before a read-only review. Accept findings only through a strict schema whose evidence IDs and source lines resolve inside the supplied diff.
 - Rationale: Cross-provider review is valuable only when “what the reviewer saw” is inspectable and cannot drift between preview and launch. Full provider transcripts are noisy, provider-specific, and may contain irrelevant or sensitive material.
 - Consequence: Oversized diffs fail rather than truncate silently. Raw frames remain diagnostic data and never enter the handoff. Reviews/findings are durable candidates with explicit lifecycle. Review execution still needs migration from a synchronous provider call to the process supervisor for cancellation and reviewer-session audit parity.
+
+## ADR-024 — Forge writes require exact Git and hosted-object previews
+
+- Status: accepted
+- Decision: Keep normalized forge entities and workflows in `mars-forge`, with GitHub HTTP details isolated in `mars-forge-github`. Verify account tokens before placing them in the native OS keychain; SQLite stores only opaque credential references. A PR plan captures and fingerprints the fetch URL, actual Git `pushurl`, worktree, head SHA, commit count, cleanliness, head/base/title/body, and draft state. Immediately rebuild that plan, require separate push and forge approvals, push the exact reviewed URL with system Git, then create the hosted PR. Persist issues, PRs, checks, and comments idempotently.
+- Rationale: A Git remote name can hide a distinct `pushurl`, webview state is not authority, and a successful push followed by an ambiguous API response must be safely recoverable without silently targeting or duplicating the wrong object.
+- Consequence: Changing Git config, commit state, or PR fields invalidates approval. A GitHub 422 after retry is recovered only when the provider returns an open PR with the exact reviewed head/base. Tokens do not enter SQLite or logs. Conditional ETags/rate metadata and durable forge-write permission audit events remain required hardening.
+
+## ADR-025 — Parallel-work warnings are advisory graph-backed evidence
+
+- Status: accepted
+- Decision: Compare every ready/active/review worktree from its task base through the current working diff. Emit non-blocking exact-file and rename conflicts plus changed-symbol and one-hop dependency warnings derived from the latest local index. Every warning includes the other task/worktree, evidence identifiers, severity, and refresh time; an incomplete index produces an explicit unknown warning.
+- Rationale: Different worktrees prevent filesystem collisions but not semantic conflict. The index is useful as a warning signal, not authoritative enough to block work automatically.
+- Consequence: Symbol overlap is conservatively mapped from zero-context diff hunks to stored spans and can produce false positives after large line shifts. Users can refresh at any time, and source/Git remain truth.

@@ -1,5 +1,5 @@
 [workspace]
-members = ["apps/desktop/src-tauri", "crates/agents", "crates/brain", "crates/context", "crates/core", "crates/git", "crates/indexer", "crates/security", "crates/skills", "crates/storage"]
+members = ["apps/desktop/src-tauri", "crates/agents", "crates/brain", "crates/context", "crates/core", "crates/forge", "crates/forge-github", "crates/git", "crates/indexer", "crates/security", "crates/skills", "crates/storage"]
 resolver = "2"
 
 [workspace.package]
@@ -9,11 +9,14 @@ version = "0.1.0"
 
 [workspace.dependencies]
 ignore = "0.4.25"
+keyring = "4.2.0"
 portable-pty = "0.9.0"
 mars-brain = { path = "crates/brain" }
 mars-agents = { path = "crates/agents" }
 mars-core = { path = "crates/core" }
 mars-context = { path = "crates/context" }
+mars-forge = { path = "crates/forge" }
+mars-forge-github = { path = "crates/forge-github" }
 mars-git = { path = "crates/git" }
 mars-indexer = { path = "crates/indexer" }
 mars-security = { path = "crates/security" }

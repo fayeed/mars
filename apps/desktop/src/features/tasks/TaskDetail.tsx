@@ -29,6 +29,8 @@ import { PermissionPrompt } from "@/features/agents/PermissionPrompt";
 import { ContextTray } from "@/features/context/ContextTray";
 import { MemoryReview } from "@/features/brain/MemoryReview";
 import { SkillBrowser } from "@/features/skills/SkillBrowser";
+import { ForgePullRequest } from "@/features/forge/ForgePullRequest";
+import { OverlapWarnings } from "@/features/tasks/OverlapWarnings";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -264,6 +266,7 @@ export function TaskDetail({ onOpenWorktree, onTaskChanged, task }: TaskDetailPr
       <section className="grid gap-4 p-4" aria-label="Task agent">
         <TaskHeading task={task} />
         <ContextTray repositoryId={task.repositoryId} taskId={task.taskId} />
+        <OverlapWarnings taskId={task.taskId} />
         <SkillBrowser repositoryId={task.repositoryId} taskId={task.taskId} />
         <MemoryReview adapter={adapter} taskId={task.taskId} />
         <CrossAgentReview
@@ -271,6 +274,14 @@ export function TaskDetail({ onOpenWorktree, onTaskChanged, task }: TaskDetailPr
           implementationAdapter={adapter}
           onSendFollowup={useReviewFollowup}
           taskId={task.taskId}
+        />
+        <ForgePullRequest
+          onSendFollowup={(nextPrompt) => {
+            setPrompt(nextPrompt);
+            setContextPack(null);
+            setPackExclusions([]);
+          }}
+          task={task}
         />
         <Button className="justify-start" disabled={busy} onClick={() => void openWorktree()} type="button" variant="outline">
           <ExternalLinkIcon /> Open worktree in editor and terminal

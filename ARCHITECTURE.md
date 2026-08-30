@@ -1,7 +1,7 @@
 # Mars Architecture
 
-Status: MVP implementation in progress; Proofs A, B, C, D, and E implemented
-Last updated: 2026-08-29
+Status: MVP implementation in progress; Proofs A–E implemented, deterministic F path implemented
+Last updated: 2026-08-30
 
 ## 1. Concrete MVP restatement
 
@@ -26,7 +26,9 @@ Proof C is implemented. Context capture preserves exact text/image originals in 
 
 Proof D is implemented. Completed normalized sessions, exact Git diffs, task intent, and diff-overlapping indexed symbols form a bounded untrusted evidence bundle. A visibly permitted configured model returns only strict evidence-referenced candidates; invalid categories, fields, evidence, entities, confidence, and duplicates fail closed. HUMAN provenance is required to approve, correct/supersede, reject, stale, or pin memory, and correction preserves history plus semantic links. The shadcn/ui review surface keeps candidates visibly untrusted. Bounded “Why?” queries return approved facts separately from inference, surface conflicts/staleness/insufficient evidence, and trace code through knowledge, session/task, and clickable diff evidence. The live two-agent-call proof is recorded in `docs/proofs/d-memory-why.md`.
 
-Proof E is implemented. Provider-neutral implementation events persist alongside redacted raw frames. A completed Claude/Codex session can produce a bounded handoff for the other adapter containing the visible task context, concise implementation/test evidence, and exact untruncated diff plus digest. The shadcn/ui review dialog previews that payload; launch reconstructs it server-side and invokes the reviewer read-only. Strict findings must cite real hunk IDs and in-range lines, persist atomically, and can be resolved/dismissed or sent back as an evidence-backed implementer follow-up. The live Claude → Codex proof is recorded in `docs/proofs/e-cross-agent-review.md`. Proof F remains planned.
+Proof E is implemented. Provider-neutral implementation events persist alongside redacted raw frames. A completed Claude/Codex session can produce a bounded handoff for the other adapter containing the visible task context, concise implementation/test evidence, and exact untruncated diff plus digest. The shadcn/ui review dialog previews that payload; launch reconstructs it server-side and invokes the reviewer read-only. Strict findings must cite real hunk IDs and in-range lines, persist atomically, and can be resolved/dismissed or sent back as an evidence-backed implementer follow-up. Active worktrees are also compared using real diffs plus indexed symbol spans and one-hop graph edges; evidence-bearing overlap warnings degrade visibly when the index is incomplete. The live Claude → Codex proof is recorded in `docs/proofs/e-cross-agent-review.md`.
+
+Proof F has a complete deterministic production path but not a live GitHub gate. Git remotes normalize behind `ForgeProvider`; GitHub credentials are verified against the current-user endpoint, stored in the native OS keychain, and represented in SQLite only by an opaque reference. Issues import idempotently into durable normalized records and explicitly become task plans. PR creation previews and revalidates the exact fetch/push targets, commit, head/base/title/body, and requires separate push and forge approvals. System Git performs the push; the GitHub provider creates or recovers the matching PR, paginates checks/comments, and persists a restart-safe snapshot. The shadcn UI polls while open and can route a hosted review comment back into the agent prompt. The local proof is recorded in `docs/proofs/f-github.md`; a real disposable repository/issue/token is still required for the external-write gate.
 
 The editor, terminal, agents, context, graph, and Git lifecycle are one product. The MVP does not include an autonomous swarm, hosted collaboration, organization policy, non-GitHub forge parity, broad language support, or automatic merge.
 
