@@ -46,7 +46,13 @@ pnpm check:protocol
 git diff --check
 ```
 
-Result: 90 non-ignored Rust tests, 21 desktop interaction tests, and all builds/protocol checks pass. Eight authenticated/network tests remain ignored by default.
+Result: 91 non-ignored Rust tests, 21 desktop interaction tests, and all builds/protocol checks pass. Eight authenticated/network tests remain ignored by default.
+
+## Live target progress
+
+The disposable public target `fayeed/mars-repo-test` and issue `#1` are now verified. System Git resolved `main` at `4cc1c67f5894c922c8149efaa8efd9c2354939f4`, authenticated over the user's existing SSH configuration, and cloned it locally without mutation. The issue requests a concrete TypeScript greeting implementation and test.
+
+The first real desktop launch exposed a protocol-boundary defect before GitHub authentication: Serde renamed the tagged enum variants but serialized fields inside `CommandResponse` and `ResponsePayload` as snake case, while the generated TypeScript contract required camel case. A new Rust wire-format regression test failed against the actual JSON shape. Adding `rename_all_fields = "camelCase"` at the source contract made that test pass, and the relaunched native desktop no longer crashes. No branch or PR is claimed yet; API-keychain onboarding and the explicit publish approvals remain pending.
 
 ## Live gate not claimed
 

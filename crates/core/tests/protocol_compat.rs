@@ -124,6 +124,25 @@ fn core_executes_a_versioned_request_and_preserves_correlation() {
 }
 
 #[test]
+fn command_response_serializes_with_the_generated_camel_case_wire_fields() {
+    let response = Core::new().execute(CommandRequest {
+        protocol_version: ProtocolVersion::new(0, 1, 0),
+        correlation_id: "req-wire".into(),
+        command: Command::CoreInfo {},
+    });
+    let wire = serde_json::to_value(response).expect("response should serialize");
+
+    assert_eq!(
+        wire["protocolVersion"],
+        serde_json::json!({ "major": 0, "minor": 1, "patch": 0 })
+    );
+    assert_eq!(wire["correlationId"], "req-wire");
+    assert_eq!(wire["result"]["protocolVersion"], wire["protocolVersion"]);
+    assert!(wire.get("protocol_version").is_none());
+    assert!(wire["result"].get("protocol_version").is_none());
+}
+
+#[test]
 fn core_rejects_an_incompatible_protocol_version() {
     let response = Core::new().execute(CommandRequest {
         protocol_version: ProtocolVersion::new(1, 0, 0),
