@@ -1,0 +1,8 @@
+service:
+  name: polyglot
+  port: 8080
+  retries:
+    max: 5
+    backoff: fixed
+telemetry:
+  enabled: true
