@@ -89,9 +89,9 @@ Status values: proposed, accepted, superseded. These decisions are proposed toge
 ## ADR-013 — Tree-sitter provides the first structural graph
 
 - Status: accepted
-- Decision: Index TS/JS definitions, imports/exports, lexical references, and conservative calls with tree-sitter. Store confidence and unresolved targets. Add TypeScript compiler/LSP enrichment only after measured gaps.
-- Rationale: Tree-sitter is incremental, robust to incomplete code, and sufficient to test whether structural retrieval adds value.
-- Consequence: UI must communicate confidence and must not imply semantic precision where none exists.
+- Decision: Index definitions, imports/exports, lexical references, and conservative calls with tree-sitter. Store confidence and unresolved targets. Add TypeScript compiler/LSP enrichment only after measured gaps. Phase 0 extended the grammar set beyond TS/JS to Python, Go, Rust, JSON, YAML, and Markdown; configuration and prose contribute a keyed property or heading tree and no call graph.
+- Rationale: Tree-sitter is incremental, robust to incomplete code, and sufficient to test whether structural retrieval adds value. One extractor shape per language behind a shared fact builder keeps each grammar's conventions -- Go's capitalisation, Rust's `pub`, Python's underscore -- honest rather than averaged.
+- Consequence: UI must communicate confidence and must not imply semantic precision where none exists. Every added grammar owes a fixture and named per-symbol expectations.
 
 ## ADR-014 — Long-running operations are persisted jobs
 
@@ -183,3 +183,24 @@ Status values: proposed, accepted, superseded. These decisions are proposed toge
 - Decision: Centralize default sensitive-path policy and credential redaction in `mars-security`. Persist every agent capability decision before applying its in-memory grant. For an approved PR publish, insert a forge mutation journal row before Git push, mark it completed or failed after the provider result, and convert abandoned started rows to interrupted at startup. Persist a minimal confirmed PR snapshot before fetching optional comments and checks.
 - Rationale: A crash or partial network failure must not turn an attempted external write into an implied success, and a database failure must not produce an unaudited agent grant. Shared redaction prevents diagnostic paths from drifting into inconsistent secret handling.
 - Consequence: Recovery exposes uncertainty instead of guessing. Retrying requires a fresh exact preview and approvals; a confirmed provider identity survives secondary refresh failure. The journal stores bounded normalized details and redacted errors, not credentials or full provider payloads.
+
+## ADR-027 — The file layer covers every readable file, with exclusions recorded separately
+
+- Status: accepted
+- Decision: Index a row for every non-ignored file in the working tree, including configuration, prose, and binary files, with a language sentinel where no grammar applies. Record each excluded entry in `ignored_paths` with the rule that excluded it, collapsing a pruned directory to one row rather than enumerating its contents.
+- Rationale: Freshness and watcher deltas need a complete picture of the tree, not only the files that produce symbols. A consumer that asks why a path is missing deserves the rule, not silence.
+- Consequence: File counts exceed source counts and `files` no longer implies "has symbols". The exclusion set is a projection of the walk, so a `.gitignore` edit is reflected only after the next full run.
+
+## ADR-028 — Renames are detected by blob identity, not by path similarity
+
+- Status: accepted
+- Decision: Pair a disappeared path with an appeared path holding the same Git blob SHA and republish the file under its new path, keeping its row id and its symbols' stable keys. Leave ambiguous matches, where several identical blobs moved at once, to the ordinary delete-and-add path.
+- Rationale: Content identity is what makes a move a move. Preserving file and symbol identity keeps anything that references a symbol valid across a rename, which a delete-and-add cycle would break.
+- Consequence: A move combined with an edit is reported as a delete plus an add, because the blob changed. Chunk ids include the path, so a renamed file's chunks are reissued even though its bytes are unchanged.
+
+## ADR-029 — The semantic layer ships a deterministic local embedder
+
+- Status: accepted
+- Decision: Embed chunks with a feature-hashing model over case- and punctuation-split identifier tokens, stored as normalized 256-dimension vectors in SQLite alongside the model name. Make no cloud or model-server call. Fuse lexical and semantic results with reciprocal-rank fusion rather than a tuned weighted sum.
+- Rationale: Phase 0 forbids network and model calls, and a reproducible embedder means a chunk's vector changes only when its text does. Recording the model name lets a learned embedder be introduced later without a schema change.
+- Consequence: Semantic recall captures identifier and path overlap, not meaning; it complements lexical search rather than replacing it. Similarity is scanned in memory per repository, which bounds how far this scales before an approximate index is needed.

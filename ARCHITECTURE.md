@@ -68,7 +68,7 @@ flowchart TB
   Agents --> DB
   Workspace --> DB
   Forge --> DB
-  Indexer --> Parser[tree-sitter TS/JS]
+  Indexer --> Parser[tree-sitter TS/JS/Py/Go/Rust/JSON/YAML/MD]
   Agents --> PTY[Native process/PTY supervisor]
   PTY --> Claude[Claude Code CLI]
   PTY --> Codex[Codex CLI]
@@ -110,7 +110,7 @@ crates/
   storage/                   # SQLite pool, migrations, repositories
   git/                       # system-git adapter, diff, worktrees
   agents/                    # process supervisor, adapters, handoffs
-  indexer/                   # ignore walk, tree-sitter, incremental index
+  indexer/                   # ignore walk, tree-sitter, chunks/embeddings, history, incremental index
   brain/                     # graph queries, retrieval, memory, why
   context/                   # capture metadata and artifact store
   skills/                    # discovery, quarantine, trust, activation
@@ -355,6 +355,8 @@ CREATE VIRTUAL TABLE search_fts USING fts5(
   title, body, tokens, tokenize='unicode61 remove_diacritics 2'
 );
 ```
+
+The index layers add to this baseline: `files` carries the Git blob SHA, a binary marker, and rename provenance; `symbols` carries its enclosing symbol and leading documentation; `ignored_paths` records each exclusion with the rule that caused it; `chunks`, `chunk_embeddings`, and the `chunk_search` FTS5 table hold symbol-aware chunks, their local vectors, and their full-text index; `commits` and `commit_files` hold ingested history and per-file churn; and `index_state` records the commit and branch an index was built from. Every one of these rows stores the blob SHA it was derived from, which is what makes the freshness contract answerable.
 
 This SQL is the logical baseline; implementation migrations may reorder table creation to satisfy references and will be checked by executing them against the bundled SQLite build. Migrations are append-only and transactional. `entity_links` deliberately provides cross-domain graph edges while `code_edges` remains optimized for high-volume index replacement. Application repositories validate generic link targets because SQLite cannot enforce polymorphic foreign keys and normalize nullable edge identities before upsert.
 

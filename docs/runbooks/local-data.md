@@ -8,7 +8,9 @@ Mars uses one bundled SQLite database per local application profile. At startup,
 
 Every connection enables foreign keys, a five-second busy timeout, WAL journaling, and `synchronous=NORMAL`. Mars bundles SQLite through `rusqlite`; the test suite creates an FTS5 virtual table to prove that the shipped build includes FTS5 instead of relying on the host SQLite binary.
 
-The database also contains the rebuildable structural code index. Index runs publish changed files, symbols, and edges transactionally; interrupted runs retain diagnostic state without exposing partial graph replacements. Source files remain authoritative and can be reindexed.
+The database also contains the rebuildable repository index: files, symbols, graph edges, symbol-aware chunks with their local embeddings, recorded ignore decisions, and ingested Git commit and churn history. Index runs publish changed files transactionally; interrupted runs retain diagnostic state without exposing partial replacements. Source files and Git remain authoritative and can be reindexed at any time.
+
+Every indexed row records the Git blob SHA it was derived from. A consumer can ask whether a path is still current, and answers that rest on changed files are labelled stale rather than served as though they were fresh. Nothing about the index is written inside the user's repository.
 
 Related files may sit beside the database:
 
@@ -40,3 +42,4 @@ Current limitations:
 
 - There is no online backup, restore, compaction, or artifact garbage collection UI.
 - Jobs persist status/events but do not yet expose checkpoint update APIs; those arrive with the first resumable indexer.
+- Embedding vectors are keyed by the model that produced them (`mars-hashing-v1`). Replacing the embedder requires re-embedding the chunk layer, which a full reindex does.
