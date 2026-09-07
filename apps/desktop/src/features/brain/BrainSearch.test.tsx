@@ -27,9 +27,15 @@ describe("BrainSearch", () => {
       if (command === "index_repository") {
         return Promise.resolve({
           runId: "run-1",
+          mode: "full",
           indexedFiles: 6,
           skippedFiles: 0,
           deletedFiles: 0,
+          renamedFiles: 0,
+          chunkCount: 12,
+          ignoredPaths: 2,
+          commitsIngested: 1,
+          headOid: "0123456789abcdef0123456789abcdef01234567",
         });
       }
       if (command === "find_symbols") return Promise.resolve([symbol]);

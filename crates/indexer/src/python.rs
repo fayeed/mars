@@ -26,7 +26,11 @@ fn visit(
         "function_definition" => {
             if let Some(name) = builder.field_text(node, "name") {
                 // A function directly inside a class body is a method.
-                let kind = if owner.is_some() { "method" } else { "function" };
+                let kind = if owner.is_some() {
+                    "method"
+                } else {
+                    "function"
+                };
                 let key = builder.add_symbol(
                     node,
                     kind,
@@ -152,9 +156,7 @@ fn documentation(builder: &Builder<'_>, node: Node<'_>) -> Option<String> {
         .and_then(|content| builder.text(content));
 
     docstring
-        .or_else(|| {
-            crate::facts::leading_comment(node, &builder.source.content, &COMMENT_KINDS)
-        })
+        .or_else(|| crate::facts::leading_comment(node, &builder.source.content, &COMMENT_KINDS))
         .map(|documentation| clamp_documentation(documentation.trim().to_owned()))
         .filter(|documentation| !documentation.is_empty())
 }

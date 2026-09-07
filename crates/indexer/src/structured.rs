@@ -67,9 +67,7 @@ fn visit_json(
                 true,
             );
             // package.json dependency sections name real external packages.
-            if is_manifest
-                && path.is_some_and(|path| DEPENDENCY_SECTIONS.contains(&path))
-            {
+            if is_manifest && path.is_some_and(|path| DEPENDENCY_SECTIONS.contains(&path)) {
                 builder.add_edge(key_node, None, "DEPENDS_ON", "module", &key, 1.0)?;
             }
             child_path = Some(qualified);
@@ -77,7 +75,11 @@ fn visit_json(
         }
     }
 
-    let next_depth = if node.kind() == "pair" { depth + 1 } else { depth };
+    let next_depth = if node.kind() == "pair" {
+        depth + 1
+    } else {
+        depth
+    };
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
         visit_json(
@@ -168,7 +170,10 @@ fn visit_yaml(
     Ok(())
 }
 
-pub(crate) fn extract_markdown(builder: &mut Builder<'_>, root: Node<'_>) -> Result<(), IndexError> {
+pub(crate) fn extract_markdown(
+    builder: &mut Builder<'_>,
+    root: Node<'_>,
+) -> Result<(), IndexError> {
     visit_markdown(builder, root, None, None)
 }
 
@@ -204,7 +209,12 @@ fn visit_markdown(
 
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
-        visit_markdown(builder, child, child_path.as_deref(), child_parent.as_deref())?;
+        visit_markdown(
+            builder,
+            child,
+            child_path.as_deref(),
+            child_parent.as_deref(),
+        )?;
     }
     Ok(())
 }
@@ -216,14 +226,12 @@ fn section_heading(node: Node<'_>) -> Option<Node<'_>> {
 }
 
 fn heading_text(builder: &Builder<'_>, heading: Node<'_>) -> Option<String> {
-    let content = heading
-        .child_by_field_name("heading_content")
-        .or_else(|| {
-            let mut cursor = heading.walk();
-            heading
-                .named_children(&mut cursor)
-                .find(|child| child.kind() == "inline")
-        })?;
+    let content = heading.child_by_field_name("heading_content").or_else(|| {
+        let mut cursor = heading.walk();
+        heading
+            .named_children(&mut cursor)
+            .find(|child| child.kind() == "inline")
+    })?;
     builder
         .text(content)
         .map(|text| text.trim().to_owned())

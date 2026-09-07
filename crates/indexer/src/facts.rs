@@ -152,9 +152,7 @@ impl<'a> Builder<'a> {
 
     #[must_use]
     pub fn text(&self, node: Node<'_>) -> Option<String> {
-        node.utf8_text(&self.source.content)
-            .ok()
-            .map(str::to_owned)
+        node.utf8_text(&self.source.content).ok().map(str::to_owned)
     }
 
     #[must_use]
@@ -186,7 +184,11 @@ pub fn leading_comment(node: Node<'_>, source: &[u8], comment_kinds: &[&str]) ->
         if !comment_kinds.contains(&sibling.kind()) {
             break;
         }
-        if sibling.end_position().row + 1 != expected_row {
+        // Grammars disagree about whether a line comment owns its trailing
+        // newline: Rust's ends at column 0 of the following row, Go's ends on
+        // its own row. Both mean "the line directly above".
+        let end_row = sibling.end_position().row;
+        if end_row + 1 < expected_row || end_row > expected_row {
             break;
         }
         let Ok(text) = sibling.utf8_text(source) else {

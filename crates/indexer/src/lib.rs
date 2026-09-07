@@ -322,18 +322,14 @@ impl Indexer {
         cancellation: &CancellationToken,
         observer: &mut impl FnMut(&IndexEvent),
     ) -> Result<IndexSummary, IndexError> {
-        let existing = self.existing_files(repository_id)?;
+        let existing = self.existing_files(repository_id, options.paths.as_deref())?;
 
         // A targeted run still consults the ignore rules, so a path that has just
         // become ignored is retired rather than re-indexed.
         let (sources, ignored, covered) = match options.paths.as_deref() {
             Some(paths) => {
-                let allowed: HashSet<String> = walk::source_paths(root)?.into_iter().collect();
-                let requested: Vec<String> = paths
-                    .iter()
-                    .map(|path| path.replace('\\', "/"))
-                    .filter(|path| allowed.contains(path))
-                    .collect();
+                let allowed = walk::included_among(root, paths)?;
+                let requested: Vec<String> = allowed.into_iter().collect();
                 let covered: HashSet<String> =
                     paths.iter().map(|path| path.replace('\\', "/")).collect();
                 (walk::read_paths(root, &requested)?, None, Some(covered))
@@ -353,15 +349,17 @@ impl Indexer {
         let deleted: Vec<String> = existing
             .keys()
             .filter(|path| !seen.contains(*path))
-            .filter(|path| covered.as_ref().is_none_or(|covered| covered.contains(*path)))
+            .filter(|path| {
+                covered
+                    .as_ref()
+                    .is_none_or(|covered| covered.contains(*path))
+            })
             .cloned()
             .collect();
 
         let (renames, deleted) = detect_renames(&existing, &sources, &deleted);
-        let renamed_targets: HashSet<&str> = renames
-            .iter()
-            .map(|rename| rename.to.as_str())
-            .collect();
+        let renamed_targets: HashSet<&str> =
+            renames.iter().map(|rename| rename.to.as_str()).collect();
 
         let total_files = sources.len();
         observer(&IndexEvent::Started {
@@ -466,26 +464,46 @@ impl Indexer {
         })
     }
 
+    /// Loads the indexed state a run diffs against: every active file for a
+    /// full run, or only the covered paths for a targeted one.
     fn existing_files(
         &self,
         repository_id: &str,
+        paths: Option<&[String]>,
     ) -> Result<HashMap<String, ExistingFile>, IndexError> {
-        Ok(self.storage.with_connection(|connection| {
-            let mut statement = connection.prepare(
-                "SELECT relative_path, content_hash, IFNULL(blob_sha, '')
-                 FROM files WHERE repository_id = ?1 AND deleted_at IS NULL",
-            )?;
-            statement
-                .query_map([repository_id], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        ExistingFile {
-                            content_hash: row.get(1)?,
-                            blob_sha: row.get(2)?,
-                        },
-                    ))
-                })?
-                .collect()
+        let read = |row: &rusqlite::Row<'_>| {
+            Ok((
+                row.get::<_, String>(0)?,
+                ExistingFile {
+                    content_hash: row.get(1)?,
+                    blob_sha: row.get(2)?,
+                },
+            ))
+        };
+        Ok(self.storage.with_connection(|connection| match paths {
+            Some(paths) => {
+                let mut statement = connection.prepare_cached(
+                    "SELECT relative_path, content_hash, IFNULL(blob_sha, '')
+                     FROM files
+                     WHERE repository_id = ?1 AND relative_path = ?2 AND deleted_at IS NULL",
+                )?;
+                let mut existing = HashMap::new();
+                for path in paths {
+                    let path = path.replace('\\', "/");
+                    let mut rows = statement.query_map(params![repository_id, path], read)?;
+                    if let Some(row) = rows.next().transpose()? {
+                        existing.insert(row.0, row.1);
+                    }
+                }
+                Ok(existing)
+            }
+            None => {
+                let mut statement = connection.prepare(
+                    "SELECT relative_path, content_hash, IFNULL(blob_sha, '')
+                     FROM files WHERE repository_id = ?1 AND deleted_at IS NULL",
+                )?;
+                statement.query_map([repository_id], read)?.collect()
+            }
         })?)
     }
 

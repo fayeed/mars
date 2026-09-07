@@ -53,9 +53,13 @@ fn print(node: Node<'_>, source: &[u8], depth: usize) {
         })
         .collect();
     println!(
-        "{:indent$}{} [{}] {}",
+        "{:indent$}{} rows {}..{} cols {}..{} [{}] {}",
         "",
         node.kind(),
+        node.start_position().row,
+        node.end_position().row,
+        node.start_position().column,
+        node.end_position().column,
         fields.join(" "),
         text,
         indent = depth * 2

@@ -75,7 +75,9 @@ fn visit(
             if let Some(name) = builder.field_text(node, "name") {
                 let kind = node
                     .child_by_field_name("value")
-                    .filter(|value| matches!(value.kind(), "arrow_function" | "function_expression"))
+                    .filter(|value| {
+                        matches!(value.kind(), "arrow_function" | "function_expression")
+                    })
                     .map_or("variable", |_| "function");
                 let key = builder.add_symbol(
                     node,
@@ -146,7 +148,14 @@ fn visit(
                 && !is_call_target(node)
                 && let Some(target) = builder.text(node)
             {
-                builder.add_edge(node, Some(source_key), "REFERENCES", "symbol", &target, 0.35)?;
+                builder.add_edge(
+                    node,
+                    Some(source_key),
+                    "REFERENCES",
+                    "symbol",
+                    &target,
+                    0.35,
+                )?;
             }
         }
         _ => {}
@@ -179,7 +188,9 @@ fn documentation(builder: &Builder<'_>, node: Node<'_>) -> Option<String> {
 fn declaration_documentation(builder: &Builder<'_>, node: Node<'_>) -> Option<String> {
     let anchor = node
         .parent()
-        .filter(|parent| parent.kind() == "variable_declaration" || parent.kind() == "lexical_declaration")
+        .filter(|parent| {
+            parent.kind() == "variable_declaration" || parent.kind() == "lexical_declaration"
+        })
         .unwrap_or(node);
     documentation(builder, anchor)
 }

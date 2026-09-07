@@ -213,10 +213,7 @@ impl SearchService {
         });
         scored.truncate(k);
 
-        let ids: Vec<String> = scored
-            .iter()
-            .map(|(_, row)| row.chunk_id.clone())
-            .collect();
+        let ids: Vec<String> = scored.iter().map(|(_, row)| row.chunk_id.clone()).collect();
         let details = self.chunk_details(&ids)?;
 
         Ok(scored
@@ -262,14 +259,12 @@ impl SearchService {
 
         for hit in lexical {
             let rank = hit.lexical_rank.unwrap_or(depth + 1);
-            *scores.entry(hit.chunk_id.clone()).or_default() +=
-                1.0 / (RRF_CONSTANT + rank as f64);
+            *scores.entry(hit.chunk_id.clone()).or_default() += 1.0 / (RRF_CONSTANT + rank as f64);
             fused.insert(hit.chunk_id.clone(), hit);
         }
         for hit in semantic {
             let rank = hit.semantic_rank.unwrap_or(depth + 1);
-            *scores.entry(hit.chunk_id.clone()).or_default() +=
-                1.0 / (RRF_CONSTANT + rank as f64);
+            *scores.entry(hit.chunk_id.clone()).or_default() += 1.0 / (RRF_CONSTANT + rank as f64);
             fused
                 .entry(hit.chunk_id.clone())
                 .and_modify(|existing| existing.semantic_rank = hit.semantic_rank)

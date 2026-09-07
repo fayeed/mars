@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::UNIX_EPOCH;
 
 use ignore::WalkBuilder;
@@ -93,6 +94,54 @@ pub fn source_paths(root: &Path) -> Result<Vec<String>, IndexError> {
     Ok(included_paths(root)?.into_iter().collect())
 }
 
+/// Filters candidate paths down to the ones the index would include, without
+/// walking the whole tree.
+///
+/// Each candidate's parent directory is walked one level deep with the same
+/// ignore configuration as a full run, so a targeted re-index applies exactly
+/// the rules a full run would -- including `.gitignore` files in directories
+/// above the one being checked.
+pub fn included_among(root: &Path, candidates: &[String]) -> Result<BTreeSet<String>, IndexError> {
+    let mut wanted: BTreeSet<String> = BTreeSet::new();
+    let mut parents: BTreeSet<String> = BTreeSet::new();
+    for candidate in candidates {
+        let candidate = candidate.replace('\\', "/");
+        let parent = candidate
+            .rsplit_once('/')
+            .map_or(String::new(), |(head, _)| head.to_owned());
+        parents.insert(parent);
+        wanted.insert(candidate);
+    }
+
+    let mut included = BTreeSet::new();
+    for parent in parents {
+        let directory = if parent.is_empty() {
+            root.to_path_buf()
+        } else {
+            root.join(&parent)
+        };
+        if !directory.is_dir() {
+            continue;
+        }
+        let mut builder = WalkBuilder::new(&directory);
+        builder.add_custom_ignore_filename(".marsignore");
+        builder.hidden(false);
+        builder.max_depth(Some(1));
+        builder.filter_entry(|entry| !is_mars_excluded(entry.path()));
+        for result in builder.build() {
+            let entry = result.map_err(|error| IndexError::Walk(error.to_string()))?;
+            if !entry.file_type().is_some_and(|kind| kind.is_file()) {
+                continue;
+            }
+            let relative = relative_path(root, entry.path())?;
+            if wanted.contains(&relative) {
+                included.insert(relative);
+            }
+        }
+    }
+    Ok(included)
+}
+
 /// Reads a specific set of paths, skipping any that no longer exist.
 pub fn read_paths(root: &Path, relative_paths: &[String]) -> Result<Vec<SourceFile>, IndexError> {
     let mut files = Vec::new();
@@ -127,10 +176,27 @@ fn included_paths(root: &Path) -> Result<BTreeSet<String>, IndexError> {
 /// Mars-excluded directories are recorded once instead of being descended into.
 fn ignored_paths(root: &Path, included: &BTreeSet<String>) -> Result<Vec<IgnoredPath>, IndexError> {
     let marsignore = marsignore_matcher(root)?;
+    // Pruned directories are captured as the walk decides to skip them, so a
+    // tree such as `node_modules/` is recorded once and never descended into.
+    let pruned: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let mut builder = WalkBuilder::new(root);
     builder.standard_filters(false);
     builder.hidden(false);
-    builder.filter_entry(|entry| entry.depth() == 0 || !is_mars_excluded_directory(entry.path()));
+    builder.filter_entry({
+        let pruned = pruned.clone();
+        let root = root.to_path_buf();
+        move |entry| {
+            if entry.depth() == 0 || !is_mars_excluded_directory(entry.path()) {
+                return true;
+            }
+            if let Ok(relative) = relative_path(&root, entry.path())
+                && let Ok(mut pruned) = pruned.lock()
+            {
+                pruned.push(relative);
+            }
+            false
+        }
+    });
 
     let mut ignored = Vec::new();
     for result in builder.build() {
@@ -153,9 +219,12 @@ fn ignored_paths(root: &Path, included: &BTreeSet<String>) -> Result<Vec<Ignored
         });
     }
 
-    for directory in excluded_directories(root)? {
+    let pruned = pruned
+        .lock()
+        .map_err(|_| IndexError::Walk("ignore collector lock was poisoned".into()))?;
+    for directory in pruned.iter() {
         ignored.push(IgnoredPath {
-            relative_path: directory,
+            relative_path: directory.clone(),
             is_directory: true,
             reason: IgnoreReason::MarsDefaultDirectory,
         });
@@ -164,43 +233,15 @@ fn ignored_paths(root: &Path, included: &BTreeSet<String>) -> Result<Vec<Ignored
     Ok(ignored)
 }
 
-/// Finds the Mars-excluded directories at the boundary of the walk, so a pruned
-/// tree such as `node_modules/` is recorded once rather than per contained file.
-fn excluded_directories(root: &Path) -> Result<Vec<String>, IndexError> {
-    let mut builder = WalkBuilder::new(root);
-    builder.standard_filters(false);
-    builder.hidden(false);
-    builder.filter_entry(|entry| entry.depth() == 0 || !is_mars_excluded_directory(entry.path()));
-
-    let mut directories = Vec::new();
-    for result in builder.build() {
-        let entry = result.map_err(|error| IndexError::Walk(error.to_string()))?;
-        if !entry.file_type().is_some_and(|kind| kind.is_dir()) {
-            continue;
-        }
-        let listing = match fs::read_dir(entry.path()) {
-            Ok(listing) => listing,
-            Err(_) => continue,
-        };
-        for child in listing {
-            let child = child.map_err(|source| IndexError::Filesystem {
-                path: entry.path().into(),
-                source,
-            })?;
-            if child.path().is_dir() && is_mars_excluded_directory(&child.path()) {
-                directories.push(relative_path(root, &child.path())?);
-            }
-        }
-    }
-    Ok(directories)
-}
-
 fn file_ignore_reason(
     path: &Path,
     relative: &str,
     marsignore: Option<&ignore::gitignore::Gitignore>,
 ) -> IgnoreReason {
-    let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
     if is_sensitive_filename(name) {
         return IgnoreReason::SensitiveFile;
     }
@@ -234,10 +275,11 @@ fn marsignore_matcher(root: &Path) -> Result<Option<ignore::gitignore::Gitignore
             .strip_suffix(".marsignore")
             .unwrap_or_default()
             .to_owned();
-        let contents = fs::read_to_string(entry.path()).map_err(|source| IndexError::Filesystem {
-            path: entry.path().into(),
-            source,
-        })?;
+        let contents =
+            fs::read_to_string(entry.path()).map_err(|source| IndexError::Filesystem {
+                path: entry.path().into(),
+                source,
+            })?;
         for line in contents.lines() {
             let line = line.trim();
             if line.is_empty() || line.starts_with('#') {
@@ -286,14 +328,22 @@ fn read_source(root: &Path, relative_path: &str) -> Result<SourceFile, IndexErro
         .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
         .and_then(|duration| i64::try_from(duration.as_nanos()).ok());
 
-    let digests = digest_file(&absolute, byte_size)?;
-    let content = if byte_size <= MAX_PARSED_BYTES && !digests.is_binary {
-        fs::read(&absolute).map_err(|source| IndexError::Filesystem {
+    // A file small enough to parse is read once and hashed from that buffer;
+    // anything larger is streamed for its identity and never held in memory.
+    let (digests, content) = if byte_size <= MAX_PARSED_BYTES {
+        let content = fs::read(&absolute).map_err(|source| IndexError::Filesystem {
             path: absolute.clone(),
             source,
-        })?
+        })?;
+        let digests = digest_bytes(&content, byte_size);
+        let content = if digests.is_binary {
+            Vec::new()
+        } else {
+            content
+        };
+        (digests, content)
     } else {
-        Vec::new()
+        (digest_file(&absolute, byte_size)?, Vec::new())
     };
     let language = languages::detect(Path::new(relative_path));
     let parseable = !digests.is_binary
@@ -331,6 +381,18 @@ pub fn blob_sha(path: &Path) -> Result<String, IndexError> {
         source,
     })?;
     Ok(digest_file(path, metadata.len())?.blob_sha)
+}
+
+/// Hashes an already-read buffer, avoiding a second pass over the file.
+fn digest_bytes(content: &[u8], byte_size: u64) -> FileDigests {
+    let mut blob = Sha1::new();
+    blob.update(format!("blob {byte_size}\0").as_bytes());
+    blob.update(content);
+    FileDigests {
+        sha256: hex(&Sha256::digest(content)),
+        blob_sha: hex(&blob.finalize()),
+        is_binary: content.iter().take(8192).any(|byte| *byte == 0),
+    }
 }
 
 struct FileDigests {

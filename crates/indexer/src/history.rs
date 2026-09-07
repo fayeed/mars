@@ -207,7 +207,10 @@ fn parse_log(text: &str) -> Vec<CommitRecord> {
         let Some(header) = tokens.next() else {
             continue;
         };
-        let fields: Vec<&str> = header.trim_start_matches('\n').split(FIELD_SEPARATOR).collect();
+        let fields: Vec<&str> = header
+            .trim_start_matches('\n')
+            .split(FIELD_SEPARATOR)
+            .collect();
         if fields.len() < 7 {
             continue;
         }
@@ -247,8 +250,14 @@ fn parse_log(text: &str) -> Vec<CommitRecord> {
             }
 
             let mut parts = token.splitn(3, '\t');
-            let insertions = parts.next().and_then(|value| value.parse().ok()).unwrap_or(0);
-            let deletions = parts.next().and_then(|value| value.parse().ok()).unwrap_or(0);
+            let insertions = parts
+                .next()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(0);
+            let deletions = parts
+                .next()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(0);
             let path = parts.next().unwrap_or("");
             let path = if path.is_empty() {
                 // A rename in numstat puts the old and new paths in the next tokens.
@@ -313,14 +322,7 @@ pub fn blame(
     let range = format!("{start},{end}");
     let output = command::run(
         root,
-        [
-            "blame",
-            "--porcelain",
-            "-L",
-            &range,
-            "--",
-            relative_path,
-        ],
+        ["blame", "--porcelain", "-L", &range, "--", relative_path],
     )
     .map_err(|error| IndexError::Git(error.to_string()))?;
     Ok(parse_blame(&String::from_utf8_lossy(&output.stdout)))
@@ -345,7 +347,9 @@ fn parse_blame(text: &str) -> Vec<BlameRange> {
             authors.insert(current_oid.clone(), details.clone());
             pending = None;
             match ranges.last_mut() {
-                Some(last) if last.commit_oid == current_oid && last.end_line + 1 == current_line => {
+                Some(last)
+                    if last.commit_oid == current_oid && last.end_line + 1 == current_line =>
+                {
                     last.end_line = current_line;
                 }
                 _ => ranges.push(BlameRange {
@@ -387,7 +391,9 @@ fn parse_blame(text: &str) -> Vec<BlameRange> {
     ranges
 }
 
-fn entry(pending: &mut Option<(String, String, String, String)>) -> &mut (String, String, String, String) {
+fn entry(
+    pending: &mut Option<(String, String, String, String)>,
+) -> &mut (String, String, String, String) {
     pending.get_or_insert_with(Default::default)
 }
 

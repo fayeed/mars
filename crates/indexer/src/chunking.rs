@@ -149,7 +149,9 @@ fn push_interstitial(
     let Some(text) = parsed.source.text() else {
         return;
     };
-    let symbol_path = parent.map(|parent| symbol_path(parsed, parent)).unwrap_or_default();
+    let symbol_path = parent
+        .map(|parent| symbol_path(parsed, parent))
+        .unwrap_or_default();
     let mut cursor = start;
     while cursor < end {
         let limit = (cursor + TARGET_CHUNK_BYTES).min(end);
@@ -268,5 +270,9 @@ fn hash(value: &str) -> String {
 
 fn line_of(text: &str, byte: usize) -> usize {
     let clamped = byte.min(text.len());
-    text[..clamped].bytes().filter(|byte| *byte == b'\n').count() + 1
+    text[..clamped]
+        .bytes()
+        .filter(|byte| *byte == b'\n')
+        .count()
+        + 1
 }

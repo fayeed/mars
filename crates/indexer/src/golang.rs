@@ -232,8 +232,5 @@ fn is_definition_name(node: Node<'_>) -> bool {
 }
 
 fn unquote(value: &str) -> String {
-    value
-        .trim()
-        .trim_matches(['"', '`', '\''])
-        .to_owned()
+    value.trim().trim_matches(['"', '`', '\'']).to_owned()
 }

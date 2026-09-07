@@ -6,7 +6,7 @@
 //! targeted re-index rather than one per event.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex};
@@ -30,11 +30,17 @@ const TICK: Duration = Duration::from_millis(25);
 #[serde(rename_all = "camelCase", tag = "event")]
 pub enum WatchEvent {
     /// Paths went quiet and are about to be re-indexed.
-    Changed { relative_paths: Vec<String> },
+    Changed {
+        relative_paths: Vec<String>,
+    },
     /// The repository moved to a different commit, so the whole tree is re-read.
     HeadChanged,
-    Indexed { summary: IndexSummary },
-    Failed { error: String },
+    Indexed {
+        summary: IndexSummary,
+    },
+    Failed {
+        error: String,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -205,7 +211,7 @@ enum Change {
 
 /// Maps a filesystem event path to something the index cares about. Git's own
 /// bookkeeping is ignored apart from `HEAD`, which signals a branch switch.
-fn classify(root: &Path, path: &PathBuf) -> Option<Change> {
+fn classify(root: &Path, path: &Path) -> Option<Change> {
     let relative = walk::relative_path(root, path).ok()?;
     if relative == ".git/HEAD" {
         return Some(Change::Head);

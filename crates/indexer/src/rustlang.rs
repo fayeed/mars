@@ -26,7 +26,11 @@ fn visit(
         "function_item" | "function_signature_item" => {
             if let Some(name) = builder.field_text(node, "name") {
                 // A function inside an `impl` or `trait` block is a method.
-                let kind = if owner.is_some() { "method" } else { "function" };
+                let kind = if owner.is_some() {
+                    "method"
+                } else {
+                    "function"
+                };
                 let key = builder.add_symbol(
                     node,
                     kind,

@@ -1,8 +1,14 @@
 export interface IndexSummary {
   runId: string;
+  mode: string;
   indexedFiles: number;
   skippedFiles: number;
   deletedFiles: number;
+  renamedFiles: number;
+  chunkCount: number;
+  ignoredPaths: number;
+  commitsIngested: number;
+  headOid: string | null;
 }
 
 export interface BrainSymbol {

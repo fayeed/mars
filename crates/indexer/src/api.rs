@@ -647,12 +647,7 @@ impl IndexApi {
     ) -> Result<BlameResult, IndexError> {
         let repository = self.projects.find_repository(repository_id)?;
         let relative_path = relative_path.replace('\\', "/");
-        let ranges = history::blame(
-            &repository.root_path,
-            &relative_path,
-            start_line,
-            end_line,
-        )?;
+        let ranges = history::blame(&repository.root_path, &relative_path, start_line, end_line)?;
         Ok(BlameResult {
             churn: history::churn(&self.storage, repository_id, &relative_path)?,
             freshness: self.freshness(repository_id, &relative_path)?,

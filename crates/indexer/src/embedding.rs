@@ -97,11 +97,7 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 }
 
 fn normalize(vector: &mut [f32]) {
-    let magnitude = vector
-        .iter()
-        .map(|value| value * value)
-        .sum::<f32>()
-        .sqrt();
+    let magnitude = vector.iter().map(|value| value * value).sum::<f32>().sqrt();
     if magnitude > f32::EPSILON {
         for value in vector.iter_mut() {
             *value /= magnitude;
@@ -123,7 +119,7 @@ pub fn encode(vector: &[f32]) -> Vec<u8> {
 /// of `f32` values.
 #[must_use]
 pub fn decode(bytes: &[u8]) -> Option<Vec<f32>> {
-    if bytes.len() % 4 != 0 {
+    if !bytes.len().is_multiple_of(4) {
         return None;
     }
     Some(

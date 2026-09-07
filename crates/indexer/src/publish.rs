@@ -65,8 +65,17 @@ pub fn publish(storage: &Arc<Storage>, input: &PublishInput<'_>) -> Result<(), I
                 params![input.repository_id, rename.from, rename.to],
             )?;
         }
+        // Only the names this run disturbed can change how an edge resolves, so
+        // reconciliation is scoped to them rather than to the whole repository.
+        let mut touched = Touched::default();
         for relative_path in input.deleted {
-            retire_file(transaction, input.repository_id, relative_path, &indexed_at)?;
+            retire_file(
+                transaction,
+                input.repository_id,
+                relative_path,
+                &indexed_at,
+                &mut touched,
+            )?;
         }
         for file in input.files {
             replace_file(
@@ -75,9 +84,10 @@ pub fn publish(storage: &Arc<Storage>, input: &PublishInput<'_>) -> Result<(), I
                 input.run_id,
                 file,
                 &indexed_at,
+                &mut touched,
             )?;
         }
-        reconcile_targets(transaction, input.repository_id)?;
+        reconcile_targets(transaction, input.repository_id, &touched)?;
         if let Some(ignored) = input.ignored {
             replace_ignored(transaction, input.repository_id, ignored, &indexed_at)?;
         }
@@ -110,12 +120,21 @@ pub fn publish(storage: &Arc<Storage>, input: &PublishInput<'_>) -> Result<(), I
     Ok(())
 }
 
+/// The names and symbol ids a run disturbed, which bound the work that edge
+/// reconciliation has to do.
+#[derive(Debug, Default)]
+struct Touched {
+    names: std::collections::HashSet<String>,
+    removed_symbol_ids: Vec<String>,
+}
+
 fn replace_file(
     transaction: &Transaction<'_>,
     repository_id: &str,
     run_id: &str,
     prepared: &PreparedFile,
     indexed_at: &str,
+    touched: &mut Touched,
 ) -> rusqlite::Result<()> {
     let parsed = &prepared.parsed;
     let existing_id: Option<String> = transaction
@@ -127,18 +146,34 @@ fn replace_file(
         .optional()?;
     let file_id = existing_id.unwrap_or_else(|| Uuid::now_v7().to_string());
     let existing_symbols = symbol_ids(transaction, &file_id)?;
+    for (name, symbol_id) in previous_names(transaction, &file_id)? {
+        touched.names.insert(name);
+        touched.removed_symbol_ids.push(symbol_id);
+    }
+    for symbol in &parsed.symbols {
+        touched.names.insert(symbol.name.clone());
+    }
+    for edge in &parsed.edges {
+        if edge.target_kind == "symbol" {
+            touched.names.insert(edge.target_key.clone());
+        }
+    }
 
     for symbol_id in existing_symbols.values() {
-        transaction.execute("DELETE FROM code_edges WHERE source_id = ?1", [symbol_id])?;
+        transaction
+            .prepare_cached("DELETE FROM code_edges WHERE source_id = ?1")?
+            .execute([symbol_id])?;
     }
-    transaction.execute(
-        "DELETE FROM code_edges WHERE source_kind = 'file' AND source_id = ?1",
-        [&file_id],
-    )?;
+    transaction
+        .prepare_cached("DELETE FROM code_edges WHERE source_kind = 'file' AND source_id = ?1")?
+        .execute([&file_id])?;
     clear_chunks(transaction, &file_id)?;
-    transaction.execute("DELETE FROM symbols WHERE file_id = ?1", [&file_id])?;
-    transaction.execute(
-        "INSERT INTO files
+    transaction
+        .prepare_cached("DELETE FROM symbols WHERE file_id = ?1")?
+        .execute([&file_id])?;
+    transaction
+        .prepare_cached(
+            "INSERT INTO files
          (id, repository_id, relative_path, language, content_hash, byte_size, mtime_ns,
           parse_errors, indexed_at, deleted_at, blob_sha, is_binary)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10, ?11)
@@ -152,7 +187,8 @@ fn replace_file(
            blob_sha = excluded.blob_sha,
            is_binary = excluded.is_binary,
            deleted_at = NULL",
-        params![
+        )?
+        .execute(params![
             file_id,
             repository_id,
             parsed.source.relative_path,
@@ -164,8 +200,7 @@ fn replace_file(
             indexed_at,
             parsed.source.blob_sha,
             i64::from(parsed.source.is_binary),
-        ],
-    )?;
+        ])?;
 
     let mut symbol_by_key = HashMap::new();
     for symbol in &parsed.symbols {
@@ -179,13 +214,15 @@ fn replace_file(
             .parent_stable_key
             .as_ref()
             .and_then(|key| symbol_by_key.get(key).cloned());
-        transaction.execute(
-            "INSERT INTO symbols
+        transaction
+            .prepare_cached(
+                "INSERT INTO symbols
              (id, file_id, stable_key, kind, name, qualified_name, start_byte, end_byte,
               start_line, end_line, signature, exported, content_hash,
               parent_stable_key, parent_symbol_id, documentation, blob_sha)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
-            params![
+            )?
+            .execute(params![
                 symbol_id,
                 file_id,
                 symbol.stable_key,
@@ -203,8 +240,7 @@ fn replace_file(
                 parent_symbol_id,
                 symbol.documentation,
                 parsed.source.blob_sha,
-            ],
-        )?;
+            ])?;
         symbol_by_key.insert(symbol.stable_key.clone(), symbol_id);
     }
 
@@ -220,12 +256,14 @@ fn replace_file(
         } else {
             edge.confidence
         };
-        transaction.execute(
-            "INSERT OR REPLACE INTO code_edges
+        transaction
+            .prepare_cached(
+                "INSERT OR REPLACE INTO code_edges
              (id, repository_id, source_kind, source_id, edge_kind, target_kind, target_id,
               target_key, confidence, evidence_json, index_run_id, blob_sha)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-            params![
+            )?
+            .execute(params![
                 Uuid::now_v7().to_string(),
                 repository_id,
                 source_kind,
@@ -238,8 +276,7 @@ fn replace_file(
                 edge.evidence_json,
                 run_id,
                 parsed.source.blob_sha,
-            ],
-        )?;
+            ])?;
     }
 
     for chunk in &prepared.chunks {
@@ -248,8 +285,9 @@ fn replace_file(
             .symbol_stable_key
             .as_ref()
             .and_then(|key| symbol_by_key.get(key).cloned());
-        transaction.execute(
-            "INSERT INTO chunks
+        transaction
+            .prepare_cached(
+                "INSERT INTO chunks
              (id, repository_id, file_id, symbol_id, ordinal, symbol_path, header, body,
               start_byte, end_byte, start_line, end_line, blob_sha, content_hash, indexed_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
@@ -265,7 +303,8 @@ fn replace_file(
                end_line = excluded.end_line,
                blob_sha = excluded.blob_sha,
                indexed_at = excluded.indexed_at",
-            params![
+            )?
+            .execute(params![
                 chunk.fact.id,
                 repository_id,
                 file_id,
@@ -281,17 +320,14 @@ fn replace_file(
                 parsed.source.blob_sha,
                 chunk.fact.content_hash,
                 indexed_at,
-            ],
-        )?;
-        transaction.execute(
-            "INSERT INTO chunk_embeddings (chunk_id, repository_id, model, dimensions, vector, blob_sha)
+            ])?;
+        transaction.prepare_cached("INSERT INTO chunk_embeddings (chunk_id, repository_id, model, dimensions, vector, blob_sha)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT(chunk_id) DO UPDATE SET
                model = excluded.model,
                dimensions = excluded.dimensions,
                vector = excluded.vector,
-               blob_sha = excluded.blob_sha",
-            params![
+               blob_sha = excluded.blob_sha")?.execute(params![
                 chunk.fact.id,
                 repository_id,
                 embedding::MODEL,
@@ -300,17 +336,18 @@ fn replace_file(
                 parsed.source.blob_sha,
             ],
         )?;
-        transaction.execute(
-            "INSERT INTO chunk_search (chunk_id, repository_id, relative_path, header, body)
+        transaction
+            .prepare_cached(
+                "INSERT INTO chunk_search (chunk_id, repository_id, relative_path, header, body)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![
+            )?
+            .execute(params![
                 chunk.fact.id,
                 repository_id,
                 parsed.source.relative_path,
                 chunk.fact.header,
                 chunk.fact.body,
-            ],
-        )?;
+            ])?;
     }
     Ok(())
 }
@@ -320,6 +357,7 @@ fn retire_file(
     repository_id: &str,
     relative_path: &str,
     deleted_at: &str,
+    touched: &mut Touched,
 ) -> rusqlite::Result<()> {
     let file_id: Option<String> = transaction
         .query_row(
@@ -331,34 +369,40 @@ fn retire_file(
     let Some(file_id) = file_id else {
         return Ok(());
     };
+    for (name, symbol_id) in previous_names(transaction, &file_id)? {
+        touched.names.insert(name);
+        touched.removed_symbol_ids.push(symbol_id);
+    }
     let symbols = symbol_ids(transaction, &file_id)?;
     for symbol_id in symbols.values() {
-        transaction.execute(
-            "DELETE FROM code_edges WHERE source_id = ?1 OR target_id = ?1",
-            [symbol_id],
-        )?;
+        transaction
+            .prepare_cached("DELETE FROM code_edges WHERE source_id = ?1 OR target_id = ?1")?
+            .execute([symbol_id])?;
     }
-    transaction.execute(
-        "DELETE FROM code_edges WHERE source_kind = 'file' AND source_id = ?1",
-        [&file_id],
-    )?;
+    transaction
+        .prepare_cached("DELETE FROM code_edges WHERE source_kind = 'file' AND source_id = ?1")?
+        .execute([&file_id])?;
     clear_chunks(transaction, &file_id)?;
-    transaction.execute("DELETE FROM symbols WHERE file_id = ?1", [&file_id])?;
-    transaction.execute(
-        "UPDATE files SET deleted_at = ?2 WHERE id = ?1",
-        params![file_id, deleted_at],
-    )?;
+    transaction
+        .prepare_cached("DELETE FROM symbols WHERE file_id = ?1")?
+        .execute([&file_id])?;
+    transaction
+        .prepare_cached("UPDATE files SET deleted_at = ?2 WHERE id = ?1")?
+        .execute(params![file_id, deleted_at])?;
     Ok(())
 }
 
 /// The full-text index is a virtual table, so its rows are removed explicitly
 /// rather than by foreign-key cascade.
 fn clear_chunks(transaction: &Transaction<'_>, file_id: &str) -> rusqlite::Result<()> {
-    transaction.execute(
-        "DELETE FROM chunk_search WHERE chunk_id IN (SELECT id FROM chunks WHERE file_id = ?1)",
-        [file_id],
-    )?;
-    transaction.execute("DELETE FROM chunks WHERE file_id = ?1", [file_id])?;
+    transaction
+        .prepare_cached(
+            "DELETE FROM chunk_search WHERE chunk_id IN (SELECT id FROM chunks WHERE file_id = ?1)",
+        )?
+        .execute([file_id])?;
+    transaction
+        .prepare_cached("DELETE FROM chunks WHERE file_id = ?1")?
+        .execute([file_id])?;
     Ok(())
 }
 
@@ -385,7 +429,11 @@ fn replace_ignored(
                 Uuid::now_v7().to_string(),
                 repository_id,
                 entry.relative_path,
-                if entry.is_directory { "directory" } else { "file" },
+                if entry.is_directory {
+                    "directory"
+                } else {
+                    "file"
+                },
                 entry.reason.as_str(),
                 detected_at,
             ],
@@ -427,7 +475,19 @@ fn symbol_ids(
     file_id: &str,
 ) -> rusqlite::Result<HashMap<String, String>> {
     let mut statement =
-        transaction.prepare("SELECT stable_key, id FROM symbols WHERE file_id = ?1")?;
+        transaction.prepare_cached("SELECT stable_key, id FROM symbols WHERE file_id = ?1")?;
+    statement
+        .query_map([file_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect()
+}
+
+/// The symbol names a file currently contributes, read before it is replaced.
+fn previous_names(
+    transaction: &Transaction<'_>,
+    file_id: &str,
+) -> rusqlite::Result<Vec<(String, String)>> {
+    let mut statement =
+        transaction.prepare_cached("SELECT name, id FROM symbols WHERE file_id = ?1")?;
     statement
         .query_map([file_id], |row| Ok((row.get(0)?, row.get(1)?)))?
         .collect()
@@ -438,7 +498,7 @@ fn unique_target(
     repository_id: &str,
     target_key: &str,
 ) -> rusqlite::Result<Option<String>> {
-    let mut statement = transaction.prepare(
+    let mut statement = transaction.prepare_cached(
         "SELECT s.id FROM symbols s JOIN files f ON f.id = s.file_id
          WHERE f.repository_id = ?1 AND f.deleted_at IS NULL AND s.name = ?2 LIMIT 2",
     )?;
@@ -448,27 +508,46 @@ fn unique_target(
     Ok((matches.len() == 1).then(|| matches[0].clone()))
 }
 
-fn reconcile_targets(transaction: &Transaction<'_>, repository_id: &str) -> rusqlite::Result<()> {
-    transaction.execute(
+/// Re-points the edges whose resolution this run could have changed.
+///
+/// An edge resolves only when its target name is unique among active symbols,
+/// so adding or removing a definition can resolve or unresolve edges in other
+/// files. Only the names this run disturbed are revisited, which keeps a
+/// one-file re-index proportional to that file rather than to the repository.
+fn reconcile_targets(
+    transaction: &Transaction<'_>,
+    repository_id: &str,
+    touched: &Touched,
+) -> rusqlite::Result<()> {
+    // An edge pointing at a symbol this run removed loses its target.
+    let mut orphan = transaction.prepare_cached(
         "UPDATE code_edges SET target_id = NULL, confidence = MIN(confidence, 0.45)
-         WHERE repository_id = ?1 AND target_id IS NOT NULL
-           AND target_id NOT IN (SELECT id FROM symbols)",
-        [repository_id],
+         WHERE repository_id = ?1 AND target_id = ?2",
     )?;
-    let mut statement = transaction.prepare(
-        "SELECT DISTINCT target_key FROM code_edges WHERE repository_id = ?1 AND target_kind = 'symbol'",
+    for symbol_id in &touched.removed_symbol_ids {
+        orphan.execute(params![repository_id, symbol_id])?;
+    }
+    drop(orphan);
+
+    let mut resolve = transaction.prepare_cached(
+        "UPDATE code_edges SET target_id = ?3, confidence = MAX(confidence, 0.9)
+         WHERE repository_id = ?1 AND target_key = ?2 AND target_kind = 'symbol'",
     )?;
-    let keys: Vec<String> = statement
-        .query_map([repository_id], |row| row.get(0))?
-        .collect::<rusqlite::Result<_>>()?;
-    drop(statement);
-    for key in keys {
-        if let Some(target_id) = unique_target(transaction, repository_id, &key)? {
-            transaction.execute(
-                "UPDATE code_edges SET target_id = ?3, confidence = MAX(confidence, 0.9)
-                 WHERE repository_id = ?1 AND target_key = ?2 AND target_kind = 'symbol'",
-                params![repository_id, key, target_id],
-            )?;
+    let mut unresolve = transaction.prepare_cached(
+        "UPDATE code_edges SET target_id = NULL, confidence = MIN(confidence, 0.45)
+         WHERE repository_id = ?1 AND target_key = ?2 AND target_kind = 'symbol'
+           AND target_id IS NOT NULL",
+    )?;
+    for name in &touched.names {
+        match unique_target(transaction, repository_id, name)? {
+            Some(target_id) => {
+                resolve.execute(params![repository_id, name, target_id])?;
+            }
+            // A name that is no longer unique, or no longer exists, must stop
+            // claiming a resolved target.
+            None => {
+                unresolve.execute(params![repository_id, name])?;
+            }
         }
     }
     Ok(())
