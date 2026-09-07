@@ -175,13 +175,15 @@ fn artifact_files(root: &Path) -> Vec<PathBuf> {
 }
 
 struct Fixture {
-    directory: TestDirectory,
+    // Declaration order is drop order: the database and the service holding it
+    // must close before the directory they live in is removed.
+    context: ContextService,
+    storage: Arc<Storage>,
     repository_id: String,
     task_id: String,
     second_task_id: String,
-    storage: Arc<Storage>,
     artifact_root: PathBuf,
-    context: ContextService,
+    directory: TestDirectory,
 }
 
 impl Fixture {
