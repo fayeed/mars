@@ -1,286 +1,212 @@
-use std::collections::HashMap;
+//! TypeScript and JavaScript symbol and edge extraction.
 
-use serde::Serialize;
-use tree_sitter::{Language, Node, Parser};
+use tree_sitter::Node;
 
 use crate::IndexError;
-use crate::walk::SourceFile;
+use crate::facts::{Builder, clamp_documentation, leading_comment};
 
-#[derive(Clone, Debug)]
-pub struct ParsedFile {
-    pub source: SourceFile,
-    pub symbols: Vec<SymbolFact>,
-    pub edges: Vec<EdgeFact>,
-    pub parse_errors: usize,
+const COMMENT_KINDS: [&str; 1] = ["comment"];
+
+pub(crate) fn extract(builder: &mut Builder<'_>, root: Node<'_>) -> Result<(), IndexError> {
+    visit(builder, root, None, None)
 }
 
-#[derive(Clone, Debug)]
-pub struct SymbolFact {
-    pub stable_key: String,
-    pub kind: String,
-    pub name: String,
-    pub qualified_name: String,
-    pub start_byte: usize,
-    pub end_byte: usize,
-    pub start_line: usize,
-    pub end_line: usize,
-    pub signature: Option<String>,
-    pub exported: bool,
-}
+fn visit(
+    builder: &mut Builder<'_>,
+    node: Node<'_>,
+    owner: Option<&str>,
+    enclosing: Option<String>,
+) -> Result<(), IndexError> {
+    let mut nested_owner = owner.map(str::to_owned);
+    // The enclosing symbol is both the parent of nested definitions and the
+    // source of the edges found inside it.
+    let mut nested_enclosing = enclosing.clone();
 
-#[derive(Clone, Debug)]
-pub struct EdgeFact {
-    pub source_stable_key: Option<String>,
-    pub edge_kind: String,
-    pub target_kind: String,
-    pub target_key: String,
-    pub confidence: f64,
-    pub evidence_json: String,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct Evidence<'a> {
-    relative_path: &'a str,
-    start_byte: usize,
-    end_byte: usize,
-    start_line: usize,
-    end_line: usize,
-    parser: &'static str,
-}
-
-pub fn parse(source: SourceFile) -> Result<ParsedFile, IndexError> {
-    let language = language(&source.language);
-    let mut parser = Parser::new();
-    parser
-        .set_language(&language)
-        .map_err(|error| IndexError::Parse(error.to_string()))?;
-    let tree = parser
-        .parse(&source.content, None)
-        .ok_or_else(|| IndexError::Parse("parser returned no tree".into()))?;
-    let parse_errors = count_errors(tree.root_node());
-    let mut extractor = Extractor {
-        source: &source,
-        symbols: Vec::new(),
-        edges: Vec::new(),
-        ordinals: HashMap::new(),
-    };
-    extractor.visit(tree.root_node(), None, None)?;
-    let symbols = std::mem::take(&mut extractor.symbols);
-    let edges = std::mem::take(&mut extractor.edges);
-    drop(extractor);
-    Ok(ParsedFile {
-        source,
-        symbols,
-        edges,
-        parse_errors,
-    })
-}
-
-fn language(name: &str) -> Language {
-    match name {
-        "typescript" => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
-        "tsx" => tree_sitter_typescript::LANGUAGE_TSX.into(),
-        _ => tree_sitter_javascript::LANGUAGE.into(),
-    }
-}
-
-struct Extractor<'a> {
-    source: &'a SourceFile,
-    symbols: Vec<SymbolFact>,
-    edges: Vec<EdgeFact>,
-    ordinals: HashMap<(String, String), usize>,
-}
-
-impl Extractor<'_> {
-    fn visit(
-        &mut self,
-        node: Node<'_>,
-        owner: Option<&str>,
-        current_source: Option<String>,
-    ) -> Result<(), IndexError> {
-        let mut nested_owner = owner.map(str::to_owned);
-        let mut nested_source = current_source;
-
-        match node.kind() {
-            "function_declaration" => {
-                if let Some(name) = self.field_text(node, "name") {
-                    let key = self.add_symbol(
-                        node,
-                        "function",
-                        &name,
-                        owner,
-                        signature(node, &self.source.content),
-                    );
-                    nested_source = Some(key);
-                }
+    match node.kind() {
+        "function_declaration" => {
+            if let Some(name) = builder.field_text(node, "name") {
+                let key = builder.add_symbol(
+                    node,
+                    "function",
+                    &name,
+                    owner,
+                    enclosing.as_deref(),
+                    builder.field_text(node, "parameters"),
+                    documentation(builder, node),
+                    is_exported(node),
+                );
+                nested_enclosing = Some(key);
             }
-            "class_declaration" => {
-                if let Some(name) = self.field_text(node, "name") {
-                    let key = self.add_symbol(node, "class", &name, owner, None);
-                    nested_owner = Some(name);
-                    nested_source = Some(key.clone());
-                    self.capture_extends(node, &key)?;
-                }
-            }
-            "interface_declaration" => {
-                if let Some(name) = self.field_text(node, "name") {
-                    nested_source = Some(self.add_symbol(node, "interface", &name, owner, None));
-                    nested_owner = Some(name);
-                }
-            }
-            "variable_declarator" => {
-                if let Some(name) = self.field_text(node, "name") {
-                    let kind = node
-                        .child_by_field_name("value")
-                        .filter(|value| {
-                            matches!(value.kind(), "arrow_function" | "function_expression")
-                        })
-                        .map_or("variable", |_| "function");
-                    nested_source = Some(self.add_symbol(node, kind, &name, owner, None));
-                }
-            }
-            "method_definition" | "method_signature" => {
-                if let Some(name) = self.field_text(node, "name") {
-                    nested_source = Some(self.add_symbol(
-                        node,
-                        "method",
-                        &name,
-                        owner,
-                        signature(node, &self.source.content),
-                    ));
-                }
-            }
-            "import_statement" => {
-                if let Some(target) = self.field_text(node, "source") {
-                    self.add_edge(node, None, "IMPORTS", "module", &unquote(&target), 1.0)?;
-                }
-            }
-            "call_expression" => {
-                if let Some(function) = node.child_by_field_name("function")
-                    && let Some(target) = callable_name(function, &self.source.content)
-                {
-                    self.add_edge(
-                        node,
-                        nested_source.clone(),
-                        "CALLS",
-                        "symbol",
-                        &target,
-                        0.45,
-                    )?;
-                    if (target == "it" || target == "test")
-                        && let Some(test_name) = first_string_argument(node, &self.source.content)
-                    {
-                        nested_source =
-                            Some(self.add_symbol(node, "test", &test_name, owner, None));
-                    }
-                }
-            }
-            "identifier" | "type_identifier" => {
-                if let Some(source_key) = nested_source.clone()
-                    && !is_definition_name(node)
-                    && !is_import_identifier(node)
-                    && !is_call_target(node)
-                    && let Ok(target) = node.utf8_text(&self.source.content)
-                {
-                    self.add_edge(node, Some(source_key), "REFERENCES", "symbol", target, 0.35)?;
-                }
-            }
-            _ => {}
         }
-
-        let mut cursor = node.walk();
-        for child in node.named_children(&mut cursor) {
-            self.visit(child, nested_owner.as_deref(), nested_source.clone())?;
+        "class_declaration" => {
+            if let Some(name) = builder.field_text(node, "name") {
+                let key = builder.add_symbol(
+                    node,
+                    "class",
+                    &name,
+                    owner,
+                    enclosing.as_deref(),
+                    None,
+                    documentation(builder, node),
+                    is_exported(node),
+                );
+                nested_owner = Some(name);
+                nested_enclosing = Some(key.clone());
+                capture_extends(builder, node, &key)?;
+            }
         }
-        Ok(())
-    }
-
-    fn add_symbol(
-        &mut self,
-        node: Node<'_>,
-        kind: &str,
-        name: &str,
-        owner: Option<&str>,
-        signature: Option<String>,
-    ) -> String {
-        let qualified_name =
-            owner.map_or_else(|| name.to_owned(), |owner| format!("{owner}.{name}"));
-        let ordinal = self
-            .ordinals
-            .entry((kind.to_owned(), qualified_name.clone()))
-            .or_default();
-        let stable_key = format!("{kind}:{qualified_name}:{ordinal}");
-        *ordinal += 1;
-        self.symbols.push(SymbolFact {
-            stable_key: stable_key.clone(),
-            kind: kind.into(),
-            name: name.into(),
-            qualified_name,
-            start_byte: node.start_byte(),
-            end_byte: node.end_byte(),
-            start_line: node.start_position().row + 1,
-            end_line: node.end_position().row + 1,
-            signature,
-            exported: is_exported(node),
-        });
-        stable_key
-    }
-
-    fn capture_extends(&mut self, node: Node<'_>, source: &str) -> Result<(), IndexError> {
-        let mut cursor = node.walk();
-        for child in node.named_children(&mut cursor) {
-            if child.kind() == "class_heritage"
-                && let Some(target) = first_identifier(child, &self.source.content)
+        "interface_declaration" => {
+            if let Some(name) = builder.field_text(node, "name") {
+                let key = builder.add_symbol(
+                    node,
+                    "interface",
+                    &name,
+                    owner,
+                    enclosing.as_deref(),
+                    None,
+                    documentation(builder, node),
+                    is_exported(node),
+                );
+                nested_owner = Some(name);
+                nested_enclosing = Some(key);
+            }
+        }
+        "variable_declarator" => {
+            if let Some(name) = builder.field_text(node, "name") {
+                let kind = node
+                    .child_by_field_name("value")
+                    .filter(|value| matches!(value.kind(), "arrow_function" | "function_expression"))
+                    .map_or("variable", |_| "function");
+                let key = builder.add_symbol(
+                    node,
+                    kind,
+                    &name,
+                    owner,
+                    enclosing.as_deref(),
+                    None,
+                    declaration_documentation(builder, node),
+                    is_exported(node),
+                );
+                nested_enclosing = Some(key);
+            }
+        }
+        "method_definition" | "method_signature" => {
+            if let Some(name) = builder.field_text(node, "name") {
+                let key = builder.add_symbol(
+                    node,
+                    "method",
+                    &name,
+                    owner,
+                    enclosing.as_deref(),
+                    builder.field_text(node, "parameters"),
+                    documentation(builder, node),
+                    is_exported(node),
+                );
+                nested_enclosing = Some(key);
+            }
+        }
+        "import_statement" => {
+            if let Some(target) = builder.field_text(node, "source") {
+                builder.add_edge(node, None, "IMPORTS", "module", &unquote(&target), 1.0)?;
+            }
+        }
+        "call_expression" => {
+            if let Some(function) = node.child_by_field_name("function")
+                && let Some(target) = callable_name(builder, function)
             {
-                self.add_edge(
-                    child,
-                    Some(source.into()),
-                    "EXTENDS",
+                builder.add_edge(
+                    node,
+                    nested_enclosing.clone(),
+                    "CALLS",
                     "symbol",
                     &target,
-                    0.8,
+                    0.45,
                 )?;
+                if (target == "it" || target == "test")
+                    && let Some(test_name) = first_string_argument(builder, node)
+                {
+                    let key = builder.add_symbol(
+                        node,
+                        "test",
+                        &test_name,
+                        owner,
+                        nested_enclosing.as_deref(),
+                        None,
+                        None,
+                        false,
+                    );
+                    nested_enclosing = Some(key);
+                }
             }
         }
-        Ok(())
+        "identifier" | "type_identifier" => {
+            if let Some(source_key) = nested_enclosing.clone()
+                && !is_definition_name(node)
+                && !is_import_identifier(node)
+                && !is_call_target(node)
+                && let Some(target) = builder.text(node)
+            {
+                builder.add_edge(node, Some(source_key), "REFERENCES", "symbol", &target, 0.35)?;
+            }
+        }
+        _ => {}
     }
 
-    fn add_edge(
-        &mut self,
-        node: Node<'_>,
-        source_stable_key: Option<String>,
-        edge_kind: &str,
-        target_kind: &str,
-        target_key: &str,
-        confidence: f64,
-    ) -> Result<(), IndexError> {
-        let evidence_json = serde_json::to_string(&Evidence {
-            relative_path: &self.source.relative_path,
-            start_byte: node.start_byte(),
-            end_byte: node.end_byte(),
-            start_line: node.start_position().row + 1,
-            end_line: node.end_position().row + 1,
-            parser: "tree-sitter",
-        })?;
-        self.edges.push(EdgeFact {
-            source_stable_key,
-            edge_kind: edge_kind.into(),
-            target_kind: target_kind.into(),
-            target_key: target_key.into(),
-            confidence,
-            evidence_json,
-        });
-        Ok(())
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        visit(
+            builder,
+            child,
+            nested_owner.as_deref(),
+            nested_enclosing.clone(),
+        )?;
     }
+    Ok(())
+}
 
-    fn field_text(&self, node: Node<'_>, field: &str) -> Option<String> {
-        let field = node.child_by_field_name(field)?;
-        field
-            .utf8_text(&self.source.content)
-            .ok()
-            .map(str::to_owned)
+fn documentation(builder: &Builder<'_>, node: Node<'_>) -> Option<String> {
+    // An exported definition carries its comment above the `export` keyword.
+    let anchor = node
+        .parent()
+        .filter(|parent| parent.kind() == "export_statement")
+        .unwrap_or(node);
+    leading_comment(anchor, &builder.source.content, &COMMENT_KINDS)
+        .map(clamp_documentation)
+        .filter(|documentation| !documentation.is_empty())
+}
+
+/// A declarator's comment sits above the enclosing `const`/`let` statement.
+fn declaration_documentation(builder: &Builder<'_>, node: Node<'_>) -> Option<String> {
+    let anchor = node
+        .parent()
+        .filter(|parent| parent.kind() == "variable_declaration" || parent.kind() == "lexical_declaration")
+        .unwrap_or(node);
+    documentation(builder, anchor)
+}
+
+fn capture_extends(
+    builder: &mut Builder<'_>,
+    node: Node<'_>,
+    source_key: &str,
+) -> Result<(), IndexError> {
+    let mut cursor = node.walk();
+    let heritage: Vec<Node<'_>> = node
+        .named_children(&mut cursor)
+        .filter(|child| child.kind() == "class_heritage")
+        .collect();
+    for child in heritage {
+        if let Some(target) = first_identifier(builder, child) {
+            builder.add_edge(
+                child,
+                Some(source_key.to_owned()),
+                "EXTENDS",
+                "symbol",
+                &target,
+                0.8,
+            )?;
+        }
     }
+    Ok(())
 }
 
 fn is_exported(mut node: Node<'_>) -> bool {
@@ -327,38 +253,34 @@ fn is_call_target(node: Node<'_>) -> bool {
     })
 }
 
-fn callable_name(node: Node<'_>, source: &[u8]) -> Option<String> {
+fn callable_name(builder: &Builder<'_>, node: Node<'_>) -> Option<String> {
     if matches!(node.kind(), "identifier" | "type_identifier") {
-        return node.utf8_text(source).ok().map(str::to_owned);
+        return builder.text(node);
     }
-    node.child_by_field_name("property")
-        .or_else(|| node.child_by_field_name("name"))?
-        .utf8_text(source)
-        .ok()
-        .map(str::to_owned)
+    let target = node
+        .child_by_field_name("property")
+        .or_else(|| node.child_by_field_name("name"))?;
+    builder.text(target)
 }
 
-fn first_identifier(node: Node<'_>, source: &[u8]) -> Option<String> {
+fn first_identifier(builder: &Builder<'_>, node: Node<'_>) -> Option<String> {
     if matches!(node.kind(), "identifier" | "type_identifier") {
-        return node.utf8_text(source).ok().map(str::to_owned);
+        return builder.text(node);
     }
     let mut cursor = node.walk();
-    node.named_children(&mut cursor)
-        .find_map(|child| first_identifier(child, source))
+    let children: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
+    children
+        .into_iter()
+        .find_map(|child| first_identifier(builder, child))
 }
 
-fn first_string_argument(node: Node<'_>, source: &[u8]) -> Option<String> {
+fn first_string_argument(builder: &Builder<'_>, node: Node<'_>) -> Option<String> {
     let arguments = node.child_by_field_name("arguments")?;
     let mut cursor = arguments.walk();
     let string = arguments
         .named_children(&mut cursor)
         .find(|child| matches!(child.kind(), "string" | "string_fragment"))?;
-    string.utf8_text(source).ok().map(unquote)
-}
-
-fn signature(node: Node<'_>, source: &[u8]) -> Option<String> {
-    let parameters = node.child_by_field_name("parameters")?;
-    parameters.utf8_text(source).ok().map(str::to_owned)
+    builder.text(string).map(|text| unquote(&text))
 }
 
 fn unquote(value: &str) -> String {
@@ -367,13 +289,4 @@ fn unquote(value: &str) -> String {
         .and_then(|value| value.strip_suffix(['\'', '"']))
         .unwrap_or(value)
         .to_owned()
-}
-
-fn count_errors(node: Node<'_>) -> usize {
-    let own = usize::from(node.is_error() || node.is_missing());
-    let mut cursor = node.walk();
-    own + node
-        .named_children(&mut cursor)
-        .map(count_errors)
-        .sum::<usize>()
 }

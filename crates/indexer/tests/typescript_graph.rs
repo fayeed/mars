@@ -16,9 +16,12 @@ fn indexes_typescript_structure_with_spans_resolution_and_evidence() {
         .index_repository(&fixture.repository_id, &CancellationToken::new())
         .expect("fixture should index");
 
-    assert_eq!(summary.indexed_files, 6);
+    // The file layer covers every non-ignored file, including the ignore
+    // configuration itself; only source files contribute symbols.
+    assert_eq!(summary.indexed_files, 8);
     assert_eq!(summary.skipped_files, 0);
     assert_eq!(summary.deleted_files, 0);
+    assert_eq!(summary.renamed_files, 0);
 
     fixture
         .storage
@@ -102,7 +105,7 @@ fn incremental_runs_skip_unchanged_files_and_retire_deleted_paths() {
         .index_repository(&fixture.repository_id, &CancellationToken::new())
         .expect("unchanged index should finish");
     assert_eq!(unchanged.indexed_files, 0);
-    assert_eq!(unchanged.skipped_files, 6);
+    assert_eq!(unchanged.skipped_files, 8);
 
     fs::write(
         fixture.root.join("src/math.ts"),
@@ -114,7 +117,7 @@ fn incremental_runs_skip_unchanged_files_and_retire_deleted_paths() {
         .index_repository(&fixture.repository_id, &CancellationToken::new())
         .expect("changed index should finish");
     assert_eq!(changed.indexed_files, 1);
-    assert_eq!(changed.skipped_files, 4);
+    assert_eq!(changed.skipped_files, 6);
     assert_eq!(changed.deleted_files, 1);
 
     let deleted_at: Option<String> = fixture
@@ -137,7 +140,9 @@ fn incremental_runs_skip_unchanged_files_and_retire_deleted_paths() {
     let renamed = indexer
         .index_repository(&fixture.repository_id, &CancellationToken::new())
         .expect("renamed index should finish");
+    // The move is recognised as a rename, not as a delete plus an add.
+    assert_eq!(renamed.renamed_files, 1);
+    assert_eq!(renamed.deleted_files, 0);
     assert_eq!(renamed.indexed_files, 1);
-    assert_eq!(renamed.skipped_files, 4);
-    assert_eq!(renamed.deleted_files, 1);
+    assert_eq!(renamed.skipped_files, 6);
 }

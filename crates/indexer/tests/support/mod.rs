@@ -8,11 +8,13 @@ use mars_security::TrustDecision;
 use mars_storage::Storage;
 
 pub struct IndexFixture {
-    _directory: TestDirectory,
+    // Declaration order is drop order: the database must close before the
+    // directory holding it is removed.
+    pub storage: Arc<Storage>,
     #[allow(dead_code)]
     pub root: PathBuf,
     pub repository_id: String,
-    pub storage: Arc<Storage>,
+    _directory: TestDirectory,
 }
 
 pub fn index_fixture(name: &str) -> IndexFixture {
@@ -30,10 +32,10 @@ pub fn index_fixture(name: &str) -> IndexFixture {
         panic!("trusted fixture should open")
     };
     IndexFixture {
-        _directory: directory,
+        storage,
         root,
         repository_id: project.repository_id,
-        storage,
+        _directory: directory,
     }
 }
 

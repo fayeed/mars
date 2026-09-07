@@ -10,11 +10,13 @@ use mars_storage::Storage;
 use tokio_util::sync::CancellationToken;
 
 pub struct BrainFixture {
-    _directory: TestDirectory,
+    // Declaration order is drop order: the database must close before the
+    // directory holding it is removed.
+    pub storage: Arc<Storage>,
     #[allow(dead_code)]
     pub root: PathBuf,
     pub repository_id: String,
-    pub storage: Arc<Storage>,
+    _directory: TestDirectory,
 }
 
 pub fn indexed_fixture() -> BrainFixture {
@@ -35,10 +37,10 @@ pub fn indexed_fixture() -> BrainFixture {
         .index_repository(&project.repository_id, &CancellationToken::new())
         .expect("fixture should index");
     BrainFixture {
-        _directory: directory,
+        storage,
         root,
         repository_id: project.repository_id,
-        storage,
+        _directory: directory,
     }
 }
 
