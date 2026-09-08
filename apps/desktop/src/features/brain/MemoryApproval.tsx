@@ -42,24 +42,44 @@ export function MemoryApproval({ projectId }: MemoryApprovalProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const fetchAll = useCallback(
+    () =>
+      Promise.all([
+        invoke<MemoryProposal[]>("memory_pending", { filters: { projectId } }),
+        invoke<Memory[]>("memory_list", { filters: { projectId } }),
+      ]),
+    [projectId],
+  );
+
+  useEffect(() => {
+    let active = true;
+    fetchAll()
+      .then(([queue, memories]) => {
+        if (!active) return;
+        setPending(queue);
+        setMemories(memories);
+      })
+      .catch((caught: unknown) => {
+        if (active) setError(messageFor(caught));
+      });
+    return () => {
+      active = false;
+    };
+  }, [fetchAll]);
+
   const refresh = useCallback(async () => {
     setBusy(true);
     setError(null);
     try {
-      setPending(
-        await invoke<MemoryProposal[]>("memory_pending", { filters: { projectId } }),
-      );
-      setMemories(await invoke<Memory[]>("memory_list", { filters: { projectId } }));
+      const [queue, memories] = await fetchAll();
+      setPending(queue);
+      setMemories(memories);
     } catch (caught) {
       setError(messageFor(caught));
     } finally {
       setBusy(false);
     }
-  }, [projectId]);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+  }, [fetchAll]);
 
   async function approve(proposal: MemoryProposal, resolutions?: ConflictResolution[]) {
     setBusy(true);
