@@ -108,12 +108,16 @@ const NETWORK_SUBCOMMANDS: &[(&str, &str)] = &[
     ("git", "push"),
     ("gh", "pr"),
     ("gh", "issue"),
+    ("npm", "ci"),
     ("npm", "install"),
     ("npm", "publish"),
     ("pip", "install"),
     ("pnpm", "add"),
     ("pnpm", "install"),
     ("yarn", "add"),
+    ("yarn", "install"),
+    ("bun", "install"),
+    ("uv", "sync"),
 ];
 
 /// Programs that destroy work, whatever their arguments.

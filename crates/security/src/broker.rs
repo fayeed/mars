@@ -200,17 +200,20 @@ impl SideEffect {
         }
     }
 
-    /// The text a pattern grant is matched against.
-    fn pattern_subject(&self) -> String {
+    /// How consequential this effect is, for the prompt a human sees.
+    #[must_use]
+    pub fn classification(&self) -> CommandClass {
         match self {
-            Self::Shell { command, .. } => command.clone(),
-            Self::FileWrite { path, .. } => path.to_string_lossy().replace('\\', "/"),
-            Self::Network { host, .. } => host.clone(),
-            Self::GitPush { remote, branch, .. } => format!("{remote} {branch}"),
+            Self::Shell { command, .. } => classify_command(command).class,
+            Self::FileWrite { .. } => CommandClass::Mutating,
+            Self::Network { .. } => CommandClass::Network,
+            Self::GitPush { .. } => CommandClass::Destructive,
         }
     }
 
-    fn summary(&self) -> String {
+    /// The one-line description of what is being asked for.
+    #[must_use]
+    pub fn summary(&self) -> String {
         match self {
             Self::Shell { command, cwd } => {
                 format!("run `{command}` in {}", cwd.display())
@@ -227,6 +230,16 @@ impl SideEffect {
                 branch,
                 cwd: _,
             } => format!("push {branch} to {remote}"),
+        }
+    }
+
+    /// The text a pattern grant is matched against.
+    fn pattern_subject(&self) -> String {
+        match self {
+            Self::Shell { command, .. } => command.clone(),
+            Self::FileWrite { path, .. } => path.to_string_lossy().replace('\\', "/"),
+            Self::Network { host, .. } => host.clone(),
+            Self::GitPush { remote, branch, .. } => format!("{remote} {branch}"),
         }
     }
 
@@ -961,11 +974,9 @@ struct MatchedGrant {
 }
 
 fn classification_of(effect: &SideEffect, analysis: Option<&CommandAnalysis>) -> CommandClass {
-    match effect {
-        SideEffect::Shell { .. } => analysis.map_or(CommandClass::Mutating, |value| value.class),
-        SideEffect::FileWrite { .. } => CommandClass::Mutating,
-        SideEffect::Network { .. } => CommandClass::Network,
-        SideEffect::GitPush { .. } => CommandClass::Destructive,
+    match (effect, analysis) {
+        (SideEffect::Shell { .. }, Some(analysis)) => analysis.class,
+        (effect, _) => effect.classification(),
     }
 }
 

@@ -1,6 +1,6 @@
 mod support;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use mars_activity::ActivityKind;
@@ -10,10 +10,10 @@ use mars_security::{
 
 use support::{BrokerFixture, runtime};
 
-fn shell(command: &str, cwd: &PathBuf) -> SideEffect {
+fn shell(command: &str, cwd: &Path) -> SideEffect {
     SideEffect::Shell {
         command: command.to_owned(),
-        cwd: cwd.clone(),
+        cwd: cwd.to_owned(),
     }
 }
 
