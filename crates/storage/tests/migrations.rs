@@ -123,7 +123,18 @@ fn fresh_database_applies_each_migration_once() {
         })
         .expect("commits table should exist");
 
-    assert_eq!(applied, 13);
+    let memories_table: String = storage
+        .with_connection(|connection| {
+            connection.query_row(
+                "SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'memories'",
+                [],
+                |row| row.get(0),
+            )
+        })
+        .expect("memories table should exist");
+
+    assert_eq!(applied, 14);
+    assert_eq!(memories_table, "memories");
     assert_eq!(jobs_table, "jobs");
     assert_eq!(tasks_table, "tasks");
     assert_eq!(context_table, "context_items");
@@ -142,7 +153,7 @@ fn fresh_database_applies_each_migration_once() {
             })
         })
         .expect("migration journal should remain readable");
-    assert_eq!(applied_after_reopen, 13);
+    assert_eq!(applied_after_reopen, 14);
 }
 
 #[test]
