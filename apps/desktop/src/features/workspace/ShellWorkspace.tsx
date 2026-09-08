@@ -12,6 +12,8 @@ import type {
   FindingStatus,
   PendingPermissionRequest,
   PermissionDecisionChoice,
+  PlannedCheck,
+  PullRequestPlan,
   ProjectSnapshot,
   RecoveryAction,
   ReviewFinding,
@@ -21,12 +23,14 @@ import type {
   SetupCommandInput,
   SkillInstallation,
   StartingPoint,
+  TaskCommit,
   TaskProjection,
   WorktreePlan,
   WorktreeProposal,
   WorktreeState,
 } from "@mars/shared-types";
 import { invoke } from "@tauri-apps/api/core";
+import { MaximizeIcon } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 
@@ -35,6 +39,8 @@ import { CompletionSummary } from "@/features/activity/CompletionSummary";
 import { InterruptedRunRecovery } from "@/features/activity/InterruptedRunRecovery";
 import { RunStatusLine, runActivityState } from "@/features/activity/RunStatusLine";
 import { BrainAnswerMessage } from "@/features/brain/BrainAnswerMessage";
+import { FocusMode } from "@/features/focus/FocusMode";
+import { PublishPreview } from "@/features/forge/PublishPreview";
 import { ApprovalGate } from "@/features/review/ApprovalGate";
 import { DiffReview } from "@/features/review/DiffReview";
 import { ReviewFindings } from "@/features/review/ReviewFindings";
@@ -229,6 +235,20 @@ export function ShellWorkspace({
   const [review, setReview] = useState<ReviewRecord | null>(null);
   const [reviewState, setReviewState] = useState<ActivityState>("idle");
   const [busyFindingId, setBusyFindingId] = useState<string | null>(null);
+
+  const [focus, setFocus] = useState(false);
+  /** Log length when focus mode was entered, so "new" means new to the reader. */
+  const [focusFrom, setFocusFrom] = useState(0);
+  const [focusTerminal, setFocusTerminal] = useState(false);
+
+  const [publish, setPublish] = useState<{
+    plan: PullRequestPlan | null;
+    commits: TaskCommit[];
+    checks: PlannedCheck[];
+    state: ActivityState;
+    error: string | null;
+    busy: boolean;
+  } | null>(null);
 
   /** A brain question and its answer, as a turn in the conversation. */
   const [ask, setAsk] = useState<{
@@ -779,6 +799,80 @@ export function ShellWorkspace({
     }
   }
 
+  /**
+   * Build the publish plan. Reads the remote and the worktree; pushes nothing.
+   */
+  const planPublish = useCallback(
+    async (
+      taskId: string,
+      next?: { title: string; body: string; draft: boolean; reviewers: string[] },
+    ) => {
+      setPublish((current) => ({
+        plan: current?.plan ?? null,
+        commits: current?.commits ?? [],
+        checks: current?.checks ?? [],
+        state: "loading",
+        error: null,
+        busy: false,
+      }));
+      const title = next?.title ?? selectedTask?.title ?? "";
+      try {
+        const [plan, commits, checks] = await Promise.all([
+          invoke<PullRequestPlan>("preview_pull_request", {
+            taskId,
+            remoteName: "origin",
+            title,
+            body: next?.body ?? selectedTask?.intent ?? "",
+            draft: next?.draft ?? false,
+            reviewers: next?.reviewers ?? [],
+          }),
+          invoke<TaskCommit[]>("task_commits", { taskId }).catch(() => [] as TaskCommit[]),
+          invoke<PlannedCheck[]>("planned_checks", { taskId }).catch(() => [] as PlannedCheck[]),
+        ]);
+        setPublish({ plan, commits, checks, state: "idle", error: null, busy: false });
+      } catch (caught) {
+        setPublish({
+          plan: null,
+          commits: [],
+          checks: [],
+          state: "failed",
+          error: messageFor(caught),
+          busy: false,
+        });
+      }
+    },
+    [selectedTask],
+  );
+
+  /**
+   * Push and open the pull request.
+   *
+   * Both approvals are given here because the person pressed the one button
+   * that says what it does. The core still re-plans and refuses if anything
+   * moved since the preview, so this cannot release something unreviewed.
+   */
+  async function doPublish(plan: PullRequestPlan) {
+    setPublish((current) => (current ? { ...current, busy: true, error: null } : current));
+    try {
+      const snapshot = await invoke<{ number: number; url: string }>(
+        "create_github_pull_request",
+        { plan, pushApproved: true, forgeApproved: true },
+      );
+      if (selectedTaskId) {
+        await invoke("record_message", {
+          taskId: selectedTaskId,
+          text: `Pushed ${plan.head} and opened pull request #${snapshot.number}.\n${snapshot.url}`,
+        });
+        await loadRecord(selectedTaskId);
+      }
+      setPublish(null);
+    } catch (caught) {
+      setPublish((current) =>
+        current ? { ...current, busy: false, error: messageFor(caught) } : current,
+      );
+    }
+  }
+
   /** Ask the project brain, in the conversation, and answer there too. */
   async function askBrain(question: string) {
     const id = crypto.randomUUID();
@@ -847,7 +941,8 @@ export function ShellWorkspace({
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         {files.length > 0 ? (
           <>
-            <div className="flex h-[var(--shell-header-height)] shrink-0 items-stretch overflow-x-auto border-b border-border">
+            <div className="flex h-[var(--shell-header-height)] shrink-0 items-stretch border-b border-border">
+              <div className="flex min-w-0 flex-1 items-stretch overflow-x-auto">
               {files.map((file) => {
                 const current = file.document.relativePath === activePath;
                 return (
@@ -869,6 +964,18 @@ export function ShellWorkspace({
                   </button>
                 );
               })}
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setFocusFrom(events.length);
+                  setFocus(true);
+                }}
+                className="flex shrink-0 items-center gap-1 border-l border-border px-2 text-[11px] text-muted-foreground outline-none hover:text-foreground focus-visible:text-foreground"
+              >
+                <MaximizeIcon className="size-3" />
+                Focus
+              </button>
             </div>
             {activeFile ? (
               <Suspense fallback={<StateBlock state="loading" title="Loading editor" />}>
@@ -880,6 +987,7 @@ export function ShellWorkspace({
                   onSaved={(document) => updateActive(() => ({ document, draft: document.content }))}
                   repositoryId={project.repositoryId}
                   revealLine={revealLine}
+                  taskId={selectedTaskId}
                   value={activeFile.draft}
                 />
               </Suspense>
@@ -954,7 +1062,9 @@ export function ShellWorkspace({
       return (
         <CompletionSummary
           branchName={projection.worktree?.branchName ?? selectedTask?.branchName}
-          onPublish={() => dispatch({ type: "navigate", destination: "source-control" })}
+          onPublish={() => {
+            if (selectedTaskId) void planPublish(selectedTaskId);
+          }}
           onReviewDiff={() => dispatch({ type: "navigate", destination: "source-control" })}
           onReviewMemory={() => dispatch({ type: "openInspector", tab: "brain" })}
           onRunChecks={() => dispatch({ type: "openUtility", tab: "checks" })}
@@ -1062,6 +1172,21 @@ export function ShellWorkspace({
         />
       ) : null}
 
+      {publish ? (
+        <PublishPreview
+          busy={publish.busy}
+          checks={publish.checks}
+          commits={publish.commits}
+          error={publish.error}
+          onPublish={(plan) => void doPublish(plan)}
+          onRevise={(next) => {
+            if (selectedTaskId) void planPublish(selectedTaskId, next);
+          }}
+          plan={publish.plan}
+          state={publish.state}
+        />
+      ) : null}
+
       {ask ? (
         <BrainAnswerMessage
           answer={ask.answer}
@@ -1099,7 +1224,11 @@ export function ShellWorkspace({
   // The conversation is never empty of purpose: with nothing recorded it is the
   // repository home, and with a record it is that record.
   const hasRecord =
-    events.length > 0 || notes.length > 0 || recovery.length > 0 || ask !== null;
+    events.length > 0 ||
+    notes.length > 0 ||
+    recovery.length > 0 ||
+    ask !== null ||
+    publish !== null;
   const conversationBody = hasRecord ? (
     transcript
   ) : selectedTask ? (
@@ -1112,6 +1241,58 @@ export function ShellWorkspace({
   ) : (
     home
   );
+
+  if (focus) {
+    return (
+      <FocusMode
+        branchName={selectedTask?.branchName}
+        conversationState={activeRun ? runActivityState(activeRun) : "idle"}
+        editor={
+          activeFile ? (
+            <Suspense fallback={<StateBlock state="loading" title="Loading editor" />}>
+              <CodeEditor
+                key={activeFile.document.relativePath}
+                document={activeFile.document}
+                onChange={(value) => updateActive((file) => ({ ...file, draft: value }))}
+                onReload={() => void openFile(activeFile.document.relativePath, true)}
+                onSaved={(document) => {
+                  updateActive(() => ({ document, draft: document.content }));
+                  // The save is already in the record; re-read so the count in
+                  // the bar above is true rather than merely plausible.
+                  if (selectedTaskId) void loadRecord(selectedTaskId);
+                }}
+                repositoryId={project.repositoryId}
+                revealLine={revealLine}
+                taskId={selectedTaskId}
+                value={activeFile.draft}
+              />
+            </Suspense>
+          ) : (
+            <StateBlock
+              state="idle"
+              title="No file open"
+              description="Pick a file on the left. Everything you save here lands in the task's activity record."
+            />
+          )
+        }
+        explorer={
+          <FileExplorer
+            activePath={activePath}
+            onOpen={(path) => void openFile(path)}
+            repositoryId={project.repositoryId}
+            repositoryName={project.name}
+          />
+        }
+        onReturn={() => setFocus(false)}
+        onToggleTerminal={() => setFocusTerminal((open) => !open)}
+        openPath={activePath}
+        returnLabel={selectedTask?.title ?? "the conversation"}
+        terminal={<TerminalPanel project={project} />}
+        terminalOpen={focusTerminal}
+        unread={Math.max(0, events.length - focusFrom)}
+      />
+    );
+  }
 
   return (
     <ShellFrame

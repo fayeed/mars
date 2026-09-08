@@ -59,6 +59,7 @@ describe("CodeEditor", () => {
       relativePath: original.relativePath,
       content: saved.content,
       expectedVersion: original.version,
+      taskId: null,
     });
     expect(await screen.findByText("Saved")).toBeVisible();
   });

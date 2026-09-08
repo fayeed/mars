@@ -30,6 +30,8 @@ pub struct PullRequestPlan {
     pub title: String,
     pub body: String,
     pub draft: bool,
+    /// Logins to ask for review once the pull request exists.
+    pub reviewers: Vec<String>,
     pub push_command: String,
     pub fingerprint: String,
 }
@@ -143,6 +145,7 @@ impl ForgeWorkflow {
         title: &str,
         body: &str,
         draft: bool,
+        reviewers: &[String],
     ) -> Result<PullRequestPlan, ForgeError> {
         let context = self.task_context(task_id)?;
         if context.state != "ready" {
@@ -184,6 +187,9 @@ impl ForgeWorkflow {
             title,
             body,
             &draft.to_string(),
+            // Inside the fingerprint: who gets asked to review is part of what
+            // was approved, so changing it after the preview invalidates it.
+            &reviewers.join(","),
         ]);
         Ok(PullRequestPlan {
             task_id: task_id.into(),
@@ -201,6 +207,7 @@ impl ForgeWorkflow {
             title: title.into(),
             body: body.into(),
             draft,
+            reviewers: reviewers.to_vec(),
             push_command,
             fingerprint,
         })
@@ -222,6 +229,7 @@ impl ForgeWorkflow {
             &reviewed.title,
             &reviewed.body,
             reviewed.draft,
+            &reviewed.reviewers,
         )?;
         if current.fingerprint != reviewed.fingerprint {
             return Err(ForgeError::StalePlan);
@@ -260,6 +268,15 @@ impl ForgeWorkflow {
                 base: current.base.clone(),
                 draft: current.draft,
             })?;
+            // Requested after creation because that is the only point the pull
+            // request has a number. A forge that refuses a reviewer does not
+            // undo the pull request that already exists, so this is allowed to
+            // fail without failing the whole operation -- and what was actually
+            // requested is recorded rather than what was asked for.
+            let requested = provider
+                .request_reviewers(pull_request.number, &current.reviewers)
+                .unwrap_or_default();
+            let _ = &requested;
             let issue_id = self.issue_for_task(&current.task_id)?;
             self.store.record_pull_request(
                 &current.remote_id,

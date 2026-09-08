@@ -44,6 +44,8 @@ export interface PullRequestPlan {
   title: string;
   body: string;
   draft: boolean;
+  /** Logins to ask for review once the pull request exists. */
+  reviewers: string[];
   pushCommand: string;
   fingerprint: string;
 }
@@ -104,4 +106,24 @@ export interface ForgeMutation {
   error: string | null;
   startedAt: string;
   finishedAt: string | null;
+}
+
+/** One commit a push would carry. */
+export interface TaskCommit {
+  oid: string;
+  subject: string;
+  author: string;
+  date: string;
+}
+
+/**
+ * A workflow the forge would run, read from the worktree rather than guessed.
+ * Nothing is scheduled until the pull request exists.
+ */
+export interface PlannedCheck {
+  /** The workflow file, relative to the repository root. */
+  path: string;
+  name: string;
+  /** True when the file names `pull_request` among its triggers. */
+  onPullRequest: boolean;
 }

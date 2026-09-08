@@ -35,6 +35,7 @@ const plan: PullRequestPlan = {
   title: task.title,
   body: task.intent,
   draft: false,
+  reviewers: [],
   pushCommand: "git push git@github.com:acme/mars.git HEAD:refs/heads/mars/fix-sync",
   fingerprint: "f".repeat(64),
 };

@@ -12,6 +12,15 @@ import "./monaco";
 
 interface CodeEditorProps {
   repositoryId: string;
+  /**
+   * The task this edit belongs to, when there is one.
+   *
+   * A save made with a task in view is recorded in that task's activity log, so
+   * an edit made by hand shows up in the transcript the same way an agent's
+   * does. Without a task there is no record to write to, and the save is just
+   * a save.
+   */
+  taskId?: string | null;
   document: FileDocument;
   value: string;
   onChange: (value: string) => void;
@@ -58,6 +67,7 @@ export function CodeEditor({
   onReload,
   onSaved,
   revealLine,
+  taskId,
 }: CodeEditorProps) {
   const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
   const [error, setError] = useState<{ code: string; message: string } | null>(null);
@@ -74,6 +84,7 @@ export function CodeEditor({
         relativePath: document.relativePath,
         content: value,
         expectedVersion: document.version,
+        taskId: taskId ?? null,
       });
       onSaved(saved);
     } catch (caught) {
@@ -81,7 +92,16 @@ export function CodeEditor({
     } finally {
       setSaving(false);
     }
-  }, [dirty, document.relativePath, document.version, onSaved, repositoryId, saving, value]);
+  }, [
+    dirty,
+    document.relativePath,
+    document.version,
+    onSaved,
+    repositoryId,
+    saving,
+    taskId,
+    value,
+  ]);
 
   useEffect(() => {
     function handleSave(event: KeyboardEvent) {

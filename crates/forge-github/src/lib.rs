@@ -124,6 +124,27 @@ impl ForgeProvider for GitHubProvider {
         Ok(raw.into())
     }
 
+    fn request_reviewers(
+        &self,
+        number: u64,
+        reviewers: &[String],
+    ) -> Result<Vec<String>, ForgeError> {
+        if reviewers.is_empty() {
+            return Ok(Vec::new());
+        }
+        let body = serde_json::json!({ "reviewers": reviewers });
+        let requested: GitHubPull = self.request(
+            Method::POST,
+            &format!("/pulls/{number}/requested_reviewers"),
+            Some(body),
+        )?;
+        Ok(requested
+            .requested_reviewers
+            .into_iter()
+            .map(|user| user.login)
+            .collect())
+    }
+
     fn create_pull_request(&self, input: &CreatePullRequest) -> Result<PullRequest, ForgeError> {
         let body = serde_json::to_value(input)
             .map_err(|error| ForgeError::InvalidResponse(error.to_string()))?;
@@ -252,6 +273,11 @@ impl From<GitHubIssue> for Issue {
 }
 
 #[derive(Deserialize)]
+struct GitHubLogin {
+    login: String,
+}
+
+#[derive(Deserialize)]
 struct GitHubPull {
     id: u64,
     number: u64,
@@ -264,6 +290,10 @@ struct GitHubPull {
     draft: bool,
     mergeable: Option<bool>,
     updated_at: String,
+    /// Absent from most pull payloads, so it defaults rather than failing the
+    /// whole response when GitHub does not send it.
+    #[serde(default)]
+    requested_reviewers: Vec<GitHubLogin>,
 }
 
 impl From<GitHubPull> for PullRequest {

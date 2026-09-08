@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use mars_forge::{
     CheckRun, CreatePullRequest, ForgeError, ForgeProvider, ForgeRepository, ForgeStore, ForgeUser,
-    ForgeWorkflow, Issue, PullRequest, ReviewComment,
+    ForgeWorkflow, Issue, PullRequest, PullRequestPlan, ReviewComment,
 };
 use mars_storage::Storage;
 use rusqlite::params;
@@ -81,11 +81,31 @@ struct FakeProvider {
     head_sha: String,
     fail_create: bool,
     fail_comments: bool,
+    /// Logins the workflow asked this provider to request a review from.
+    requested: std::sync::Mutex<Vec<String>>,
+    /// When true the forge refuses the request, as one does for a login that
+    /// cannot review the repository.
+    fail_reviewers: bool,
 }
 
 impl ForgeProvider for FakeProvider {
     fn repository(&self) -> &ForgeRepository {
         &self.repository
+    }
+
+    fn request_reviewers(
+        &self,
+        _number: u64,
+        reviewers: &[String],
+    ) -> Result<Vec<String>, ForgeError> {
+        if self.fail_reviewers {
+            return Err(ForgeError::Request("reviewer cannot be requested".into()));
+        }
+        self.requested
+            .lock()
+            .expect("requested reviewers lock")
+            .extend_from_slice(reviewers);
+        Ok(reviewers.to_vec())
     }
 
     fn current_user(&self) -> Result<ForgeUser, ForgeError> {
@@ -189,6 +209,8 @@ fn requires_approval_revalidates_and_pushes_exact_reviewed_plan() {
         head_sha: git_output(&fixture.repository, &["rev-parse", "HEAD"]),
         fail_create: false,
         fail_comments: false,
+        requested: std::sync::Mutex::new(Vec::new()),
+        fail_reviewers: false,
     };
     let issue = workflow
         .import_issue("repository", "origin", 7, &issue_provider)
@@ -197,7 +219,7 @@ fn requires_approval_revalidates_and_pushes_exact_reviewed_plan() {
         .link_issue_task(&issue.id, "task")
         .expect("issue should link");
     let plan = workflow
-        .plan_pull_request("task", "origin", "Fix sync", "Closes #7", false)
+        .plan_pull_request("task", "origin", "Fix sync", "Closes #7", false, &[])
         .expect("PR should preview");
     assert_eq!(plan.commits_ahead, 1);
     assert!(plan.clean);
@@ -218,6 +240,8 @@ fn requires_approval_revalidates_and_pushes_exact_reviewed_plan() {
             head_sha: plan.head_sha.clone(),
             fail_create: true,
             fail_comments: false,
+            requested: std::sync::Mutex::new(Vec::new()),
+            fail_reviewers: false,
         },
     );
     let Err(ForgeError::Request(failed_message)) = failed else {
@@ -264,6 +288,8 @@ fn requires_approval_revalidates_and_pushes_exact_reviewed_plan() {
             head_sha: plan.head_sha.clone(),
             fail_create: false,
             fail_comments: true,
+            requested: std::sync::Mutex::new(Vec::new()),
+            fail_reviewers: false,
         },
     );
     assert!(matches!(partial, Err(ForgeError::Request(_))));
@@ -319,7 +345,7 @@ fn rejects_credentials_embedded_in_an_http_push_url() {
     );
     let workflow = ForgeWorkflow::new(storage);
     let error = workflow
-        .plan_pull_request("task", "origin", "Fix sync", "Closes #7", false)
+        .plan_pull_request("task", "origin", "Fix sync", "Closes #7", false, &[])
         .expect_err("authenticated push URL should be rejected");
     assert!(matches!(error, ForgeError::UnsupportedRemote(_)));
     assert!(!error.to_string().contains("ghp_supersecretvalue"));
@@ -404,4 +430,77 @@ fn remote_has_branch(bare: &Path, branch: &str) -> bool {
         .expect("git should execute")
         .status
         .success()
+}
+
+#[test]
+fn reviewers_are_part_of_the_approved_plan_and_requested_after_creation() {
+    let fixture = Fixture::new();
+    let database = fixture.root.join("mars.sqlite3");
+    let storage = Arc::new(Storage::open(database).expect("database should open"));
+    seed(&storage, &fixture.repository);
+    let workflow = ForgeWorkflow::new(storage.clone());
+    let head_sha = git_output(&fixture.repository, &["rev-parse", "HEAD"]);
+    let provider = FakeProvider {
+        repository: repository(),
+        head_sha: head_sha.clone(),
+        fail_create: false,
+        fail_comments: false,
+        requested: std::sync::Mutex::new(Vec::new()),
+        fail_reviewers: false,
+    };
+
+    let reviewers = vec!["faye".to_owned(), "sam".to_owned()];
+    let plan = workflow
+        .plan_pull_request("task", "origin", "Fix sync", "Closes #7", false, &reviewers)
+        .expect("plan should build");
+    assert_eq!(plan.reviewers, reviewers);
+
+    // Who gets asked to review is inside the fingerprint, so a plan approved
+    // with one set of reviewers cannot be applied with another.
+    let tampered = PullRequestPlan {
+        reviewers: vec!["someone-else".to_owned()],
+        ..plan.clone()
+    };
+    assert!(
+        matches!(
+            workflow.apply_pull_request(&tampered, true, true, &provider),
+            Err(ForgeError::StalePlan)
+        ),
+        "changing the reviewers after approval must invalidate the plan"
+    );
+
+    workflow
+        .apply_pull_request(&plan, true, true, &provider)
+        .expect("approved plan should apply");
+    assert_eq!(
+        *provider.requested.lock().expect("requested lock"),
+        reviewers,
+        "the reviewers on the approved plan are the ones requested"
+    );
+}
+
+#[test]
+fn a_refused_reviewer_does_not_undo_the_pull_request_that_already_exists() {
+    let fixture = Fixture::new();
+    let database = fixture.root.join("mars.sqlite3");
+    let storage = Arc::new(Storage::open(database).expect("database should open"));
+    seed(&storage, &fixture.repository);
+    let workflow = ForgeWorkflow::new(storage.clone());
+    let provider = FakeProvider {
+        repository: repository(),
+        head_sha: git_output(&fixture.repository, &["rev-parse", "HEAD"]),
+        fail_create: false,
+        fail_comments: false,
+        requested: std::sync::Mutex::new(Vec::new()),
+        fail_reviewers: true,
+    };
+
+    let plan = workflow
+        .plan_pull_request("task", "origin", "Fix sync", "Closes #7", false, &["nope".into()])
+        .expect("plan should build");
+
+    let snapshot = workflow
+        .apply_pull_request(&plan, true, true, &provider)
+        .expect("the pull request stands even when the reviewer request fails");
+    assert_eq!(snapshot.pull_request.number, 9);
 }

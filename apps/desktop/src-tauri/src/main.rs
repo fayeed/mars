@@ -708,12 +708,35 @@ fn write_file(
     relative_path: String,
     content: String,
     expected_version: String,
+    task_id: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<FileDocument, CommandFailure> {
-    state
+    let document = state
         .files
-        .write_file(&repository_id, &relative_path, &content, &expected_version)
-        .map_err(Into::into)
+        .write_file(&repository_id, &relative_path, &content, &expected_version)?;
+
+    // A person editing a file by hand is something that happened to the task,
+    // and the record is what every surface renders from -- so an edit made in
+    // the editor appears in the transcript exactly as an agent's would, with
+    // the actor being the only difference.
+    if let Some(task_id) = task_id {
+        let _ = state.activity.append(
+            ActivityEntry::new(
+                &task_id,
+                ActivityKind::FileEdit,
+                Actor::Human,
+                local_actor(),
+                format!("edited {relative_path}"),
+            )
+            .with_payload(json!({
+                "path": relative_path,
+                "change": "modified",
+                "bytes": content.len(),
+            })),
+        );
+    }
+
+    Ok(document)
 }
 
 #[tauri::command]
@@ -1987,6 +2010,104 @@ fn import_github_issue(
         .map_err(Into::into)
 }
 
+/// One commit the push would carry.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TaskCommit {
+    oid: String,
+    subject: String,
+    author: String,
+    date: String,
+}
+
+/// A workflow the forge would run, read from the worktree rather than guessed.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PlannedCheck {
+    /// The workflow file, relative to the repository root.
+    path: String,
+    name: String,
+    /// True when the file names `pull_request` among its triggers.
+    on_pull_request: bool,
+}
+
+/// The commits between the task's base and its head, newest first.
+#[tauri::command]
+fn task_commits(task_id: String, state: State<'_, AppState>) -> Result<Vec<TaskCommit>, CommandFailure> {
+    let task = state.tasks.get(&task_id)?;
+    let range = format!("{}..HEAD", task.base_ref);
+    // A unit separator keeps subjects containing any punctuation intact.
+    let output = mars_git::command::run(
+        &task.worktree_path,
+        ["log", "--no-color", "--format=%H\x1f%s\x1f%an\x1f%aI", &range],
+    )
+    .map_err(|error| CommandFailure::new("publish.commits", error.to_string()))?
+    .stdout_text();
+
+    Ok(output
+        .lines()
+        .filter(|line| !line.is_empty())
+        .filter_map(|line| {
+            let mut parts = line.split('\x1f');
+            Some(TaskCommit {
+                oid: parts.next()?.to_owned(),
+                subject: parts.next()?.to_owned(),
+                author: parts.next()?.to_owned(),
+                date: parts.next()?.to_owned(),
+            })
+        })
+        .collect())
+}
+
+/// What CI would run, read from the workflow files in the worktree.
+///
+/// This is what the repository configures, not what the forge has scheduled: no
+/// run exists until the pull request does. The screen says which of those two
+/// it is showing rather than presenting a plan as a result.
+#[tauri::command]
+fn planned_checks(
+    task_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<PlannedCheck>, CommandFailure> {
+    let task = state.tasks.get(&task_id)?;
+    let directory = task.worktree_path.join(".github").join("workflows");
+    let Ok(entries) = fs::read_dir(&directory) else {
+        return Ok(Vec::new());
+    };
+
+    let mut checks = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let extension = path.extension().and_then(|value| value.to_str());
+        if !matches!(extension, Some("yml") | Some("yaml")) {
+            continue;
+        }
+        let Ok(contents) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let file_name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default()
+            .to_owned();
+        // The workflow's own `name:` when it has one, else the file name. This
+        // is a text scan, not a YAML parse, and it does not pretend otherwise.
+        let name = contents
+            .lines()
+            .find_map(|line| line.strip_prefix("name:"))
+            .map(|value| value.trim().trim_matches(['"', '\'']).to_owned())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| file_name.clone());
+        checks.push(PlannedCheck {
+            path: format!(".github/workflows/{file_name}"),
+            name,
+            on_pull_request: contents.contains("pull_request"),
+        });
+    }
+    checks.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(checks)
+}
+
 #[tauri::command]
 fn connect_github(
     repository_id: String,
@@ -2039,11 +2160,12 @@ fn preview_pull_request(
     title: String,
     body: String,
     draft: bool,
+    reviewers: Vec<String>,
     state: State<'_, AppState>,
 ) -> Result<PullRequestPlan, CommandFailure> {
     state
         .forge
-        .plan_pull_request(&task_id, &remote_name, &title, &body, draft)
+        .plan_pull_request(&task_id, &remote_name, &title, &body, draft, &reviewers)
         .map_err(Into::into)
 }
 
@@ -2973,6 +3095,8 @@ fn main() {
             import_github_issue,
             create_task_from_issue,
             preview_pull_request,
+            task_commits,
+            planned_checks,
             get_task_pull_request,
             list_task_forge_mutations,
             create_github_pull_request,

@@ -136,6 +136,16 @@ pub trait ForgeProvider: Send + Sync {
     fn get_pull_request(&self, number: u64) -> Result<PullRequest, ForgeError>;
     fn list_review_comments(&self, number: u64) -> Result<Vec<ReviewComment>, ForgeError>;
     fn list_checks(&self, revision: &str) -> Result<Vec<CheckRun>, ForgeError>;
+    /// Ask for reviews on an open pull request.
+    ///
+    /// Returns the logins the forge actually requested, which is not always
+    /// what was asked for: a forge silently drops a login that cannot review
+    /// the repository, and the caller should report what was really done.
+    fn request_reviewers(
+        &self,
+        number: u64,
+        reviewers: &[String],
+    ) -> Result<Vec<String>, ForgeError>;
 }
 
 pub fn detect_repository(remote: &str) -> Result<ForgeRepository, ForgeError> {
