@@ -1,5 +1,5 @@
 [workspace]
-members = ["apps/desktop/src-tauri", "crates/agents", "crates/brain", "crates/context", "crates/core", "crates/forge", "crates/forge-github", "crates/git", "crates/indexer", "crates/security", "crates/skills", "crates/storage"]
+members = ["apps/desktop/src-tauri", "crates/activity", "crates/agents", "crates/brain", "crates/context", "crates/core", "crates/forge", "crates/forge-github", "crates/git", "crates/indexer", "crates/security", "crates/skills", "crates/storage"]
 resolver = "2"
 
 [workspace.package]
@@ -11,6 +11,7 @@ version = "0.1.0"
 ignore = "0.4.25"
 keyring = "4.2.0"
 portable-pty = "0.9.0"
+mars-activity = { path = "crates/activity" }
 mars-brain = { path = "crates/brain" }
 mars-agents = { path = "crates/agents" }
 mars-core = { path = "crates/core" }

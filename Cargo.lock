@@ -2276,6 +2276,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "mars-activity"
+version = "0.1.0"
+dependencies = [
+ "mars-core",
+ "mars-security",
+ "mars-storage",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+ "time",
+ "uuid",
+]
+
+[[package]]
 name = "mars-agents"
 version = "0.1.0"
 dependencies = [
