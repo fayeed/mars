@@ -69,9 +69,15 @@ fn commands_that_leave_the_machine_are_network() {
 
 #[test]
 fn a_chain_takes_the_class_of_its_most_dangerous_link() {
-    assert_eq!(class_of("git status && rm -rf build"), CommandClass::Destructive);
+    assert_eq!(
+        class_of("git status && rm -rf build"),
+        CommandClass::Destructive
+    );
     assert_eq!(class_of("ls | grep test"), CommandClass::ReadOnly);
-    assert_eq!(class_of("cat package.json; npm install"), CommandClass::Network);
+    assert_eq!(
+        class_of("cat package.json; npm install"),
+        CommandClass::Network
+    );
     assert!(
         classify_command("git status && rm -rf build")
             .reason
@@ -95,7 +101,13 @@ fn quoted_operators_do_not_split_a_command() {
 
 #[test]
 fn suggested_patterns_keep_the_subcommand_that_made_it_safe() {
-    assert_eq!(classify_command("git status").suggested_pattern, "git status *");
-    assert_eq!(classify_command("npm test -- --watch").suggested_pattern, "npm test *");
+    assert_eq!(
+        classify_command("git status").suggested_pattern,
+        "git status *"
+    );
+    assert_eq!(
+        classify_command("npm test -- --watch").suggested_pattern,
+        "npm test *"
+    );
     assert_eq!(classify_command("ls -la").suggested_pattern, "ls *");
 }

@@ -45,10 +45,7 @@ impl BrokerFixture {
                          (id, project_id, root_path, git_common_dir, state, created_at, updated_at)
                      VALUES ('repository-1', 'project-1', ?1, ?2, 'active',
                              '2026-09-08T00:00:00Z', '2026-09-08T00:00:00Z')",
-                    rusqlite::params![
-                        root.to_string_lossy(),
-                        root.join(".git").to_string_lossy()
-                    ],
+                    rusqlite::params![root.to_string_lossy(), root.join(".git").to_string_lossy()],
                 )?;
                 Ok(())
             })

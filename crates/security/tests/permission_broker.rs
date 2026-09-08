@@ -147,7 +147,10 @@ fn a_blocked_agent_waits_until_a_person_decides() {
         let pending = broker.pending(&task).expect("pending should read");
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].id, request_id);
-        assert_eq!(pending[0].summary, format!("run `npm test` in {}", fixture.worktree.display()));
+        assert_eq!(
+            pending[0].summary,
+            format!("run `npm test` in {}", fixture.worktree.display())
+        );
 
         broker
             .decide(&request_id, BrokerDecision::AllowOnce, "fayeed")
@@ -235,7 +238,10 @@ fn allow_for_this_pattern_covers_matching_commands_and_nothing_else() {
         ))
         .expect("matching command should broker");
     let (different, _) = broker
-        .request(&implementer(&task, shell("npm run build", &fixture.worktree)))
+        .request(&implementer(
+            &task,
+            shell("npm run build", &fixture.worktree),
+        ))
         .expect("different command should broker");
 
     assert!(
@@ -262,7 +268,10 @@ fn a_pattern_grant_reaches_across_tasks_but_a_task_grant_does_not() {
     );
 
     let (elsewhere, _) = broker
-        .request(&implementer(&other, shell("git status -sb", &fixture.worktree)))
+        .request(&implementer(
+            &other,
+            shell("git status -sb", &fixture.worktree),
+        ))
         .expect("other task should broker");
 
     assert!(matches!(elsewhere, BrokerOutcome::Allowed { .. }));
@@ -325,7 +334,11 @@ fn a_decision_can_only_be_made_once() {
             .is_err(),
         "a decided request must not be re-decided"
     );
-    assert!(broker.decide("no-such-request", BrokerDecision::Deny, "fayeed").is_err());
+    assert!(
+        broker
+            .decide("no-such-request", BrokerDecision::Deny, "fayeed")
+            .is_err()
+    );
 }
 
 #[test]
@@ -354,7 +367,10 @@ fn revoking_a_grant_stops_it_covering_new_work_and_keeps_its_history() {
     assert!(!revoked.active);
     assert_eq!(revoked.revoked_by.as_deref(), Some("fayeed"));
     assert_eq!(revoked.granted_by, "fayeed");
-    assert!(revoked.expires_at.is_some(), "a grant should carry an expiry");
+    assert!(
+        revoked.expires_at.is_some(),
+        "a grant should carry an expiry"
+    );
     assert!(
         broker.revoke(&grant_id, "fayeed").is_err(),
         "revoking twice should report that there was nothing to revoke"
@@ -396,7 +412,10 @@ fn the_transcript_records_who_decided_what_and_when() {
     let record = fixture.activity();
 
     let (outcome, _) = broker
-        .request(&implementer(&task, shell("rm -rf build", &fixture.worktree)))
+        .request(&implementer(
+            &task,
+            shell("rm -rf build", &fixture.worktree),
+        ))
         .expect("request should broker");
     let BrokerOutcome::Pending { request_id } = outcome else {
         panic!("expected a pending request")
@@ -412,7 +431,10 @@ fn the_transcript_records_who_decided_what_and_when() {
     assert_eq!(asked.kind, ActivityKind::PermissionRequest);
     assert_eq!(asked.actor_label, "claude");
     assert_eq!(asked.payload["requestId"], serde_json::json!(request_id));
-    assert_eq!(asked.payload["classification"], serde_json::json!("destructive"));
+    assert_eq!(
+        asked.payload["classification"],
+        serde_json::json!("destructive")
+    );
     assert!(
         asked.payload["reason"]
             .as_str()

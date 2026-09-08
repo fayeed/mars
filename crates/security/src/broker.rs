@@ -216,7 +216,10 @@ impl SideEffect {
                 format!("run `{command}` in {}", cwd.display())
             }
             Self::FileWrite { path, .. } => {
-                format!("write {}, which is outside the declared scope", path.display())
+                format!(
+                    "write {}, which is outside the declared scope",
+                    path.display()
+                )
             }
             Self::Network { host, detail } => format!("reach {host} ({detail})"),
             Self::GitPush {
@@ -474,7 +477,9 @@ impl PermissionBroker {
             .stored_request(request_id)?
             .ok_or_else(|| PermissionError::RequestNotFound(request_id.to_owned()))?;
         if stored.state != "pending" {
-            return Err(PermissionError::RequestAlreadyDecided(request_id.to_owned()));
+            return Err(PermissionError::RequestAlreadyDecided(
+                request_id.to_owned(),
+            ));
         }
 
         let outcome = self.finalize(
@@ -782,15 +787,16 @@ impl PermissionBroker {
                    AND (uses_remaining IS NULL OR uses_remaining > 0)
                  ORDER BY granted_at DESC, id",
             )?;
-            let mapped = statement.query_map(params![capability, &now, &request.task_id], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, Option<i64>>(4)?,
-                ))
-            })?;
+            let mapped =
+                statement.query_map(params![capability, &now, &request.task_id], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<i64>>(4)?,
+                    ))
+                })?;
             mapped.collect::<rusqlite::Result<Vec<_>>>()
         })?;
 
@@ -996,11 +1002,9 @@ fn capability_name(capability: Capability) -> &'static str {
 /// comparable format.
 fn read_now(storage: &Storage) -> Result<String, PermissionError> {
     Ok(storage.with_connection(|connection| {
-        connection.query_row(
-            "SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
-            [],
-            |row| row.get(0),
-        )
+        connection.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')", [], |row| {
+            row.get(0)
+        })
     })?)
 }
 
