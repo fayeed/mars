@@ -133,7 +133,18 @@ fn fresh_database_applies_each_migration_once() {
         })
         .expect("memories table should exist");
 
-    assert_eq!(applied, 14);
+    let activity_table: String = storage
+        .with_connection(|connection| {
+            connection.query_row(
+                "SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'activity_events'",
+                [],
+                |row| row.get(0),
+            )
+        })
+        .expect("activity events table should exist");
+
+    assert_eq!(applied, 15);
+    assert_eq!(activity_table, "activity_events");
     assert_eq!(memories_table, "memories");
     assert_eq!(jobs_table, "jobs");
     assert_eq!(tasks_table, "tasks");
@@ -153,7 +164,7 @@ fn fresh_database_applies_each_migration_once() {
             })
         })
         .expect("migration journal should remain readable");
-    assert_eq!(applied_after_reopen, 14);
+    assert_eq!(applied_after_reopen, 15);
 }
 
 #[test]
