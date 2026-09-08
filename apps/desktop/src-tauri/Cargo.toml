@@ -8,6 +8,7 @@ license.workspace = true
 tauri-build.workspace = true
 
 [dependencies]
+mars-activity.workspace = true
 mars-agents.workspace = true
 mars-brain.workspace = true
 mars-core.workspace = true

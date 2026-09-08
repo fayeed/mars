@@ -2368,6 +2368,7 @@ dependencies = [
 name = "mars-desktop"
 version = "0.1.0"
 dependencies = [
+ "mars-activity",
  "mars-agents",
  "mars-brain",
  "mars-context",

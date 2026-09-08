@@ -66,3 +66,14 @@ export interface CapabilityCeiling {
   network: boolean;
   gitPush: boolean;
 }
+
+/** What the broker did with an answer. */
+export type PermissionOutcomeView =
+  | { outcome: "allowed"; grantId: string; reason: string }
+  | {
+      outcome: "denied";
+      reason: string;
+      /** True when the ceiling refused it, which no person can override. */
+      byConstruction: boolean;
+    }
+  | { outcome: "pending"; requestId: string };

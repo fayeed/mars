@@ -2,6 +2,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use mars_activity::{
+    ActivityEntry, ActivityError, ActivityEvent, ActivityKind, ActivityRecord, Actor,
+    Attachment, InterruptedRun, NewRun, RecoveryAction, RecoveryService, RunRecord, RunRole,
+    RunStatus, RunStore, TaskProjection, replay,
+};
 use mars_agents::adapter::{
     AdapterError, AdapterKind, AdapterProbe, AgentAdapter, AgentLaunchRequest, JsonLineDecoder,
     NormalizedAgentEvent,
@@ -41,7 +46,10 @@ use mars_git::{
     TaskWorktreeError, TaskWorktreeService, WorktreePlan, WorktreePlanner, WorktreeProposal,
 };
 use mars_indexer::{IndexError, IndexSummary, Indexer};
-use mars_security::{CapabilityCeiling, PermissionBroker, TrustDecision};
+use mars_security::{
+    BrokerDecision, BrokerOutcome, CapabilityCeiling, PendingRequest, PermissionBroker,
+    TrustDecision,
+};
 use mars_security::permissions::{
     Capability, PermissionAudit, PermissionDecision, PermissionError, PermissionOutcome,
     PermissionRequest, PermissionScope,
@@ -52,10 +60,12 @@ use mars_skills::{
 };
 use mars_storage::Storage;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 struct AppState {
+    /// The append-only log every surface in the product renders from.
+    activity: ActivityRecord,
     agents: ProcessSupervisor,
     brain: BrainService,
     /// Standing grants, so a capability review can say what the agent will
@@ -80,7 +90,10 @@ struct AppState {
     /// `tasks`, which only moves a task between worktree states.
     planner: WorktreePlanner,
     projects: ProjectService,
+    /// Reconstructs what an interrupted run had done. Never resumes one.
+    recovery: RecoveryService,
     reviews: ReviewService,
+    runs: RunStore,
     permissions: PermissionAudit,
     skills: SkillService,
     tasks: TaskWorktreeService,
@@ -278,6 +291,25 @@ impl From<TaskWorktreeError> for CommandFailure {
             TaskWorktreeError::Filesystem { .. } => "task.filesystem",
             TaskWorktreeError::Timestamp(_) => "task.timestamp",
             TaskWorktreeError::Json(_) => "task.json",
+        };
+        Self::new(code, error.to_string())
+    }
+}
+
+impl From<ActivityError> for CommandFailure {
+    fn from(error: ActivityError) -> Self {
+        let code = match error {
+            ActivityError::Storage(_) | ActivityError::Sqlite(_) => "activity.storage",
+            ActivityError::Json(_) => "activity.json",
+            ActivityError::Timestamp(_) => "activity.timestamp",
+            ActivityError::PayloadIo { .. } => "activity.payload_io",
+            // The bytes on disk do not match the digest they are filed under.
+            // Refusing is the only safe answer: the caller asked for one exact
+            // thing and this is not it.
+            ActivityError::PayloadCorrupt { .. } => "activity.payload_corrupt",
+            ActivityError::RunNotFound(_) => "run.not_found",
+            ActivityError::RunAlreadyFinished(_) => "run.already_finished",
+            _ => "activity.invalid",
         };
         Self::new(code, error.to_string())
     }
@@ -1639,6 +1671,195 @@ fn build_context_pack(
     state.context_packs.build(request).map_err(Into::into)
 }
 
+/// Put what a person said into the task's record.
+///
+/// The log is what every surface renders from, so a turn that is not in it did
+/// not happen as far as reload, recovery and export are concerned. Who said it
+/// is filled in here from the local user rather than taken from the webview.
+#[tauri::command]
+fn record_message(
+    task_id: String,
+    text: String,
+    state: State<'_, AppState>,
+) -> Result<ActivityEvent, CommandFailure> {
+    let summary = text.lines().next().unwrap_or_default().to_owned();
+    state
+        .activity
+        .append(
+            ActivityEntry::new(
+                &task_id,
+                ActivityKind::Message,
+                Actor::Human,
+                local_actor(),
+                summary,
+            )
+            .with_payload(serde_json::json!({ "text": text })),
+        )
+        .map_err(Into::into)
+}
+
+/// A page of a task's log, in sequence order.
+///
+/// The UI renders from this and nothing else. Paging by `after_sequence` is what
+/// makes a live stream and a reload the same operation: both ask for what they
+/// have not seen yet.
+#[tauri::command]
+fn task_activity(
+    task_id: String,
+    after_sequence: i64,
+    limit: usize,
+    state: State<'_, AppState>,
+) -> Result<Vec<ActivityEvent>, CommandFailure> {
+    state
+        .activity
+        .read(&task_id, after_sequence, limit)
+        .map_err(Into::into)
+}
+
+/// The whole of a task's state, folded from its log.
+///
+/// Nothing here reads a status column, so what the summary says and what the
+/// transcript shows cannot disagree.
+#[tauri::command]
+fn task_projection(
+    task_id: String,
+    state: State<'_, AppState>,
+) -> Result<TaskProjection, CommandFailure> {
+    replay(&state.activity, &task_id).map_err(Into::into)
+}
+
+/// Command output, diffs and test results, resolved from the digest the event
+/// carries. Kept out of the event row so the log stays pageable.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ActivityPayload {
+    digest: String,
+    byte_size: usize,
+    /// Lossy UTF-8. Every payload the record spills is program output.
+    text: String,
+}
+
+#[tauri::command]
+fn activity_payload(
+    digest: String,
+    state: State<'_, AppState>,
+) -> Result<ActivityPayload, CommandFailure> {
+    let bytes = state.activity.payload_bytes(&digest)?;
+    Ok(ActivityPayload {
+        digest,
+        byte_size: bytes.len(),
+        text: String::from_utf8_lossy(&bytes).into_owned(),
+    })
+}
+
+/// The runs a task has had, newest state included.
+#[tauri::command]
+fn task_runs(
+    task_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<RunRecord>, CommandFailure> {
+    state.runs.list_for_task(&task_id).map_err(Into::into)
+}
+
+/// Every request still waiting on a person, oldest first.
+#[tauri::command]
+fn pending_permissions(
+    task_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<PendingRequest>, CommandFailure> {
+    state.broker.pending(&task_id).map_err(Into::into)
+}
+
+/// What the broker did with an answer.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase", tag = "outcome")]
+enum PermissionOutcomeView {
+    Allowed {
+        grant_id: String,
+        reason: String,
+    },
+    Denied {
+        reason: String,
+        /// True when the ceiling refused it, which no person can override.
+        by_construction: bool,
+    },
+    /// Still waiting. Answering a request cannot produce this, but the broker's
+    /// vocabulary includes it and flattening it away would be a lie.
+    Pending {
+        request_id: String,
+    },
+}
+
+impl From<BrokerOutcome> for PermissionOutcomeView {
+    fn from(outcome: BrokerOutcome) -> Self {
+        match outcome {
+            BrokerOutcome::Allowed { grant_id, reason } => Self::Allowed { grant_id, reason },
+            BrokerOutcome::Denied {
+                reason,
+                by_construction,
+            } => Self::Denied {
+                reason,
+                by_construction,
+            },
+            BrokerOutcome::Pending { request_id } => Self::Pending { request_id },
+        }
+    }
+}
+
+/// Answer a permission request and release the agent waiting on it.
+///
+/// Who answered is filled in here from the local user. A decision is the entire
+/// authority behind an effect, so it is not the webview's to assert.
+#[tauri::command]
+fn decide_permission(
+    request_id: String,
+    decision: String,
+    state: State<'_, AppState>,
+) -> Result<PermissionOutcomeView, CommandFailure> {
+    let parsed = BrokerDecision::parse(&decision).ok_or_else(|| {
+        CommandFailure::new(
+            "permission.unknown_decision",
+            format!("`{decision}` is not one of allow_once, allow_task, allow_pattern, deny"),
+        )
+    })?;
+    state
+        .broker
+        .decide(&request_id, parsed, &local_actor())
+        .map(Into::into)
+        .map_err(Into::into)
+}
+
+/// Runs that were alive when Mars stopped. Read-only: it changes no status and
+/// starts no process.
+#[tauri::command]
+fn interrupted_runs(state: State<'_, AppState>) -> Result<Vec<InterruptedRun>, CommandFailure> {
+    state.recovery.detect().map_err(Into::into)
+}
+
+/// Record that a run was found interrupted. The only status change recovery
+/// makes on its own, and it moves the run further from running, never closer.
+#[tauri::command]
+fn note_interrupted_run(
+    run_id: String,
+    state: State<'_, AppState>,
+) -> Result<InterruptedRun, CommandFailure> {
+    state.recovery.mark_interrupted(&run_id).map_err(Into::into)
+}
+
+/// Record which way out of an interrupted run a person chose, so the choice is
+/// in the transcript before anything acts on it.
+#[tauri::command]
+fn resolve_interrupted_run(
+    run_id: String,
+    action: RecoveryAction,
+    state: State<'_, AppState>,
+) -> Result<(), CommandFailure> {
+    state
+        .recovery
+        .record_choice(&run_id, action, &local_actor())
+        .map_err(Into::into)
+}
+
 #[tauri::command]
 fn list_tasks(
     repository_id: String,
@@ -2159,9 +2380,51 @@ async fn launch_agent(
         command.cwd,
     );
     spec.task_id = Some(task_id);
+    // A run row exists before the process does, so an agent that dies on its
+    // first line is still a run the log knows about and recovery can find.
+    let run = state.runs.start(NewRun {
+        task_id: task.task_id.clone(),
+        agent_id: adapter_name.to_owned(),
+        adapter_kind: adapter_name.to_owned(),
+        role: RunRole::Implementer,
+        capabilities: json!({
+            "writeFiles": permissions.write_files,
+            "runCommands": permissions.run_commands,
+            "network": permissions.network,
+        }),
+        // This path launches from the retrieval pack, which carries no digest.
+        // The digest belongs to a `RunContextPack` — the object the capability
+        // review shows — and is recorded once launching goes through that.
+        // Recording something else here would look like the preview had been
+        // verified against the launch when it had not.
+        context_pack_digest: None,
+    })?;
     let launched = state.agents.launch(spec)?;
     let session_id = launched.session_id.clone();
-    stream_agent_events(app, state.agents.clone(), adapter_impl, launched);
+    let _ = state.runs.attach_session(&run.id, &session_id);
+    let _ = state.activity.append(
+        ActivityEntry::new(
+            &task.task_id,
+            ActivityKind::RunStarted,
+            Actor::System,
+            "mars",
+            format!("Started {adapter_name} as {}", run.role.as_str()),
+        )
+        .in_run(&run.id)
+        .with_payload(json!({ "adapter": adapter_name })),
+    );
+    stream_agent_events(
+        app,
+        state.agents.clone(),
+        adapter_impl,
+        launched,
+        RunSink {
+            activity: state.activity.clone(),
+            runs: state.runs.clone(),
+            task_id: task.task_id.clone(),
+            run_id: run.id.clone(),
+        },
+    );
     Ok(AgentLaunchOutcome {
         session_id,
         adapter,
@@ -2314,11 +2577,134 @@ fn record_permission(
     ))
 }
 
+/// Where a run's events are written down.
+///
+/// The adapters speak their own vocabulary and the supervisor keeps its own
+/// per-session table; neither is what the product renders from. This carries
+/// the one destination that is: the task's activity record, and the run row the
+/// events belong to.
+struct RunSink {
+    activity: ActivityRecord,
+    runs: RunStore,
+    task_id: String,
+    run_id: String,
+}
+
+/// Mirror one normalized agent event into the task's activity record.
+///
+/// The adapters speak their own vocabulary and the supervisor keeps its own
+/// per-session table; neither is what the product renders from. This is the one
+/// place that translation happens, so everything downstream — the transcript,
+/// the projection, recovery and export — sees a single normalized log.
+///
+/// Output that would bloat an event row is attached instead, addressed by
+/// digest, and the row keeps only what a person reads at a glance.
+fn record_agent_event(sink: &RunSink, event: &NormalizedAgentEvent) {
+    let task_id = sink.task_id.as_str();
+    let entry = match event {
+        NormalizedAgentEvent::Text { text } => Some(
+            ActivityEntry::new(
+                task_id,
+                ActivityKind::Message,
+                Actor::Agent,
+                "agent",
+                text.lines().next().unwrap_or_default().to_owned(),
+            )
+            .with_payload(json!({ "text": text })),
+        ),
+        NormalizedAgentEvent::Tool { name, input } => Some(
+            ActivityEntry::new(
+                task_id,
+                ActivityKind::ToolCall,
+                Actor::Agent,
+                "agent",
+                name.clone(),
+            )
+            .with_payload(json!({ "name": name, "input": input })),
+        ),
+        NormalizedAgentEvent::Command { command, status } => Some(
+            ActivityEntry::new(
+                task_id,
+                ActivityKind::Command,
+                Actor::Agent,
+                "agent",
+                command.clone(),
+            )
+            .with_payload(json!({ "command": command, "status": status })),
+        ),
+        NormalizedAgentEvent::FileChange { path, change } => Some(
+            ActivityEntry::new(
+                task_id,
+                ActivityKind::FileEdit,
+                Actor::Agent,
+                "agent",
+                format!("{change} {path}"),
+            )
+            .with_payload(json!({ "path": path, "change": change })),
+        ),
+        NormalizedAgentEvent::Test { command, status } => Some(
+            ActivityEntry::new(
+                task_id,
+                ActivityKind::TestRun,
+                Actor::Agent,
+                "agent",
+                command.clone(),
+            )
+            .with_payload(json!({ "command": command, "status": status })),
+        ),
+        NormalizedAgentEvent::Permission { tool, description } => Some(
+            ActivityEntry::new(
+                task_id,
+                ActivityKind::PermissionRequest,
+                Actor::Agent,
+                "agent",
+                description.clone(),
+            )
+            .with_payload(json!({ "tool": tool, "description": description })),
+        ),
+        NormalizedAgentEvent::End { success, message } => Some(
+            ActivityEntry::new(
+                task_id,
+                ActivityKind::Done,
+                Actor::Agent,
+                "agent",
+                message.clone().unwrap_or_else(|| {
+                    if *success { "Agent finished".into() } else { "Agent stopped".into() }
+                }),
+            )
+            .with_payload(json!({ "success": success, "message": message })),
+        ),
+        // A frame no adapter recognised is kept rather than dropped: the log is
+        // the record of what happened, including what Mars could not read.
+        NormalizedAgentEvent::Unknown { provider_type, raw } => Some(
+            ActivityEntry::new(
+                task_id,
+                ActivityKind::Error,
+                Actor::System,
+                "mars",
+                format!("unrecognised {provider_type} frame"),
+            )
+            .with_payload(json!({ "providerType": provider_type }))
+            .with_attachment(Attachment::text(
+                "application/json",
+                raw.to_string(),
+            )),
+        ),
+        // The provider's resume point is session machinery, not activity.
+        NormalizedAgentEvent::Checkpoint { .. } => None,
+    };
+
+    if let Some(entry) = entry {
+        let _ = sink.activity.append(entry.in_run(&sink.run_id));
+    }
+}
+
 fn stream_agent_events(
     app: AppHandle,
     supervisor: ProcessSupervisor,
     adapter: Box<dyn AgentAdapter>,
     mut launched: mars_agents::process::LaunchedProcess,
+    sink: RunSink,
 ) {
     tauri::async_runtime::spawn(async move {
         let mut decoder = JsonLineDecoder::new();
@@ -2359,6 +2745,13 @@ fn stream_agent_events(
             for event in events {
                 provider_ended |= matches!(event, NormalizedAgentEvent::End { .. });
                 let _ = supervisor.record_normalized(&launched.session_id, &event);
+                record_agent_event(&sink, &event);
+                if let NormalizedAgentEvent::End { success, .. } = &event {
+                    let _ = sink.runs.set_status(
+                        &sink.run_id,
+                        if *success { RunStatus::Completed } else { RunStatus::Failed },
+                    );
+                }
                 let _ = app.emit(
                     "agent-event",
                     AgentTimelinePayload {
@@ -2380,11 +2773,13 @@ fn main() {
             let storage = Arc::new(Storage::open(data_dir.join("mars.sqlite3"))?);
             let agents = ProcessSupervisor::new(storage.clone());
             let broker = PermissionBroker::new(storage.clone());
+            let payload_root = data_dir.join("activity-payloads");
             agents.recover_interrupted()?;
             let forge = ForgeWorkflow::new(storage.clone());
             forge.recover_interrupted()?;
             let skill_registry = Arc::new(SkillsShRegistry::new()?);
             app.manage(AppState {
+                activity: ActivityRecord::new(storage.clone(), &payload_root),
                 agents,
                 brain: BrainService::new(storage.clone()),
                 broker,
@@ -2407,9 +2802,12 @@ fn main() {
                 indexer: Indexer::new(storage.clone()),
                 knowledge: KnowledgeService::new(storage.clone()),
                 overlaps: TaskOverlapService::new(storage.clone()),
-                planner: WorktreePlanner::new(storage.clone(), data_dir.join("worktrees")),
+                planner: WorktreePlanner::new(storage.clone(), data_dir.join("worktrees"))
+                    .recording_to(ActivityRecord::new(storage.clone(), &payload_root)),
                 projects: ProjectService::new(storage.clone()),
+                recovery: RecoveryService::new(storage.clone(), &payload_root),
                 reviews: ReviewService::new(storage.clone()),
+                runs: RunStore::new(storage.clone()),
                 permissions: PermissionAudit::new(storage.clone()),
                 skills: SkillService::new(storage.clone(), skill_registry, data_dir.join("skills")),
                 tasks: TaskWorktreeService::new(storage.clone(), data_dir.join("worktrees")),
@@ -2475,6 +2873,16 @@ fn main() {
             review_followup,
             build_context_pack,
             list_tasks,
+            record_message,
+            task_activity,
+            task_projection,
+            activity_payload,
+            task_runs,
+            pending_permissions,
+            decide_permission,
+            interrupted_runs,
+            note_interrupted_run,
+            resolve_interrupted_run,
             create_task,
             task_overlap_warnings,
             connect_github,

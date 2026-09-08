@@ -1,21 +1,35 @@
 import type {
+  ActivityEvent,
+  ActivityPayload,
   CommandFailure,
   ContextItem,
   FileDocument,
   FilePage,
   IndexStatus,
+  InterruptedRun,
+  MemoryProposal,
+  PendingPermissionRequest,
+  PermissionDecisionChoice,
   ProjectSnapshot,
+  RecoveryAction,
   RunContextPack,
   SetupCommandInput,
   SkillInstallation,
   StartingPoint,
+  TaskProjection,
   WorktreePlan,
   WorktreeProposal,
   WorktreeState,
 } from "@mars/shared-types";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 
+import { ActivityLog } from "@/features/activity/ActivityLog";
+import { CompletionSummary } from "@/features/activity/CompletionSummary";
+import { InterruptedRunRecovery } from "@/features/activity/InterruptedRunRecovery";
+import { RunStatusLine, runActivityState } from "@/features/activity/RunStatusLine";
+import { PermissionRequestMessage } from "@/features/agents/PermissionRequestMessage";
 import { RunContextReview } from "@/features/agents/RunContextReview";
 import { BrainAnswer } from "@/features/brain/BrainAnswer";
 import { FileExplorer } from "@/features/explorer/FileExplorer";
@@ -33,7 +47,7 @@ import type {
   MentionTarget,
   ShellTask,
 } from "@/shell/model";
-import { MetaLabel, Mono, StateBlock, StateLabel } from "@/shell/primitives";
+import { Mono, StateBlock, StateLabel } from "@/shell/primitives";
 import { ShellFrame } from "@/shell/ShellFrame";
 import { useShell } from "@/shell/shell-store";
 
@@ -55,18 +69,18 @@ interface OpenFile {
 }
 
 /**
- * A turn in the conversation.
+ * Something to say that the activity record does not carry.
  *
- * The plan and the context review are turns, not dialogs. They arrive where the
- * request that produced them is and they stay there afterwards, so the
- * transcript is the record of what was approved rather than a list of things
- * that happened next to one.
+ * Human turns, plans and permission requests all live in the log and are
+ * rendered from it. A note is what is left: this client's own report of
+ * something that failed before it could be recorded, which would otherwise
+ * vanish without a trace.
  */
-type Turn =
-  | { kind: "human"; id: string; text: string; agentId: string }
-  | { kind: "note"; id: string; state: ActivityState; text: string }
-  | { kind: "plan"; id: string; taskId: string }
-  | { kind: "review"; id: string; taskId: string };
+interface Note {
+  id: string;
+  state: ActivityState;
+  text: string;
+}
 
 /**
  * Repository trust grants reading only. Everything an agent could do to the
@@ -134,15 +148,6 @@ function messageFor(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** The most recent thing the person actually asked for, verbatim. */
-function lastRequest(turns: Turn[]): string {
-  for (let index = turns.length - 1; index >= 0; index -= 1) {
-    const turn = turns[index];
-    if (turn.kind === "human") return turn.text;
-  }
-  return "";
-}
-
 /** The first line of a request, as the task's title. */
 function titleFrom(text: string) {
   const line = text.trim().split("\n")[0];
@@ -178,7 +183,29 @@ export function ShellWorkspace({
   const [scopeId, setScopeId] = useState(SCOPES[0].id);
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
-  const [turns, setTurns] = useState<Turn[]>([]);
+  const [notes, setNotes] = useState<Note[]>([]);
+  /** The last thing asked for, verbatim, as the pack's assignment. */
+  const [assignment, setAssignment] = useState("");
+
+  /**
+   * A task's record, tagged with the task it belongs to.
+   *
+   * Kept together and keyed rather than cleared on selection, so the previous
+   * task's log can never be shown for a moment under a new task's heading.
+   */
+  const [record, setRecord] = useState<{
+    taskId: string;
+    events: ActivityEvent[];
+    projection: TaskProjection;
+    pending: PendingPermissionRequest[];
+  } | null>(null);
+  const [eventsState, setEventsState] = useState<ActivityState>("idle");
+  const [decidingId, setDecidingId] = useState<string | null>(null);
+  const [permissionError, setPermissionError] = useState<string | null>(null);
+  const [interrupted, setInterrupted] = useState<InterruptedRun[]>([]);
+  const [recoveryBusy, setRecoveryBusy] = useState(false);
+  const [proposals, setProposals] = useState<MemoryProposal[]>([]);
+  const [interrupting, setInterrupting] = useState(false);
 
   const [index, setIndex] = useState<IndexStatus | null>(null);
   const [indexState, setIndexState] = useState<ActivityState>("loading");
@@ -245,6 +272,77 @@ export function ShellWorkspace({
       active = false;
     };
   }, [project.repositoryId, index]);
+
+  /**
+   * Re-read the task's record.
+   *
+   * Everything the conversation shows comes from here, so a live run and a
+   * reload are the same code path: both ask the log for what they have not seen.
+   */
+  const loadRecord = useCallback(
+    (taskId: string) =>
+      Promise.all([
+        invoke<ActivityEvent[]>("task_activity", { taskId, afterSequence: 0, limit: 1000 }),
+        invoke<TaskProjection>("task_projection", { taskId }),
+        invoke<PendingPermissionRequest[]>("pending_permissions", { taskId }),
+      ])
+        .then(([events, projection, pending]) => {
+          setRecord({ taskId, events, projection, pending });
+          setEventsState("idle");
+        })
+        .catch(() => setEventsState("failed")),
+    [],
+  );
+
+  useEffect(() => {
+    if (!selectedTaskId) return;
+    void loadRecord(selectedTaskId);
+  }, [loadRecord, selectedTaskId, reloadToken]);
+
+  // The agent event is a nudge, not the truth. It says something happened; the
+  // record says what, and the record is what gets rendered.
+  useEffect(() => {
+    if (!selectedTaskId) return;
+    const subscription = listen("agent-event", () => {
+      void loadRecord(selectedTaskId);
+    });
+    return () => {
+      void subscription.then((unlisten) => unlisten());
+    };
+  }, [loadRecord, selectedTaskId]);
+
+  // Runs that were alive when Mars stopped. Detection changes nothing and
+  // resumes nothing; it only finds what needs a decision.
+  useEffect(() => {
+    let active = true;
+    invoke<InterruptedRun[]>("interrupted_runs")
+      .then((runs) => {
+        if (active) setInterrupted(runs);
+      })
+      .catch(() => {
+        if (active) setInterrupted([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [project.repositoryId]);
+
+  useEffect(() => {
+    if (!selectedTaskId) return;
+    let active = true;
+    invoke<MemoryProposal[]>("memory_pending", {
+      filters: { projectId: project.projectId, taskId: selectedTaskId },
+    })
+      .then((items) => {
+        if (active) setProposals(items);
+      })
+      .catch(() => {
+        if (active) setProposals([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [project.projectId, selectedTaskId]);
 
   // One page of files is enough to make `@` useful without walking a monorepo.
   useEffect(() => {
@@ -347,7 +445,7 @@ export function ShellWorkspace({
   }
 
   function note(text: string, state: ActivityState = "queued") {
-    setTurns((current) => [...current, { kind: "note", id: crypto.randomUUID(), state, text }]);
+    setNotes((current) => [...current, { id: crypto.randomUUID(), state, text }]);
   }
 
   /** Assemble the pack for a provisioned task, excluding what was removed. */
@@ -362,7 +460,7 @@ export function ShellWorkspace({
             agentId,
             adapter: agentId === "codex" ? "codex" : "claude",
             role: "implementer",
-            assignment: lastRequest(turns),
+            assignment,
             maxBytes: PACK_BUDGET_BYTES,
             excludedEntityRefs: excluded,
           },
@@ -374,7 +472,7 @@ export function ShellWorkspace({
         setPackState("failed");
       }
     },
-    [agentId, turns],
+    [agentId, assignment],
   );
 
   /**
@@ -382,10 +480,7 @@ export function ShellWorkspace({
    * the plan is assembled from reads, shown as a message, and waits.
    */
   async function submit(text: string) {
-    setTurns((current) => [
-      ...current,
-      { kind: "human", id: crypto.randomUUID(), text, agentId },
-    ]);
+    setAssignment(text);
     setPlanState("loading");
     setPlanError(null);
     const scope = SCOPES.find((candidate) => candidate.id === scopeId) ?? SCOPES[0];
@@ -400,14 +495,14 @@ export function ShellWorkspace({
           setupCommands: [],
         },
       });
+      // The request is recorded against the task it produced, so the log reads
+      // in the order things actually happened.
+      await invoke("record_message", { taskId: planned.taskId, text });
       setProposal(planned);
       setPlanState("idle");
       setSelectedTaskId(planned.taskId);
       setReloadToken((token) => token + 1);
-      setTurns((current) => [
-        ...current,
-        { kind: "plan", id: crypto.randomUUID(), taskId: planned.taskId },
-      ]);
+      await loadRecord(planned.taskId);
     } catch (caught) {
       setPlanError(messageFor(caught));
       setPlanState("failed");
@@ -446,14 +541,52 @@ export function ShellWorkspace({
       setProposal(provisioned);
       setPlanState("idle");
       setReloadToken((token) => token + 1);
-      setTurns((current2) => [
-        ...current2,
-        { kind: "review", id: crypto.randomUUID(), taskId: provisioned.taskId },
-      ]);
+      await loadRecord(provisioned.taskId);
       await buildPack(provisioned.taskId, []);
     } catch (caught) {
       setPlanError(messageFor(caught));
       setPlanState("failed");
+    }
+  }
+
+  /** Answer a permission request and let the agent waiting on it carry on. */
+  async function decide(requestId: string, choice: PermissionDecisionChoice) {
+    setDecidingId(requestId);
+    setPermissionError(null);
+    try {
+      await invoke("decide_permission", { requestId, decision: choice });
+      if (selectedTaskId) await loadRecord(selectedTaskId);
+    } catch (caught) {
+      setPermissionError(messageFor(caught));
+    } finally {
+      setDecidingId(null);
+    }
+  }
+
+  /**
+   * Record which way out of an interrupted run was chosen. The choice reaches
+   * the transcript first; nothing is resumed here, and nothing was resumed
+   * before it was asked for.
+   */
+  async function recover(run: InterruptedRun, action: RecoveryAction) {
+    setRecoveryBusy(true);
+    try {
+      await invoke("resolve_interrupted_run", { runId: run.runId, action });
+      setInterrupted((current) =>
+        current.filter((candidate) => candidate.runId !== run.runId),
+      );
+      if (action !== "discard") {
+        note(
+          `Recorded the choice to ${action} run ${run.runId.slice(0, 12)}. Carrying it out is ` +
+            `the run surface's job, and it has not run.`,
+          "queued",
+        );
+      }
+      await loadRecord(run.taskId);
+    } catch (caught) {
+      note(`The recovery choice could not be recorded: ${messageFor(caught)}`, "failed");
+    } finally {
+      setRecoveryBusy(false);
     }
   }
 
@@ -559,55 +692,131 @@ export function ShellWorkspace({
     </div>
   );
 
-  const transcript = turns.map((turn) => {
-    if (turn.kind === "human") {
+  // A record belonging to a different task is not this task's record.
+  const current = record?.taskId === selectedTaskId ? record : null;
+  const events = current?.events ?? [];
+  const projection = current?.projection ?? null;
+  const pending = current?.pending ?? [];
+
+  const activeRun = projection?.runs.at(-1) ?? null;
+  const latestEvent = events.at(-1) ?? null;
+  const pendingIds = new Set(pending.map((request) => request.id));
+
+  const loadPayload = useCallback(
+    (digest: string) => invoke<ActivityPayload>("activity_payload", { digest }),
+    [],
+  );
+
+  /**
+   * Where a card belongs in the record.
+   *
+   * Each of these replaces the plain row for the event that produced it, so the
+   * plan sits where it was planned and the permission request sits where the
+   * agent stopped — rather than in a tray beside the transcript.
+   */
+  function renderEvent(event: ActivityEvent) {
+    if (event.kind === "worktree_planned" && proposal && proposal.taskId === event.taskId) {
       return (
-        <div key={turn.id} className="flex flex-col gap-1 border-b border-border px-3 py-2.5">
-          <MetaLabel>You</MetaLabel>
-          <p className="text-[13px] leading-relaxed whitespace-pre-wrap text-foreground">
-            {turn.text}
-          </p>
-        </div>
-      );
-    }
-    if (turn.kind === "note") {
-      return (
-        <div key={turn.id} className="flex flex-col gap-1 border-b border-border px-3 py-2">
-          <StateLabel state={turn.state} />
-          <p className="text-[12px] leading-relaxed text-muted-foreground">{turn.text}</p>
-        </div>
-      );
-    }
-    if (turn.kind === "plan") {
-      return proposal && proposal.taskId === turn.taskId ? (
         <WorktreePlanMessage
           error={planError}
-          key={turn.id}
           onApprove={(edits) => void approvePlan(edits)}
           proposal={proposal}
           state={planState}
         />
-      ) : null;
+      );
     }
-    return (
-      <div className="border-b border-border" key={turn.id}>
-        <RunContextReview
-          error={packError}
-          onStart={(digest) =>
-            note(
-              `Context accepted at digest ${digest.slice(0, 12)}. The run surface — timeline, ` +
-                `permission prompts and diffs — is the next stage; nothing has been launched.`,
-              "queued",
-            )
-          }
-          onToggleEntry={toggleEntry}
-          pack={pack}
-          removed={removedRefs}
-          state={packState}
+
+    if (event.kind === "permission_request") {
+      const requestId = (event.payload as { requestId?: string } | null)?.requestId;
+      const request = pending.find((candidate) => candidate.id === requestId);
+      // Only a request still waiting becomes a question. One already answered
+      // stays in the record as the plain row it is, next to its decision.
+      if (request && pendingIds.has(request.id)) {
+        return (
+          <PermissionRequestMessage
+            busy={decidingId === request.id}
+            error={decidingId === request.id ? permissionError : null}
+            onDecide={(choice) => void decide(request.id, choice)}
+            request={request}
+          />
+        );
+      }
+    }
+
+    if (event.kind === "done" && projection) {
+      return (
+        <CompletionSummary
+          branchName={projection.worktree?.branchName ?? selectedTask?.branchName}
+          onPublish={() => dispatch({ type: "navigate", destination: "source-control" })}
+          onReviewDiff={() => dispatch({ type: "navigate", destination: "source-control" })}
+          onReviewMemory={() => dispatch({ type: "openInspector", tab: "brain" })}
+          onRunChecks={() => dispatch({ type: "openUtility", tab: "checks" })}
+          projection={projection}
+          proposals={proposals}
         />
-      </div>
-    );
-  });
+      );
+    }
+
+    return null;
+  }
+
+  const recovery = interrupted
+    .filter((run) => run.taskId === selectedTaskId)
+    .map((run) => (
+      <InterruptedRunRecovery
+        busy={recoveryBusy}
+        completed={[
+          ...(projection?.commands ?? [])
+            .filter((command) => command.runId === run.runId && command.status === "completed")
+            .map((command) => ({ label: command.command, detail: `exit ${command.exitCode ?? 0}` })),
+          ...(projection?.tests ?? []).map((test) => ({
+            label: test.command,
+            detail: test.status,
+          })),
+        ]}
+        key={run.runId}
+        onChoose={(action) => void recover(run, action)}
+        run={run}
+      />
+    ));
+
+  const noteRows = notes.map((entry) => (
+    <div className="flex flex-col gap-1 border-b border-border px-3 py-2" key={entry.id}>
+      <StateLabel state={entry.state} />
+      <p className="text-[12px] leading-relaxed text-muted-foreground">{entry.text}</p>
+    </div>
+  ));
+
+  const transcript = (
+    <>
+      {recovery}
+      <ActivityLog
+        events={events}
+        loadPayload={loadPayload}
+        onOpenFile={(path, line) => void openFile(path, false, line)}
+        renderEvent={renderEvent}
+      />
+      {pack ? (
+        <div className="border-b border-border">
+          <RunContextReview
+            error={packError}
+            onStart={(digest) =>
+              note(
+                `Context accepted at digest ${digest.slice(0, 12)}. The run surface is wired to ` +
+                  `the activity record; launching an agent into it is the next stage.`,
+                "queued",
+              )
+            }
+            onToggleEntry={toggleEntry}
+            pack={pack}
+            removed={removedRefs}
+            state={packState}
+          />
+        </div>
+      ) : null}
+      {noteRows}
+    </>
+  );
 
   const home = (
     <RepositoryHome
@@ -628,21 +837,21 @@ export function ShellWorkspace({
     />
   );
 
-  // The conversation is never empty of purpose: with no turns it is the
-  // repository home, and with a task selected it is that task's record.
-  const conversationBody =
-    turns.length > 0 ? (
-      <>{transcript}</>
-    ) : selectedTask ? (
-      <TaskDetail
-        key={selectedTask.taskId}
-        onOpenWorktree={onOpenProject}
-        onTaskChanged={upsertTask}
-        task={selectedTask}
-      />
-    ) : (
-      home
-    );
+  // The conversation is never empty of purpose: with nothing recorded it is the
+  // repository home, and with a record it is that record.
+  const hasRecord = events.length > 0 || notes.length > 0 || recovery.length > 0;
+  const conversationBody = hasRecord ? (
+    transcript
+  ) : selectedTask ? (
+    <TaskDetail
+      key={selectedTask.taskId}
+      onOpenWorktree={onOpenProject}
+      onTaskChanged={upsertTask}
+      task={selectedTask}
+    />
+  ) : (
+    home
+  );
 
   return (
     <ShellFrame
@@ -674,7 +883,22 @@ export function ShellWorkspace({
         state: selectedTask ? worktreeActivityState(selectedTask.state) : "idle",
         children: conversationBody,
         composer: (
-          <Composer
+          <>
+            <RunStatusLine
+              blockedSummary={pending[0]?.summary}
+              interrupting={interrupting}
+              latest={latestEvent}
+              onInterrupt={() => {
+                setInterrupting(true);
+                invoke("cancel_agent", { sessionId: activeRun?.runId })
+                  .catch((caught: unknown) =>
+                    note(`The run could not be interrupted: ${messageFor(caught)}`, "failed"),
+                  )
+                  .finally(() => setInterrupting(false));
+              }}
+              run={activeRun}
+            />
+            <Composer
             agents={AGENTS}
             attachments={attachments}
             mentions={mentions}
@@ -695,9 +919,19 @@ export function ShellWorkspace({
               description: `${skill.scope} · ${skill.pinnedHash.slice(0, 12)}`,
               instructions: skill.skillMarkdown,
             }))}
-            state={planState === "loading" ? "loading" : "idle"}
+            state={
+              activeRun?.state === "blocked"
+                ? "blocked"
+                : activeRun?.state === "running"
+                  ? "streaming"
+                  : planState === "loading"
+                    ? "loading"
+                    : "idle"
+            }
+            blockedReason={pending[0]?.summary}
             value={draft}
-          />
+            />
+          </>
         ),
       }}
       inspector={{
@@ -721,6 +955,22 @@ export function ShellWorkspace({
               state={packState}
             />
           ) : undefined,
+          diff: projection ? (
+            <ul className="flex flex-col">
+              {projection.filesTouched.map((file) => (
+                <li key={file.path}>
+                  <button
+                    type="button"
+                    onClick={() => void openFile(file.path)}
+                    className="flex w-full items-baseline gap-2 border-b border-border px-2 py-1 text-left outline-none hover:bg-surface-raised focus-visible:bg-surface-raised"
+                  >
+                    <Mono className="min-w-0 flex-1 truncate text-foreground">{file.path}</Mono>
+                    <Mono className="shrink-0 text-faint">{file.change}</Mono>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : undefined,
           brain: (
             <BrainAnswer
               onOpenSource={(path, line) => void openFile(path, false, line)}
@@ -731,6 +981,9 @@ export function ShellWorkspace({
         statuses: {
           plan: proposal ? { state: proposal.approvedAt ? "done" : "blocked" } : undefined,
           context: pack ? { state: packState, count: pack.entries.length } : undefined,
+          diff: projection
+            ? { state: eventsState, count: projection.filesTouched.length }
+            : undefined,
         },
       }}
       utility={{
@@ -744,8 +997,14 @@ export function ShellWorkspace({
           state: indexActivityState(index),
           detail: index ? `${index.counts.files.toLocaleString()} files` : undefined,
         },
-        agents: { state: "idle", count: 0 },
-        permissions: { state: "idle", pending: 0 },
+        agents: {
+          state: activeRun ? runActivityState(activeRun) : "idle",
+          count: activeRun && activeRun.state === "running" ? 1 : 0,
+        },
+        permissions: {
+          state: pending.length > 0 ? "blocked" : "idle",
+          pending: pending.length,
+        },
         connection,
       }}
     />

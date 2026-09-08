@@ -200,3 +200,14 @@ export interface InterruptedRun {
   unverified: string[];
   options: RecoveryOption[];
 }
+
+/**
+ * Command output, diffs and test results, resolved from the digest an event
+ * carries. Kept out of the event row so the log stays pageable.
+ */
+export interface ActivityPayload {
+  digest: string;
+  byteSize: number;
+  /** Lossy UTF-8. Every payload the record spills is program output. */
+  text: string;
+}
