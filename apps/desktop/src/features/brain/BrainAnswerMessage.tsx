@@ -9,7 +9,15 @@ import { LightbulbIcon, QuoteIcon, TriangleAlertIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { formatDuration } from "@/features/activity/ActivityLog";
 import type { ActivityState } from "@/shell/activity-state";
-import { MetaLabel, Mono, StateBlock, StateLabel } from "@/shell/primitives";
+import {
+  DerivedFrom,
+  DerivedFromSummary,
+  MetaLabel,
+  Mono,
+  StateBlock,
+  StateLabel,
+} from "@/shell/primitives";
+import { anchorVerdict, type BlobAnchor, type WorkingTreeShas } from "@/shell/staleness";
 
 export interface BrainAnswerMessageProps {
   question: string;
@@ -21,8 +29,19 @@ export interface BrainAnswerMessageProps {
   /** What the pipeline is doing, while it is doing it. */
   stage?: string | null;
   error?: string | null;
+  /**
+   * The working tree's shas for the cited paths.
+   *
+   * An answer is a photograph of the repository at the moment it was asked.
+   * The conversation keeps it forever, and the next commit can make every
+   * line number in it wrong. Comparing each citation's blob sha against this
+   * is what lets the answer admit that instead of ageing quietly.
+   */
+  shas?: WorkingTreeShas;
   onOpenCitation: (path: string, line: number) => void;
 }
+
+const NO_SHAS: WorkingTreeShas = new Map();
 
 /** Why an answer fell short, in words rather than an enum name. */
 const GAP_LABEL: Record<Gap["kind"], string> = {
@@ -34,26 +53,47 @@ const GAP_LABEL: Record<Gap["kind"], string> = {
   noReasoning: "no reasoning",
 };
 
+/**
+ * One citation, as a thing you can click and a version you can check.
+ *
+ * The line number is the part that rots. `parser.ts:81` stays perfectly
+ * readable after the edit that pushed line 81 down by forty lines, so the chip
+ * carries the blob sha the span was read from and marks itself when the working
+ * tree has moved past it. A stale chip still opens the file — the reader is
+ * told what they are about to see, not stopped from seeing it.
+ */
 function CitationChip({
   citation,
   index,
   onOpen,
+  shas,
 }: {
   citation: Citation;
   index: number;
   onOpen: () => void;
+  shas: WorkingTreeShas;
 }) {
+  const anchor: BlobAnchor = { path: citation.path, sha: citation.blobSha };
+  const verdict = anchorVerdict(anchor, shas);
   return (
     <button
       type="button"
       onClick={onOpen}
       title={citation.why}
-      className="inline-flex items-baseline gap-1 border border-border px-1 py-px align-baseline outline-none hover:border-border-strong focus-visible:border-border-strong"
+      data-verdict={verdict}
+      className={cn(
+        "inline-flex items-baseline gap-1 border px-1 py-px align-baseline outline-none",
+        "hover:border-border-strong focus-visible:border-border-strong",
+        verdict === "fresh" || verdict === "unverified"
+          ? "border-border"
+          : "border-dashed border-border-strong",
+      )}
     >
       <Mono className="text-faint">{index}</Mono>
       <Mono className="max-w-40 truncate text-muted-foreground">
         {citation.path.split("/").at(-1)}:{citation.lineStart}
       </Mono>
+      <DerivedFrom anchor={anchor} shas={shas} />
     </button>
   );
 }
@@ -72,15 +112,22 @@ function ClaimRow({
   claim,
   index,
   onOpenCitation,
+  settled,
+  shas,
 }: {
   citations: Citation[];
   claim: Claim;
   index: Map<string, number>;
   onOpenCitation: (path: string, line: number) => void;
+  /** The answer has resolved, so what is missing is missing rather than late. */
+  settled: boolean;
+  shas: WorkingTreeShas;
 }) {
   const cited = claim.citations
     .map((id) => citations.find((candidate) => candidate.id === id))
     .filter((candidate): candidate is Citation => Boolean(candidate));
+  // Named by the claim but not on the stream yet.
+  const pending = claim.citations.length - cited.length;
 
   return (
     <li
@@ -107,15 +154,24 @@ function ClaimRow({
                 index={index.get(citation.id) ?? 0}
                 key={citation.id}
                 onOpen={() => onOpenCitation(citation.path, citation.lineStart)}
+                shas={shas}
               />
             ))}
+            {pending > 0 ? (
+              <Mono className="text-faint">{pending} more arriving</Mono>
+            ) : null}
           </div>
-        ) : (
+        ) : settled ? (
           // The model says a fact always carries a citation. If one arrives
           // without, saying so is better than rendering it as if it had one.
           <span className="text-[11px] text-destructive">
             stated as a fact but arrived with no citation
           </span>
+        ) : (
+          // Mid-stream a claim can outrun its citations. Accusing it of being
+          // uncited before the stream has finished would be a lie that clears
+          // itself up a moment later — and readers remember the accusation.
+          <span className="text-[11px] text-faint">waiting for its citations</span>
         )
       ) : (
         <span className="text-[11px] text-faint">
@@ -141,14 +197,24 @@ export function BrainAnswerMessage({
   error,
   onOpenCitation,
   question,
+  shas = NO_SHAS,
   stage,
   state,
   streamed = [],
   streamedCitations = [],
 }: BrainAnswerMessageProps) {
+  // While the call is in flight the stream is all there is; once it resolves,
+  // the returned answer is authoritative and replaces it — the core prunes
+  // citations that failed validation, and the stream cannot be trusted to have
+  // dropped the same ones.
   const claims = answer?.claims ?? streamed;
   const citations = answer?.citations ?? streamedCitations;
+  const settled = state !== "loading" && state !== "streaming";
   const index = new Map(citations.map((citation, position) => [citation.id, position + 1]));
+  const anchors: BlobAnchor[] = citations.map((citation) => ({
+    path: citation.path,
+    sha: citation.blobSha,
+  }));
 
   const facts = claims.filter((claim) => claim.kind === "fact");
   const inferences = claims.filter((claim) => claim.kind === "inference");
@@ -161,8 +227,13 @@ export function BrainAnswerMessage({
     >
       <header className="flex flex-wrap items-center gap-2">
         <MetaLabel className="text-foreground">Project Brain</MetaLabel>
-        {state === "loading" ? (
-          <StateLabel state="loading" detail={stage ?? "thinking"} />
+        {state === "loading" || state === "streaming" ? (
+          <StateLabel
+            state={claims.length > 0 ? "streaming" : "loading"}
+            detail={stage ?? (claims.length > 0 ? `${claims.length} claims so far` : "thinking")}
+          />
+        ) : state === "failed" ? (
+          <StateLabel state="failed" detail="the question was not answered" />
         ) : answer ? (
           <StateLabel
             state={answer.truncated ? "stale" : "done"}
@@ -174,6 +245,9 @@ export function BrainAnswerMessage({
             {answer.retrieved} retrieved, {answer.sources} packed
           </Mono>
         ) : null}
+        {/* The answer as a whole, once: a reader scanning a long conversation
+            should be able to see that a turn has aged without opening it. */}
+        <DerivedFromSummary anchors={anchors} shas={shas} />
       </header>
 
       <p className="text-[12px] leading-relaxed text-muted-foreground">{question}</p>
@@ -184,7 +258,7 @@ export function BrainAnswerMessage({
         </p>
       ) : null}
 
-      {claims.length === 0 && state !== "loading" ? (
+      {claims.length === 0 && settled && !error ? (
         <StateBlock
           className="h-auto py-4"
           state="idle"
@@ -208,6 +282,8 @@ export function BrainAnswerMessage({
                 index={index}
                 key={claim.id}
                 onOpenCitation={onOpenCitation}
+                settled={settled}
+                shas={shas}
               />
             ))}
           </ul>
@@ -229,6 +305,8 @@ export function BrainAnswerMessage({
                 index={index}
                 key={claim.id}
                 onOpenCitation={onOpenCitation}
+                settled={settled}
+                shas={shas}
               />
             ))}
           </ul>

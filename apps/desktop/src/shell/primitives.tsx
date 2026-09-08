@@ -6,6 +6,16 @@ import {
   ACTIVITY_STATE,
   type ActivityState,
 } from "@/shell/activity-state";
+import {
+  anchorVerdict,
+  shortSha,
+  summarizeAnchors,
+  verdictLabel,
+  verdictState,
+  WORKING_TREE_SHA,
+  type BlobAnchor,
+  type WorkingTreeShas,
+} from "@/shell/staleness";
 
 const toneText: Record<ActivityStatePresentationTone, string> = {
   accent: "text-primary",
@@ -250,5 +260,86 @@ export function CollapsedStrip({
       </button>
       {children}
     </div>
+  );
+}
+
+/**
+ * What a claim was read from, and whether that is still true.
+ *
+ * Every surface that shows something derived from a file's content renders
+ * this rather than a bare path: the sha the claim rests on, and — when the file
+ * has moved on since — the shell's one stale mark saying so. A reader must
+ * never have to hold in their head which of the answers on screen predate the
+ * edit they just made.
+ *
+ * `unverified` is drawn, not hidden. The absence of a warning would otherwise
+ * be read as a promise the surface has not checked.
+ */
+export function DerivedFrom({
+  anchor,
+  className,
+  shas,
+  verbose = false,
+  ...props
+}: Omit<ComponentProps<"span">, "children"> & {
+  anchor: BlobAnchor;
+  shas: WorkingTreeShas;
+  /** Say "not re-checked" out loud, for a surface with room to say it. */
+  verbose?: boolean;
+}) {
+  const verdict = anchorVerdict(anchor, shas);
+  const state = verdictState(verdict);
+  const label = verdictLabel(verdict);
+
+  return (
+    <span
+      data-slot="derived-from"
+      data-verdict={verdict}
+      className={cn("inline-flex items-baseline gap-1", className)}
+      {...props}
+    >
+      {anchor.sha && anchor.sha !== WORKING_TREE_SHA ? (
+        <Mono className="text-faint" title={`read from blob ${anchor.sha}`}>
+          {shortSha(anchor.sha)}
+        </Mono>
+      ) : null}
+      {state ? (
+        <StateLabel state={state} detail={label ?? undefined} />
+      ) : verbose && label ? (
+        <Mono className="text-faint">{label}</Mono>
+      ) : null}
+    </span>
+  );
+}
+
+/**
+ * The same verdict for a whole group — an answer, a result set, a pack. Sits in
+ * a panel header beside the count it qualifies.
+ */
+export function DerivedFromSummary({
+  anchors,
+  className,
+  shas,
+  ...props
+}: Omit<ComponentProps<"span">, "children"> & {
+  anchors: readonly BlobAnchor[];
+  shas: WorkingTreeShas;
+}) {
+  const verdict = summarizeAnchors(anchors, shas);
+  const state = verdictState(verdict);
+  if (!state) return null;
+  const changed = anchors.filter(
+    (candidate) => anchorVerdict(candidate, shas) !== "fresh",
+  ).length;
+  return (
+    <StateLabel
+      className={className}
+      data-slot="derived-from-summary"
+      detail={`${changed} of ${anchors.length} source(s) ${
+        verdict === "missing" ? "gone" : "changed"
+      }`}
+      state={state}
+      {...props}
+    />
   );
 }

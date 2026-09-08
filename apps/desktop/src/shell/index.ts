@@ -52,6 +52,8 @@ export type {
 } from "@/shell/model";
 export {
   CollapsedStrip,
+  DerivedFrom,
+  DerivedFromSummary,
   KeyHint,
   MetaLabel,
   Mono,
@@ -68,6 +70,19 @@ export {
   useScrollAnchor,
   type ScrollMetrics,
 } from "@/shell/scroll-anchor";
+export {
+  anchorPaths,
+  anchorVerdict,
+  shortSha,
+  summarizeAnchors,
+  summarizeVerdicts,
+  verdictLabel,
+  verdictState,
+  WORKING_TREE_SHA,
+  type AnchorVerdict,
+  type BlobAnchor,
+  type WorkingTreeShas,
+} from "@/shell/staleness";
 export {
   ShellFrame,
   type ShellFrameProps,

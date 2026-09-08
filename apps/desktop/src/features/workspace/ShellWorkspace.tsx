@@ -4,6 +4,9 @@ import type {
   BaseDrift,
   DriftChoice,
   BrainAnswer as BrainAnswerValue,
+  BrainStreamPayload,
+  Citation,
+  Claim,
   CommandFailure,
   ContextItem,
   FileDocument,
@@ -87,6 +90,8 @@ import type {
   ShellTask,
 } from "@/shell/model";
 import { Mono, StateBlock, StateLabel } from "@/shell/primitives";
+import { anchorPaths, type BlobAnchor } from "@/shell/staleness";
+import { useWorkingTreeShas } from "@/lib/working-tree";
 import { ShellFrame } from "@/shell/ShellFrame";
 import { useShell } from "@/shell/shell-store";
 
@@ -209,6 +214,16 @@ export function ShellWorkspace({
   const [tasksState, setTasksState] = useState<ActivityState>("loading");
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
+  /**
+   * Bumped whenever the working tree may have moved under what is already on
+   * screen: a save from the editor, a fresh read of the task's diff.
+   *
+   * Not bumped per agent event. A run emits hundreds, and re-checking every
+   * citation on each one would cost more than the warning is worth; the diff
+   * read that follows the run is close enough in time and cheap enough to be
+   * the trigger instead.
+   */
+  const [treeRevision, setTreeRevision] = useState(0);
   const [mentions, setMentions] = useState<MentionTarget[]>([]);
   const [taskSkills, setTaskSkills] = useState<{
     taskId: string;
@@ -306,11 +321,21 @@ export function ShellWorkspace({
     busy: boolean;
   } | null>(null);
 
-  /** A brain question and its answer, as a turn in the conversation. */
+  /**
+   * A brain question and its answer, as a turn in the conversation.
+   *
+   * `streamed` is what the pipeline has said so far. It is kept beside the
+   * answer rather than merged into it: the core prunes citations that fail
+   * validation before it returns, so the stream is a preview and the resolved
+   * answer replaces it wholesale.
+   */
   const [ask, setAsk] = useState<{
     id: string;
     question: string;
     answer: BrainAnswerValue | null;
+    streamed: Claim[];
+    streamedCitations: Citation[];
+    stage: string | null;
     state: ActivityState;
     error: string | null;
   } | null>(null);
@@ -418,6 +443,60 @@ export function ShellWorkspace({
     void loadRecord(selectedTaskId);
   }, [loadRecord, selectedTaskId, reloadToken]);
 
+  /**
+   * Project Brain's pipeline, as it runs.
+   *
+   * Mounted once for the life of the workspace rather than per question, so a
+   * frame that arrives in the gap between asking and the listener attaching is
+   * not lost. Frames name the stream they belong to and anything else is
+   * dropped — a late answer must never land in the turn that replaced it.
+   */
+  useEffect(() => {
+    const subscription = listen<BrainStreamPayload>("brain-event", ({ payload }) => {
+      setAsk((current) => {
+        if (!current || current.id !== payload.streamId) return current;
+        // Once the call has resolved the answer is authoritative; trailing
+        // frames cannot add to it.
+        if (current.answer) return current;
+        const event = payload.event;
+        switch (event.type) {
+          case "planned":
+            return { ...current, stage: `rewrote into ${event.queries.length} queries` };
+          case "retrieved":
+            return {
+              ...current,
+              stage:
+                event.stalePaths > 0
+                  ? `read ${event.candidates} candidates · ${event.stalePaths} from changed files`
+                  : `read ${event.candidates} candidates`,
+            };
+          case "packed":
+            return {
+              ...current,
+              stage: `packed ${event.sources} sources${event.dropped > 0 ? `, dropped ${event.dropped}` : ""}`,
+            };
+          case "synthesized":
+            return { ...current, stage: `checking ${event.claims} claims against the tree` };
+          case "citation":
+            return {
+              ...current,
+              state: "streaming",
+              streamedCitations: [...current.streamedCitations, event],
+            };
+          case "claim":
+            return { ...current, state: "streaming", streamed: [...current.streamed, event] };
+          case "cancelled":
+            return { ...current, state: "failed", error: `cancelled at ${event.stage}` };
+          default:
+            return current;
+        }
+      });
+    });
+    return () => {
+      void subscription.then((unlisten) => unlisten());
+    };
+  }, []);
+
   // The agent event is a nudge, not the truth. It says something happened; the
   // record says what, and the record is what gets rendered.
   useEffect(() => {
@@ -510,6 +589,28 @@ export function ShellWorkspace({
     [selectedTaskId, tasks],
   );
 
+  /**
+   * The files the brain answer on screen rests on, and what they hold now.
+   *
+   * An answer stays in the conversation after the repository has moved on, so
+   * this is re-read whenever the index changes or the workspace reloads. The
+   * answer itself is never rewritten — it said what it said — but it stops
+   * claiming its line numbers are current.
+   */
+  const askCitations = useMemo<BlobAnchor[]>(
+    () =>
+      (ask?.answer?.citations ?? ask?.streamedCitations ?? []).map((citation) => ({
+        path: citation.path,
+        sha: citation.blobSha,
+      })),
+    [ask?.answer?.citations, ask?.streamedCitations],
+  );
+  const askShas = useWorkingTreeShas(
+    project.repositoryId,
+    anchorPaths(askCitations),
+    `${index?.headOid ?? ""}:${index?.lastRun?.runId ?? ""}:${treeRevision}:${reloadToken}`,
+  );
+
   const shellTasks = useMemo<ShellTask[]>(
     () =>
       tasks.map((task) => ({
@@ -591,6 +692,9 @@ export function ShellWorkspace({
           });
           setDiffState("idle");
           setDiffError(null);
+          // The worktree was just read. Anything on screen anchored to a blob
+          // sha can be re-checked against what it holds now.
+          setTreeRevision((revision) => revision + 1);
         })
         .catch((caught: unknown) => {
           setDiffError(messageFor(caught));
@@ -1022,20 +1126,45 @@ export function ShellWorkspace({
   }, [selectedTaskId, reloadToken]);
 
   /** Ask the project brain, in the conversation, and answer there too. */
+  /**
+   * Ask the repository a question, and show the answer being built.
+   *
+   * The stream id is the question's own id, so a second question asked before
+   * the first returns cannot pour its claims into the first one's turn. Frames
+   * for any other id are dropped rather than queued: the turn they belonged to
+   * is already gone.
+   */
   async function askBrain(question: string) {
     const id = crypto.randomUUID();
-    setAsk({ id, question, answer: null, state: "loading", error: null });
+    setAsk({
+      id,
+      question,
+      answer: null,
+      streamed: [],
+      streamedCitations: [],
+      stage: null,
+      state: "loading",
+      error: null,
+    });
     try {
       const answer = await invoke<BrainAnswerValue>("brain_ask", {
         repositoryId: project.repositoryId,
         question,
         budgetTokens: null,
         maxSources: null,
-        streamId: null,
+        streamId: id,
       });
-      setAsk({ id, question, answer, state: "idle", error: null });
+      setAsk((current) =>
+        current?.id === id
+          ? { ...current, answer, stage: null, state: "idle", error: null }
+          : current,
+      );
     } catch (caught) {
-      setAsk({ id, question, answer: null, state: "failed", error: messageFor(caught) });
+      setAsk((current) =>
+        current?.id === id
+          ? { ...current, answer: null, stage: null, state: "failed", error: messageFor(caught) }
+          : current,
+      );
     }
   }
 
@@ -1236,7 +1365,10 @@ export function ShellWorkspace({
                   document={activeFile.document}
                   onChange={(value) => updateActive((file) => ({ ...file, draft: value }))}
                   onReload={() => void openFile(activeFile.document.relativePath, true)}
-                  onSaved={(document) => updateActive(() => ({ document, draft: document.content }))}
+                  onSaved={(document) => {
+                    updateActive(() => ({ document, draft: document.content }));
+                    setTreeRevision((revision) => revision + 1);
+                  }}
                   repositoryId={project.repositoryId}
                   revealLine={revealLine}
                   taskId={selectedTaskId}
@@ -1482,7 +1614,11 @@ export function ShellWorkspace({
           key={ask.id}
           onOpenCitation={(path, line) => void openFile(path, false, line)}
           question={ask.question}
+          shas={askShas}
+          stage={ask.stage}
           state={ask.state}
+          streamed={ask.streamed}
+          streamedCitations={ask.streamedCitations}
         />
       ) : null}
 
@@ -1548,7 +1684,10 @@ export function ShellWorkspace({
                 onSaved={(document) => {
                   updateActive(() => ({ document, draft: document.content }));
                   // The save is already in the record; re-read so the count in
-                  // the bar above is true rather than merely plausible.
+                  // the bar above is true rather than merely plausible. The
+                  // file just changed, so anything anchored to it is re-checked
+                  // too.
+                  setTreeRevision((revision) => revision + 1);
                   if (selectedTaskId) void loadRecord(selectedTaskId);
                 }}
                 repositoryId={project.repositoryId}

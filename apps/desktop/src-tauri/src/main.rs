@@ -818,6 +818,38 @@ fn index_status(
         .map_err(Into::into)
 }
 
+/// The working tree's current blob sha for each of a set of paths.
+///
+/// Everything the UI shows about source was derived from one exact version of
+/// one file, and the sha is the only thing that keeps that claim checkable: a
+/// path and a line survive the edit that moved the line elsewhere. A surface
+/// asks for the paths its claims rest on and compares the answer against the
+/// shas those claims carry, so it can say which of them the tree has moved past.
+///
+/// Bounded because a citation list is small; a caller with more paths than this
+/// is asking the wrong question.
+#[tauri::command]
+fn blob_freshness(
+    repository_id: String,
+    paths: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<Vec<mars_indexer::api::Freshness>, CommandFailure> {
+    const MAX_PATHS: usize = 256;
+    let api = mars_indexer::api::IndexApi::new(state.storage.clone());
+    let mut seen: Vec<String> = Vec::new();
+    let mut out = Vec::new();
+    for path in paths.into_iter().take(MAX_PATHS) {
+        // `freshness` normalizes separators itself; dedupe on the same shape.
+        let normalized = path.replace('\\', "/");
+        if normalized.is_empty() || seen.contains(&normalized) {
+            continue;
+        }
+        seen.push(normalized.clone());
+        out.push(api.freshness(&repository_id, &normalized)?);
+    }
+    Ok(out)
+}
+
 /// Somewhere to start, and the evidence behind it.
 ///
 /// A suggestion is only worth as much as the reason attached to it, so every
@@ -3258,6 +3290,7 @@ fn main() {
             cancel_terminal,
             index_repository,
             index_status,
+            blob_freshness,
             starting_points,
             find_symbols,
             search_code,

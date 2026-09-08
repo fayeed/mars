@@ -130,6 +130,59 @@ describe("BrainAnswerMessage", () => {
     expect(screen.getByText(/drawn from part of what was found/)).toBeVisible();
   });
 
+  it("waits for a streaming claim's citations instead of accusing it of having none", () => {
+    // The claim event can outrun the citation events it names. Rendering the
+    // uncited-fact accusation in that gap is a lie that clears itself up a
+    // moment later, and a reader remembers the accusation.
+    renderAnswer({
+      answer: null,
+      state: "streaming",
+      streamed: [fact],
+      streamedCitations: [],
+    });
+
+    expect(screen.getByText("waiting for its citations")).toBeVisible();
+    expect(screen.queryByText(/arrived with no citation/)).toBeNull();
+  });
+
+  it("names an uncited fact once the answer has settled", () => {
+    renderAnswer({
+      answer: { ...answer, claims: [{ ...fact, citations: [] }], citations: [] },
+      state: "idle",
+    });
+
+    expect(screen.getByText(/arrived with no citation/)).toBeVisible();
+  });
+
+  it("labels a citation whose file has changed since the span was read", () => {
+    renderAnswer({
+      state: "idle",
+      shas: new Map([[citation.path, "different-sha"]]),
+    });
+
+    expect(screen.getAllByText("changed since this was read").length).toBeGreaterThan(0);
+    expect(screen.getByText("1 of 1 source(s) changed")).toBeVisible();
+  });
+
+  it("says nothing about staleness for a citation that still matches the tree", () => {
+    renderAnswer({
+      state: "idle",
+      shas: new Map([[citation.path, citation.blobSha]]),
+    });
+
+    expect(screen.queryByText("changed since this was read")).toBeNull();
+    expect(screen.queryByText(/source\(s\) changed/)).toBeNull();
+  });
+
+  it("does not imply a citation is current before anything has been checked", () => {
+    // No lookup has run, so the verdict is `unverified`. The chip must not
+    // silently read as confirmed.
+    const { container } = renderAnswer({ state: "idle", shas: new Map() });
+
+    expect(container.querySelector('[data-verdict="unverified"]')).not.toBeNull();
+    expect(container.querySelector('[data-verdict="fresh"]')).toBeNull();
+  });
+
   it("renders claims already on the stream before the answer resolves", () => {
     renderAnswer({
       answer: null,
@@ -143,10 +196,13 @@ describe("BrainAnswerMessage", () => {
     expect(screen.getByText(fact.text)).toBeVisible();
   });
 
-  it("reports a failure without inventing an answer", () => {
+  it("reports a failure once, and does not dress it up as an empty answer", () => {
     renderAnswer({ answer: null, state: "failed", error: "the index is empty" });
 
     expect(screen.getByText("the index is empty")).toBeVisible();
-    expect(screen.getByText("No answer")).toBeVisible();
+    expect(screen.getByText("the question was not answered")).toBeVisible();
+    // "No answer" describes a run that read what it could and drew nothing.
+    // A run that failed did neither, and must not borrow that sentence.
+    expect(screen.queryByText("No answer")).toBeNull();
   });
 });
