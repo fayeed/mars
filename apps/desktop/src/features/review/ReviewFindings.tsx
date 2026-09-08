@@ -27,6 +27,31 @@ export interface ReviewFindingsProps {
   onRunReview?: () => void;
   /** The agent that would read it, named before it is asked to. */
   reviewerLabel?: string;
+  /**
+   * The sha256 of the diff as it stands now.
+   *
+   * A finding is a claim about one exact diff: `parser.ts:81` means line 81 of
+   * the diff the reviewer read, and stays perfectly readable after the edit
+   * that made it point somewhere else. Comparing this against the review's own
+   * digest is the only way the panel can say so. Absent while the diff is being
+   * read, which reads as unchecked rather than as unchanged.
+   */
+  currentDiffSha?: string | null;
+}
+
+/**
+ * Whether the change has moved since the reviewer read it.
+ *
+ * Deliberately three-valued. A review recorded before the digest was stored,
+ * or a diff that has not been read yet, is `unknown` — the panel says nothing
+ * rather than implying either answer.
+ */
+export function reviewDrift(
+  review: Pick<ReviewRecord, "diffSha256">,
+  currentDiffSha: string | null | undefined,
+): "same" | "changed" | "unknown" {
+  if (!review.diffSha256 || !currentDiffSha) return "unknown";
+  return review.diffSha256 === currentDiffSha ? "same" : "changed";
 }
 
 /**
@@ -151,6 +176,7 @@ function Finding({
  */
 export function ReviewFindings({
   busyFindingId,
+  currentDiffSha,
   error,
   implementerLabel,
   onAskForFix,
@@ -200,6 +226,7 @@ export function ReviewFindings({
     (a, b) => SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity),
   );
   const open = findings.filter((finding) => finding.status === "open");
+  const drift = reviewDrift(review, currentDiffSha);
 
   return (
     <section aria-label="Review findings" className="flex flex-col">
@@ -212,6 +239,19 @@ export function ReviewFindings({
           />
           <Mono className="ml-auto text-faint">{review.handoffDigest.slice(0, 12)}</Mono>
         </div>
+
+        {drift === "changed" ? (
+          <StateLabel
+            state="stale"
+            detail="the change has moved since this was read — every line below points into the older diff"
+          />
+        ) : drift === "unknown" ? (
+          <Mono className="text-faint">
+            {review.diffSha256
+              ? "the current change has not been read back, so these have not been re-checked"
+              : "recorded before the reviewed diff was versioned; it cannot be re-checked"}
+          </Mono>
+        ) : null}
 
         <p className="text-[12px] leading-relaxed text-foreground">{review.summary}</p>
 

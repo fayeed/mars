@@ -28,6 +28,7 @@ const review: ReviewRecord = {
   reviewerAdapter: "codex",
   status: "candidate",
   verdict: "changes_requested",
+  diffSha256: "diff-sha-at-review-time",
   summary: "Two problems with ordering, one cosmetic.",
   handoffDigest: "9f8e7d6c5b4a3928",
   findings: [
@@ -156,5 +157,37 @@ describe("ReviewFindings starting a review", () => {
     renderFindings({ review: null });
 
     expect(screen.queryByRole("button", { name: /read it/ })).not.toBeInTheDocument();
+  });
+});
+
+describe("staleness", () => {
+  it("says nothing when the change is exactly what the reviewer read", () => {
+    renderFindings({ currentDiffSha: review.diffSha256 });
+
+    expect(screen.queryByText(/has moved since this was read/)).toBeNull();
+    expect(screen.queryByText(/not been re-checked/)).toBeNull();
+  });
+
+  it("warns that every line number points into an older diff once the change moves", () => {
+    renderFindings({ currentDiffSha: "a-different-diff" });
+
+    expect(screen.getByText(/has moved since this was read/)).toBeVisible();
+  });
+
+  it("admits it has not checked rather than implying the findings are current", () => {
+    // The diff has not been read back yet. Saying nothing here would let the
+    // absence of a warning read as a confirmation.
+    renderFindings({ currentDiffSha: null });
+
+    expect(screen.getByText(/has not been read back/)).toBeVisible();
+  });
+
+  it("says a review from before the diff was versioned can never be re-checked", () => {
+    renderFindings({
+      review: { ...review, diffSha256: "" },
+      currentDiffSha: "whatever-is-there-now",
+    });
+
+    expect(screen.getByText(/cannot be re-checked/)).toBeVisible();
   });
 });

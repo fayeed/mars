@@ -100,11 +100,33 @@ describe("BrainExplorer search", () => {
     expect(screen.getByText("text + meaning")).toBeVisible();
   });
 
-  it("marks a hit whose file has changed since it was indexed", () => {
+  it("marks a hit whose file has changed since the snippet was indexed", () => {
+    // The snippet on screen is what the index stored. Saying so in the shell's
+    // one stale mark — with the sha it was read from — is what stops a reader
+    // taking it for the current contents of the file.
     renderExplorer();
 
-    expect(screen.getByText("changed since indexed")).toBeVisible();
+    expect(screen.getByText("changed since this was read")).toBeVisible();
+    expect(screen.getByText("abc")).toBeVisible();
     expect(screen.getByText("some hits rest on files that changed")).toBeVisible();
+  });
+
+  it("says a hit whose file has been deleted is gone, not merely changed", () => {
+    renderExplorer({
+      results: {
+        ...results,
+        freshness: [
+          {
+            state: "missing",
+            relativePath: "crates/ingest/src/lib.rs",
+            indexedBlobSha: "abc",
+            currentBlobSha: null,
+          },
+        ],
+      },
+    });
+
+    expect(screen.getByText("the file is gone")).toBeVisible();
   });
 
   it("opens a hit at its line", async () => {

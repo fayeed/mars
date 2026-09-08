@@ -47,6 +47,15 @@ export interface ReviewRecord {
   verdict: ReviewVerdict;
   summary: string;
   handoffDigest: string;
+  /**
+   * The sha256 of the exact diff the reviewer read.
+   *
+   * Every finding points at `path:line` in *that* diff, so this is what lets a
+   * surface say the worktree has moved on since. Empty for reviews recorded
+   * before it was stored, which reads as "not re-checked" rather than as a
+   * guess in either direction.
+   */
+  diffSha256: string;
   findings: ReviewFinding[];
   createdAt: string;
   updatedAt: string;

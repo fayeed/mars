@@ -265,6 +265,8 @@ export function ShellWorkspace({
     taskId: string;
     files: DiffFile[];
     headOid: string | null;
+    /** The version of the change itself, for anything anchored to it. */
+    diffSha256: string;
     branchName: string;
   } | null>(null);
   const [diffState, setDiffState] = useState<ActivityState>("idle");
@@ -681,6 +683,7 @@ export function ShellWorkspace({
         diff: string;
         untracked: string[];
         headOid: string | null;
+        diffSha256: string;
         branchName: string;
       }>("task_diff", { taskId })
         .then((result) => {
@@ -688,6 +691,7 @@ export function ShellWorkspace({
             taskId,
             files: [...parseUnifiedDiff(result.diff), ...untrackedFiles(result.untracked)],
             headOid: result.headOid,
+            diffSha256: result.diffSha256,
             branchName: result.branchName || branch,
           });
           setDiffState("idle");
@@ -1400,6 +1404,18 @@ export function ShellWorkspace({
   const problems = useMemo(() => problemsFromProjection(projection), [projection]);
 
   const activeRun = projection?.runs.at(-1) ?? null;
+
+  /**
+   * Why the diff on screen may already be behind the worktree.
+   *
+   * The panel is not re-read while a run writes — that would move the reader's
+   * place out from under them mid-hunk. It says so instead, and offers the
+   * re-read as their move.
+   */
+  const diffStaleReason =
+    activeRun?.state === "running"
+      ? "an agent is still writing here; this is the worktree as it was last read"
+      : null;
   const latestEvent = events.at(-1) ?? null;
   const pendingIds = new Set(pending.map((request) => request.id));
 
@@ -1541,6 +1557,7 @@ export function ShellWorkspace({
             }
             onDecide={(finding, status) => void decideFinding(finding, status)}
             onOpenFinding={(path, line) => void openFile(path, false, line)}
+            currentDiffSha={diff?.taskId === selectedTaskId ? diff.diffSha256 : null}
             review={review}
             state={reviewState}
           />
@@ -1854,6 +1871,12 @@ export function ShellWorkspace({
                   headOid={diff?.headOid}
                   onComment={(path, line, text, side) => void comment(path, line, text, side)}
                   onOpenFile={(path, line) => void openFile(path, false, line)}
+                  onReread={() => {
+                    if (selectedTask && selectedTaskId) {
+                      void loadDiff(selectedTaskId, selectedTask.branchName);
+                    }
+                  }}
+                  staleReason={diffStaleReason}
                   state={diffState}
                 />
               }
@@ -1863,7 +1886,7 @@ export function ShellWorkspace({
               worktreeState={worktreeActivityState}
             />
           ),
-          state: diffError ? "failed" : "idle",
+          state: diffError ? "failed" : diffStaleReason ? "stale" : "idle",
           detail: diff?.taskId === selectedTaskId ? `${diff.files.length} file(s)` : undefined,
         },
       }}

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { languageOf, type DiffFile, type DiffLine } from "@/features/review/unified-diff";
 import type { ActivityState } from "@/shell/activity-state";
-import { MetaLabel, Mono, PanelHeader, StateBlock } from "@/shell/primitives";
+import { MetaLabel, Mono, PanelHeader, StateBlock, StateLabel } from "@/shell/primitives";
 
 export interface DiffReviewProps {
   files: DiffFile[];
@@ -21,6 +21,18 @@ export interface DiffReviewProps {
    */
   onComment: (path: string, line: number, text: string, side: "old" | "new") => void;
   onOpenFile?: (path: string, line: number | null) => void;
+  /**
+   * Why what is on screen may not be what is on disk, in words.
+   *
+   * A diff is a read of the worktree at one instant, and an agent writing into
+   * that worktree while a person reads it makes the panel quietly wrong. There
+   * is nothing to do about that but say so: re-reading under the reader would
+   * lose their place, and hiding it would let them review a file that no longer
+   * says what they are looking at.
+   */
+  staleReason?: string | null;
+  /** Re-reads the worktree, when the reader decides they want the newer one. */
+  onReread?: () => void;
   /** Swapped in tests; the real one lazily pulls Monaco's tokenizer. */
   colorize?: (code: string, language: string) => Promise<string[]>;
 }
@@ -130,6 +142,8 @@ export function DiffReview({
   headOid,
   onComment,
   onOpenFile,
+  onReread,
+  staleReason,
   state,
 }: DiffReviewProps) {
   const [selected, setSelected] = useState<string | null>(files[0]?.path ?? null);
@@ -241,6 +255,21 @@ export function DiffReview({
             </>
           }
         />
+
+        {staleReason ? (
+          <div className="flex shrink-0 items-center gap-2 border-b border-border bg-surface px-2 py-1">
+            <StateLabel state="stale" detail={staleReason} />
+            {onReread ? (
+              <button
+                type="button"
+                onClick={onReread}
+                className="ml-auto shrink-0 border border-border px-1.5 py-0.5 text-[11px] text-foreground outline-none hover:border-border-strong"
+              >
+                Read it again
+              </button>
+            ) : null}
+          </div>
+        ) : null}
 
         <div className="min-h-0 flex-1 overflow-auto">
           {!file ? null : file.binary ? (

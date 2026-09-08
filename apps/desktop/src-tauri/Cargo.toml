@@ -22,6 +22,7 @@ mars-skills.workspace = true
 mars-storage.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 tauri.workspace = true
 tauri-plugin-dialog = "2.7.2"
 tokio-util.workspace = true

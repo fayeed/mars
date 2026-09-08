@@ -87,6 +87,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "execution_core",
         sql: include_str!("../migrations/0015_execution_core.sql"),
     },
+    Migration {
+        version: 16,
+        name: "review_diff_anchor",
+        sql: include_str!("../migrations/0016_review_diff_anchor.sql"),
+    },
 ];
 
 pub(crate) fn apply_all(connection: &mut Connection) -> Result<()> {

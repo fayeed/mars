@@ -2154,6 +2154,13 @@ struct TaskDiff {
     untracked: Vec<String>,
     /// The commit the diff is against.
     head_oid: Option<String>,
+    /// The sha256 of `diff`, as `mars_brain::review` computes it.
+    ///
+    /// A cross-agent review records the digest of the diff it read. Handing the
+    /// same digest back with every fresh read is what lets the UI compare the
+    /// two and say that a finding's `path:line` no longer describes what is on
+    /// disk — without that, a stale finding stays perfectly readable and wrong.
+    diff_sha256: String,
     branch_name: String,
     worktree_path: PathBuf,
 }
@@ -2189,10 +2196,13 @@ fn task_diff(task_id: String, state: State<'_, AppState>) -> Result<TaskDiff, Co
     })
     .unwrap_or_default();
 
+    let diff_sha256 = format!("{:x}", <sha2::Sha256 as sha2::Digest>::digest(diff.as_bytes()));
+
     Ok(TaskDiff {
         diff,
         untracked,
         head_oid: git_line(&task.worktree_path, ["rev-parse", "HEAD"]),
+        diff_sha256,
         branch_name: task.branch_name.clone(),
         worktree_path: task.worktree_path.clone(),
     })

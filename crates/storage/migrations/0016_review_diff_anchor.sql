@@ -1,0 +1,13 @@
+-- A review's findings are claims about one exact diff. Without the version they
+-- were read against, `parser.ts:81` keeps reading correctly long after line 81
+-- stopped being the line the reviewer meant, and nothing on screen can say so.
+--
+-- The handoff digest already stored covers the whole handoff envelope — context
+-- pack, event summaries, budgets — so it changes for reasons that have nothing
+-- to do with the code and cannot be compared against a diff read later. This is
+-- the diff's own sha256, which can.
+--
+-- Existing rows get the empty string: they were reviewed before anything was
+-- recorded, and the honest verdict for them is "not re-checked" rather than a
+-- guess in either direction.
+ALTER TABLE reviews ADD COLUMN diff_sha256 TEXT NOT NULL DEFAULT '';

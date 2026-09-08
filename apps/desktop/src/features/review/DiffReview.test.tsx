@@ -187,3 +187,28 @@ describe("DiffReview states", () => {
     expect(screen.getByText("not a git repository")).toBeVisible();
   });
 });
+
+describe("staleness", () => {
+  it("says the worktree has moved on rather than re-reading under the reader", async () => {
+    const user = userEvent.setup();
+    const onReread = vi.fn();
+    renderReview({
+      staleReason: "an agent is still writing here",
+      onReread,
+    });
+
+    expect(screen.getByText("an agent is still writing here")).toBeVisible();
+    // The re-read is offered, not taken: reloading mid-hunk would move the
+    // reader's place out from under them.
+    expect(onReread).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Read it again" }));
+    expect(onReread).toHaveBeenCalledTimes(1);
+  });
+
+  it("says nothing when the diff is a current read", () => {
+    renderReview();
+
+    expect(screen.queryByRole("button", { name: "Read it again" })).toBeNull();
+  });
+});

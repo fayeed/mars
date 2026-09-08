@@ -155,6 +155,13 @@ pub struct ReviewRecord {
     pub verdict: ReviewVerdict,
     pub summary: String,
     pub handoff_digest: String,
+    /// The sha256 of the exact diff the reviewer read.
+    ///
+    /// Every finding points at `path:line` in *that* diff. Keeping the version
+    /// beside them is what lets a surface say the worktree has moved on since,
+    /// rather than presenting a line number that quietly stopped being the line
+    /// the reviewer meant. Empty for reviews recorded before this was stored.
+    pub diff_sha256: String,
     pub findings: Vec<ReviewFinding>,
     pub created_at: String,
     pub updated_at: String,
@@ -459,8 +466,8 @@ impl ReviewService {
             transaction.execute(
                 "INSERT INTO reviews
                  (id, task_id, implementation_session_id, reviewer_adapter, status, verdict,
-                  summary, handoff_digest, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, 'candidate', ?5, ?6, ?7, ?8, ?8)",
+                  summary, handoff_digest, diff_sha256, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, 'candidate', ?5, ?6, ?7, ?8, ?9, ?9)",
                 params![
                     id,
                     handoff.task_id,
@@ -469,6 +476,7 @@ impl ReviewService {
                     draft.verdict.as_str(),
                     draft.summary,
                     digest,
+                    handoff.diff_sha256,
                     timestamp
                 ],
             )?;
@@ -503,9 +511,10 @@ impl ReviewService {
         let row: Option<RawReview> = self.storage.with_connection(|connection| {
             connection.query_row(
                 "SELECT id, task_id, implementation_session_id, reviewer_adapter, status, verdict,
-                        summary, handoff_digest, created_at, updated_at FROM reviews WHERE id = ?1",
+                        summary, handoff_digest, diff_sha256, created_at, updated_at
+                 FROM reviews WHERE id = ?1",
                 [review_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?, row.get(9)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?, row.get(9)?, row.get(10)?)),
             ).optional()
         })?;
         let Some((
@@ -517,6 +526,7 @@ impl ReviewService {
             verdict,
             summary,
             handoff_digest,
+            diff_sha256,
             created_at,
             updated_at,
         )) = row
@@ -533,6 +543,7 @@ impl ReviewService {
             verdict: ReviewVerdict::parse(&verdict)?,
             summary,
             handoff_digest,
+            diff_sha256,
             findings,
             created_at,
             updated_at,
@@ -704,6 +715,7 @@ type RawFinding = (
 );
 
 type RawReview = (
+    String,
     String,
     String,
     String,

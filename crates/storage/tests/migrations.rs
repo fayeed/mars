@@ -143,7 +143,7 @@ fn fresh_database_applies_each_migration_once() {
         })
         .expect("activity events table should exist");
 
-    assert_eq!(applied, 15);
+    assert_eq!(applied, 16);
     assert_eq!(activity_table, "activity_events");
     assert_eq!(memories_table, "memories");
     assert_eq!(jobs_table, "jobs");
@@ -164,7 +164,7 @@ fn fresh_database_applies_each_migration_once() {
             })
         })
         .expect("migration journal should remain readable");
-    assert_eq!(applied_after_reopen, 15);
+    assert_eq!(applied_after_reopen, 16);
 }
 
 #[test]

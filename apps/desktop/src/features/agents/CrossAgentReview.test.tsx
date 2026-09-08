@@ -28,6 +28,7 @@ const review: ReviewRecord = {
   reviewerAdapter: "codex",
   status: "candidate",
   verdict: "changes_requested",
+  diffSha256: "diff-sha-at-review-time",
   summary: "One correctness issue remains.",
   handoffDigest: "digest-1",
   findings: [finding],

@@ -4,7 +4,8 @@ import { useState } from "react";
 
 import { cn } from "@/lib/utils";
 import type { ActivityState } from "@/shell/activity-state";
-import { MetaLabel, Mono, StateBlock, StateLabel } from "@/shell/primitives";
+import { DerivedFrom, MetaLabel, Mono, StateBlock, StateLabel } from "@/shell/primitives";
+import type { WorkingTreeShas } from "@/shell/staleness";
 
 export interface BrainExplorerProps {
   results: SearchResults | null;
@@ -47,6 +48,17 @@ export function BrainExplorer({
   sliceState,
 }: BrainExplorerProps) {
   const [query, setQuery] = useState("");
+
+  /**
+   * What each hit's file holds now, straight out of the results.
+   *
+   * The core already compared every hit's path against the working tree on the
+   * way out, so this costs no second read: the hit carries the sha its chunk
+   * was indexed from, and this carries the sha the file has now.
+   */
+  const shas: WorkingTreeShas = new Map(
+    (results?.freshness ?? []).map((entry) => [entry.relativePath, entry.currentBlobSha ?? null]),
+  );
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -106,10 +118,7 @@ export function BrainExplorer({
             </div>
             <ul>
               {results.hits.map((hit) => {
-                const freshness = results.freshness.find(
-                  (candidate) => candidate.relativePath === hit.relativePath,
-                );
-                const stale = freshness?.state === "stale";
+                const anchor = { path: hit.relativePath, sha: hit.blobSha };
                 return (
                   <li
                     key={hit.chunkId}
@@ -135,7 +144,10 @@ export function BrainExplorer({
                         {RETRIEVAL_LABEL[hit.retrieval] ?? hit.retrieval}
                       </Mono>
                       {hit.language ? <Mono className="text-faint">{hit.language}</Mono> : null}
-                      {stale ? <Mono className="text-primary">changed since indexed</Mono> : null}
+                      {/* The body above is what the index stored, not what the
+                          file says now. The anchor is what makes that visible
+                          rather than something the reader has to remember. */}
+                      <DerivedFrom anchor={anchor} shas={shas} />
                       <button
                         type="button"
                         onClick={() => onExplore(hit.relativePath)}
