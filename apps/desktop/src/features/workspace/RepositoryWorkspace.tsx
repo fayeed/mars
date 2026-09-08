@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/resizable";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { BrainAnswer } from "@/features/brain/BrainAnswer";
+import { MemoryApproval } from "@/features/brain/MemoryApproval";
 import { BrainSearch } from "@/features/brain/BrainSearch";
 import { FileExplorer } from "@/features/explorer/FileExplorer";
 import { TaskWorkspace } from "@/features/tasks/TaskWorkspace";
@@ -84,6 +85,7 @@ export function RepositoryWorkspace({ onOpenProject, project }: RepositoryWorksp
               <TabsTrigger value="explorer">Explorer</TabsTrigger>
               <TabsTrigger value="brain">Brain</TabsTrigger>
               <TabsTrigger value="ask">Ask</TabsTrigger>
+              <TabsTrigger value="memory">Memory</TabsTrigger>
             </TabsList>
             <TabsContent className="min-h-0" value="tasks">
               <TaskWorkspace
@@ -110,6 +112,9 @@ export function RepositoryWorkspace({ onOpenProject, project }: RepositoryWorksp
                 onOpenSource={(path, line) => void openFile(path, false, line)}
                 repositoryId={project.repositoryId}
               />
+            </TabsContent>
+            <TabsContent className="min-h-0" value="memory">
+              <MemoryApproval projectId={project.projectId} />
             </TabsContent>
           </Tabs>
         </ResizablePanel>
