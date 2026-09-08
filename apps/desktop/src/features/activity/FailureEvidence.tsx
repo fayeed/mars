@@ -1,4 +1,4 @@
-import { ArrowRightIcon } from "lucide-react";
+import { ArrowRightIcon, WrenchIcon } from "lucide-react";
 
 import { failureEvidence } from "@/features/activity/failure-evidence";
 import { MetaLabel, Mono } from "@/shell/primitives";
@@ -6,6 +6,15 @@ import { MetaLabel, Mono } from "@/shell/primitives";
 export interface FailureEvidenceViewProps {
   text: string;
   onOpenFile?: (path: string, line: number | null) => void;
+  /**
+   * The one thing to do about this failure.
+   *
+   * Singular on purpose. A failure with a menu beside it asks the reader to
+   * choose a strategy before they have finished reading the evidence; a failure
+   * with one obvious next step lets them get on with it, and the composer is
+   * still there for anything else.
+   */
+  primaryAction?: { label: string; onAct: () => void };
 }
 
 /**
@@ -16,7 +25,11 @@ export interface FailureEvidenceViewProps {
  * shown in full underneath. Nothing recognised here replaces the evidence; it
  * only saves the reader from hunting for it.
  */
-export function FailureEvidenceView({ onOpenFile, text }: FailureEvidenceViewProps) {
+export function FailureEvidenceView({
+  onOpenFile,
+  primaryAction,
+  text,
+}: FailureEvidenceViewProps) {
   const evidence = failureEvidence(text);
 
   return (
@@ -82,6 +95,17 @@ export function FailureEvidenceView({ onOpenFile, text }: FailureEvidenceViewPro
           {text}
         </pre>
       </div>
+
+      {primaryAction ? (
+        <button
+          type="button"
+          onClick={primaryAction.onAct}
+          className="flex items-center gap-1.5 self-start border border-border bg-primary px-2 py-1 text-[11px] font-medium text-primary-foreground outline-none"
+        >
+          <WrenchIcon className="size-3.5" />
+          {primaryAction.label}
+        </button>
+      ) : null}
     </div>
   );
 }

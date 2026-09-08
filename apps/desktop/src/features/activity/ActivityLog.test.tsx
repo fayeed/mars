@@ -213,3 +213,30 @@ describe("ActivityLog", () => {
     expect(rows[1]).toHaveTextContent("the plan card");
   });
 });
+
+describe("ActivityLog failure action", () => {
+  const failing = event("test_run", {
+    summary: "cargo test -p mars-ingest",
+    payload: { command: "cargo test", status: "failed", output: "assertion failed" },
+  });
+
+  it("offers exactly one next step on a failure, not a menu", async () => {
+    const user = userEvent.setup();
+    const onAct = vi.fn();
+    render(
+      <ActivityLog
+        events={[failing]}
+        failureAction={() => ({ label: "Ask Claude to fix this", onAct })}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Ask Claude to fix this" }));
+    expect(onAct).toHaveBeenCalled();
+  });
+
+  it("offers nothing when the screen has no next step to give", () => {
+    render(<ActivityLog events={[failing]} failureAction={() => null} />);
+
+    expect(screen.queryByRole("button", { name: /fix this/ })).not.toBeInTheDocument();
+  });
+});

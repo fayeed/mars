@@ -1860,6 +1860,88 @@ fn resolve_interrupted_run(
         .map_err(Into::into)
 }
 
+/// The change a task has made, as Git states it.
+///
+/// Both halves matter and neither implies the other: `diff` is what is
+/// committed-or-not against HEAD, and `untracked` names files Git has never
+/// seen, which a diff against HEAD cannot mention at all. A review that showed
+/// only the first would quietly omit every new file the agent wrote.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TaskDiff {
+    /// Unified diff against HEAD, with no external diff driver and 3 lines of
+    /// context. Empty when the worktree is clean.
+    diff: String,
+    untracked: Vec<String>,
+    /// The commit the diff is against.
+    head_oid: Option<String>,
+    branch_name: String,
+    worktree_path: PathBuf,
+}
+
+#[tauri::command]
+fn task_diff(task_id: String, state: State<'_, AppState>) -> Result<TaskDiff, CommandFailure> {
+    let task = state.tasks.get(&task_id)?;
+    if task.state != mars_git::WorktreeState::Ready {
+        return Err(CommandFailure::new(
+            "diff.worktree_not_ready",
+            "the task worktree does not exist yet, so there is nothing to review",
+        ));
+    }
+
+    let diff = mars_git::command::run(
+        &task.worktree_path,
+        ["diff", "--no-ext-diff", "--unified=3", "HEAD"],
+    )
+    .map_err(|error| CommandFailure::new("diff.read", error.to_string()))?
+    .stdout_text();
+
+    let untracked = mars_git::command::run(
+        &task.worktree_path,
+        ["ls-files", "--others", "--exclude-standard"],
+    )
+    .map(|output| {
+        output
+            .stdout_text()
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>()
+    })
+    .unwrap_or_default();
+
+    Ok(TaskDiff {
+        diff,
+        untracked,
+        head_oid: git_line(&task.worktree_path, ["rev-parse", "HEAD"]),
+        branch_name: task.branch_name.clone(),
+        worktree_path: task.worktree_path.clone(),
+    })
+}
+
+/// One file as it stands in the task worktree, for the right-hand side of a
+/// diff or for a file Git has never seen.
+#[tauri::command]
+fn task_worktree_file(
+    task_id: String,
+    relative_path: String,
+    state: State<'_, AppState>,
+) -> Result<String, CommandFailure> {
+    let task = state.tasks.get(&task_id)?;
+    let full = task.worktree_path.join(&relative_path);
+    // The path is joined onto the worktree root and must stay under it; a
+    // `..` segment in a diff header is not something to follow.
+    if !full.starts_with(&task.worktree_path) {
+        return Err(CommandFailure::new(
+            "diff.outside_worktree",
+            format!("{relative_path} is outside the task worktree"),
+        ));
+    }
+    fs::read_to_string(&full).map_err(|error| {
+        CommandFailure::new("diff.read_file", format!("{relative_path}: {error}"))
+    })
+}
+
 #[tauri::command]
 fn list_tasks(
     repository_id: String,
@@ -2874,6 +2956,8 @@ fn main() {
             build_context_pack,
             list_tasks,
             record_message,
+            task_diff,
+            task_worktree_file,
             task_activity,
             task_projection,
             activity_payload,

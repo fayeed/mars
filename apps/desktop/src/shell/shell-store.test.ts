@@ -66,6 +66,58 @@ describe("readStoredLayout", () => {
       utilityOpen: true,
       utilityTab: "tests",
     };
-    expect(readStoredLayout({ getItem: () => JSON.stringify(stored) })).toEqual(stored);
+    expect(readStoredLayout({ getItem: () => JSON.stringify(stored) })).toEqual({
+      ...stored,
+      // Which regions a hand has moved is a fact about this session, so it
+      // starts clean however the geometry was restored.
+      adjusted: { inspector: false, utility: false },
+    });
+  });
+});
+
+describe("suggestLayout", () => {
+  it("opens the utility panel and folds the inspector away for a run", () => {
+    const next = shellReducer(INITIAL_LAYOUT, {
+      type: "suggestLayout",
+      inspectorCollapsed: true,
+      utilityOpen: true,
+      utilityTab: "tests",
+    });
+
+    expect(next.inspectorCollapsed).toBe(true);
+    expect(next.utilityOpen).toBe(true);
+    expect(next.utilityTab).toBe("tests");
+  });
+
+  it("is refused for a region the person has already moved", () => {
+    // A hand on the inspector outranks the machine's opinion about it.
+    const touched = shellReducer(INITIAL_LAYOUT, { type: "toggleInspector" });
+    expect(touched.adjusted.inspector).toBe(true);
+
+    const suggested = shellReducer(touched, {
+      type: "suggestLayout",
+      inspectorCollapsed: false,
+      utilityOpen: true,
+    });
+
+    expect(suggested.inspectorCollapsed).toBe(true);
+    // The utility panel was never touched, so its half of the suggestion holds.
+    expect(suggested.utilityOpen).toBe(true);
+  });
+
+  it("does not itself count as the person moving anything", () => {
+    const suggested = shellReducer(INITIAL_LAYOUT, {
+      type: "suggestLayout",
+      inspectorCollapsed: true,
+    });
+
+    expect(suggested.adjusted.inspector).toBe(false);
+  });
+
+  it("forgets nothing and queues nothing: a refused suggestion is dropped", () => {
+    const touched = shellReducer(INITIAL_LAYOUT, { type: "toggleUtility" });
+    const refused = shellReducer(touched, { type: "suggestLayout", utilityTab: "tests" });
+
+    expect(refused.utilityTab).toBe(INITIAL_LAYOUT.utilityTab);
   });
 });

@@ -289,9 +289,20 @@ export function ShellWorkspace({
         .then(([events, projection, pending]) => {
           setRecord({ taskId, events, projection, pending });
           setEventsState("idle");
+          // A run that has just started has output to show and somewhere to
+          // show it: the utility panel earns the space, and the inspector can
+          // wait as a rail. Refused outright for any region already moved by
+          // hand, so this can never take a panel from under a reader.
+          const run = projection.runs.at(-1);
+          dispatch({
+            type: "suggestLayout",
+            inspectorCollapsed: run?.state === "running",
+            utilityOpen: run?.state === "running",
+            utilityTab: run?.state === "running" ? "tests" : undefined,
+          });
         })
         .catch(() => setEventsState("failed")),
-    [],
+    [dispatch],
   );
 
   useEffect(() => {
@@ -792,6 +803,15 @@ export function ShellWorkspace({
       {recovery}
       <ActivityLog
         events={events}
+        failureAction={(event) => ({
+          // Prepared, not sent. The composer is where a request becomes a
+          // request, and the reader may want to change it first.
+          label: `Ask ${AGENTS.find((a) => a.id === agentId)?.name ?? "the agent"} to fix this`,
+          onAct: () =>
+            setDraft(
+              `${event.summary} failed. Read the output above, find the cause, and fix it.`,
+            ),
+        })}
         loadPayload={loadPayload}
         onOpenFile={(path, line) => void openFile(path, false, line)}
         renderEvent={renderEvent}

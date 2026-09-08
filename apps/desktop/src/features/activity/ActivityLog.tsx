@@ -22,6 +22,11 @@ export interface ActivityLogProps {
    * pile underneath it.
    */
   renderEvent?: (event: ActivityEvent) => ReactNode | null;
+  /**
+   * The next step for a failed row. One per failure — the log offers the
+   * obvious move, not a menu of strategies.
+   */
+  failureAction?: (event: ActivityEvent) => { label: string; onAct: () => void } | null;
 }
 
 /** A duration a person can read, at the precision the number deserves. */
@@ -129,11 +134,13 @@ const KIND_LABEL: Partial<Record<ActivityKind, string>> = {
  */
 function MachineRow({
   event,
+  failureAction,
   loadPayload,
   onOpenFile,
   startOpen,
 }: {
   event: ActivityEvent;
+  failureAction?: (event: ActivityEvent) => { label: string; onAct: () => void } | null;
   loadPayload?: (digest: string) => Promise<ActivityPayload>;
   onOpenFile?: (path: string, line: number | null) => void;
   startOpen: boolean;
@@ -212,7 +219,11 @@ function MachineRow({
           ) : payloadState === "failed" ? (
             <StateLabel state="failed" detail="the recorded output could not be read" />
           ) : failed ? (
-            <FailureEvidenceView onOpenFile={onOpenFile} text={body} />
+            <FailureEvidenceView
+              onOpenFile={onOpenFile}
+              primaryAction={failureAction?.(event) ?? undefined}
+              text={body}
+            />
           ) : (
             <pre className="max-h-72 overflow-auto whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-muted-foreground">
               {body}
@@ -246,6 +257,7 @@ function MessageTurn({ event }: { event: ActivityEvent }) {
 export function ActivityLog({
   events,
   expandedKinds = ["error"],
+  failureAction,
   loadPayload,
   onOpenFile,
   renderEvent,
@@ -266,6 +278,7 @@ export function ActivityLog({
         ) : (
           <MachineRow
             event={event}
+            failureAction={failureAction}
             key={event.id}
             loadPayload={loadPayload}
             onOpenFile={onOpenFile}

@@ -49,6 +49,14 @@ export interface ShellLayout {
   inspectorTab: InspectorTab;
   utilityOpen: boolean;
   utilityTab: UtilityTab;
+  /**
+   * Regions the person has moved themselves, this session.
+   *
+   * Not persisted: a toggle made last week should not silence what this
+   * session's run has to say. Reset on launch, set the moment a hand touches
+   * a region, and never cleared while the session lives.
+   */
+  adjusted: { inspector: boolean; utility: boolean };
 }
 
 export const INITIAL_LAYOUT: ShellLayout = {
@@ -58,6 +66,7 @@ export const INITIAL_LAYOUT: ShellLayout = {
   inspectorTab: "context",
   utilityOpen: false,
   utilityTab: "problems",
+  adjusted: { inspector: false, utility: false },
 };
 
 export type ShellAction =
@@ -69,17 +78,32 @@ export type ShellAction =
   | { type: "activateInspectorTab"; tab: InspectorTab }
   | { type: "toggleUtility" }
   | { type: "openUtility"; tab?: UtilityTab }
-  | { type: "activateUtilityTab"; tab: UtilityTab };
+  | { type: "activateUtilityTab"; tab: UtilityTab }
+  /**
+   * What the work would like the layout to be. Applies only to regions the
+   * person has not moved themselves.
+   */
+  | {
+      type: "suggestLayout";
+      inspectorCollapsed?: boolean;
+      utilityOpen?: boolean;
+      utilityTab?: UtilityTab;
+    };
 
 /**
  * The whole shell's layout logic lives here so it can be reasoned about and
- * tested without a DOM. Two rules it enforces:
+ * tested without a DOM. Three rules it enforces:
  *
- *  - Nothing but an explicit user action changes a region's visibility.
- *    Navigating between destinations never collapses the inspector or closes
- *    the utility panel, so the conversation never loses width by surprise.
+ *  - Navigation never moves a region. Switching between destinations does not
+ *    collapse the inspector or close the utility panel, so the conversation
+ *    never loses width by surprise.
  *  - Asking for a tab is asking for the panel: a tab request opens the panel
  *    it belongs to.
+ *  - The work may *suggest* a layout — a run starting has something to show and
+ *    somewhere to show it — but a suggestion is refused for any region the
+ *    person has already moved this session. A hand on a panel outranks the
+ *    machine's opinion about it, permanently, and without needing to be
+ *    repeated.
  */
 export function shellReducer(state: ShellLayout, action: ShellAction): ShellLayout {
   switch (action.type) {
@@ -92,28 +116,63 @@ export function shellReducer(state: ShellLayout, action: ShellAction): ShellLayo
     case "setTaskRail":
       return { ...state, taskRailCollapsed: action.collapsed };
     case "toggleInspector":
-      return { ...state, inspectorCollapsed: !state.inspectorCollapsed };
+      return {
+        ...state,
+        inspectorCollapsed: !state.inspectorCollapsed,
+        adjusted: { ...state.adjusted, inspector: true },
+      };
     case "openInspector":
       return {
         ...state,
         inspectorCollapsed: false,
         inspectorTab: action.tab ?? state.inspectorTab,
+        adjusted: { ...state.adjusted, inspector: true },
       };
     case "activateInspectorTab":
       // Re-picking the open tab from the expanded panel is a no-op, but picking
       // any tab from the collapsed rail expands it.
-      return { ...state, inspectorCollapsed: false, inspectorTab: action.tab };
+      return {
+        ...state,
+        inspectorCollapsed: false,
+        inspectorTab: action.tab,
+        adjusted: { ...state.adjusted, inspector: true },
+      };
     case "toggleUtility":
-      return { ...state, utilityOpen: !state.utilityOpen };
+      return {
+        ...state,
+        utilityOpen: !state.utilityOpen,
+        adjusted: { ...state.adjusted, utility: true },
+      };
     case "openUtility":
-      return { ...state, utilityOpen: true, utilityTab: action.tab ?? state.utilityTab };
-    case "activateUtilityTab":
+      return {
+        ...state,
+        utilityOpen: true,
+        utilityTab: action.tab ?? state.utilityTab,
+        adjusted: { ...state.adjusted, utility: true },
+      };
+    case "activateUtilityTab": {
       // Clicking the tab that is already showing closes the panel again; that
       // is the only way a tab click can take the panel away.
+      const adjusted = { ...state.adjusted, utility: true };
       if (state.utilityOpen && state.utilityTab === action.tab) {
-        return { ...state, utilityOpen: false };
+        return { ...state, utilityOpen: false, adjusted };
       }
-      return { ...state, utilityOpen: true, utilityTab: action.tab };
+      return { ...state, utilityOpen: true, utilityTab: action.tab, adjusted };
+    }
+    case "suggestLayout": {
+      // Every field here is dropped for a region the person has moved. The
+      // suggestion is not queued for later either: it was about a moment, and
+      // the moment is now.
+      const next = { ...state };
+      if (!state.adjusted.inspector && action.inspectorCollapsed !== undefined) {
+        next.inspectorCollapsed = action.inspectorCollapsed;
+      }
+      if (!state.adjusted.utility) {
+        if (action.utilityOpen !== undefined) next.utilityOpen = action.utilityOpen;
+        if (action.utilityTab !== undefined) next.utilityTab = action.utilityTab;
+      }
+      return next;
+    }
     default:
       return state;
   }
@@ -142,6 +201,8 @@ export function readStoredLayout(storage: Pick<Storage, "getItem"> | undefined):
       utilityTab: UTILITY_TABS.includes(candidate.utilityTab as UtilityTab)
         ? (candidate.utilityTab as UtilityTab)
         : INITIAL_LAYOUT.utilityTab,
+      // Deliberately not restored: see `ShellLayout.adjusted`.
+      adjusted: { inspector: false, utility: false },
     };
   } catch {
     return INITIAL_LAYOUT;
