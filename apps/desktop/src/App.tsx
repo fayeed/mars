@@ -4,14 +4,13 @@ import {
   type CommandResponse,
   type ProtocolVersion,
 } from "@mars/protocol";
-import type { ProjectSnapshot } from "@mars/shared-types";
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
 
-import { OpenRepository } from "@/features/projects/OpenRepository";
+import { TrustFrame, TrustRepository, type TrustOutcome } from "@/features/setup/TrustRepository";
 import { ShellWorkspace } from "@/features/workspace/ShellWorkspace";
 import type { ActivityState } from "@/shell/activity-state";
-import { MetaLabel, Mono, StateLabel } from "@/shell/primitives";
+import { StateLabel } from "@/shell/primitives";
 import { ShellProvider } from "@/shell/shell-store";
 import { ThemeProvider } from "@/shell/theme";
 
@@ -73,68 +72,34 @@ function useCoreConnection() {
 
 /**
  * Before a repository is trusted there is no shell to show: no tasks, no
- * worktree, no conversation to be live. This screen is the one place in Mars
- * that is not composed of shell regions.
+ * worktree, no conversation to be live. The trust screen is the one place in
+ * Mars that is not composed of shell regions, and it is the only gate between
+ * opening the app and having a conversation.
  */
-function OpenRepositoryScreen({
-  connection,
-  onOpened,
-}: {
-  connection: CoreConnection;
-  onOpened: (project: ProjectSnapshot) => void;
-}) {
-  return (
-    <main className="grid h-screen place-items-center bg-sunken text-foreground">
-      <section className="w-[min(30rem,90vw)] border border-border bg-surface">
-        <header className="flex items-center justify-between border-b border-border px-3 py-2">
-          <span className="font-heading text-[13px] font-medium tracking-[0.3em]">
-            M<span className="text-primary">/</span>RS
-          </span>
-          <StateLabel state={connectionState(connection)} detail={connectionDetail(connection)} />
-        </header>
-
-        <div className="flex flex-col gap-3 px-3 py-4">
-          <MetaLabel>Repository</MetaLabel>
-          <h1 className="font-heading text-xl tracking-tight">Open a repository to begin.</h1>
-          <p className="text-[12px] leading-relaxed text-muted-foreground">
-            Mars shows the exact canonical root and the read capabilities trust enables, then
-            persists nothing until you confirm. Trust grants reading only — writes, commands and
-            network stay separate.
-          </p>
-          {connection.phase === "disconnected" ? (
-            <p className="border border-destructive/40 px-2 py-1 text-[11px] text-destructive">
-              <Mono>{connection.reason}</Mono>
-            </p>
-          ) : null}
-          <OpenRepository onOpened={onOpened} />
-        </div>
-      </section>
-    </main>
-  );
-}
-
 export function App() {
   const connection = useCoreConnection();
-  const [project, setProject] = useState<ProjectSnapshot | null>(null);
+  const [opened, setOpened] = useState<TrustOutcome | null>(null);
+
+  const status = (
+    <StateLabel state={connectionState(connection)} detail={connectionDetail(connection)} />
+  );
 
   return (
     <ThemeProvider>
-      {project ? (
+      {opened ? (
         <ShellProvider>
           <ShellWorkspace
-            key={project.repositoryId}
-            connection={
-              <StateLabel
-                state={connectionState(connection)}
-                detail={connectionDetail(connection)}
-              />
-            }
-            onOpenProject={setProject}
-            project={project}
+            key={opened.project.repositoryId}
+            connection={status}
+            indexing={opened.indexing}
+            onOpenProject={(project) => setOpened({ project, indexing: opened.indexing })}
+            project={opened.project}
           />
         </ShellProvider>
       ) : (
-        <OpenRepositoryScreen connection={connection} onOpened={setProject} />
+        <TrustFrame status={status}>
+          <TrustRepository onOpened={setOpened} />
+        </TrustFrame>
       )}
     </ThemeProvider>
   );

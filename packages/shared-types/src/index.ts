@@ -1,5 +1,6 @@
 export * from "./brain";
 export * from "./files";
+export * from "./indexing";
 export * from "./projects";
 export * from "./terminal";
 export * from "./tasks";

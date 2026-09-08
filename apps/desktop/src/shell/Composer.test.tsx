@@ -174,3 +174,63 @@ describe("Composer attachments", () => {
     expect(onRemoveAttachment).toHaveBeenCalledWith("att-1");
   });
 });
+
+describe("Composer skills and scope", () => {
+  it("shows a skill's own instructions before it is picked", async () => {
+    const user = userEvent.setup();
+    renderComposer({
+      skills: [
+        {
+          id: "s1",
+          name: "review",
+          description: "Cross-agent review of the diff",
+          instructions: "Read the diff. Report only defects you can point at.",
+        },
+      ],
+    });
+
+    await user.click(screen.getByRole("combobox", { name: "Message" }));
+    await user.keyboard("/rev");
+
+    expect(screen.getByText("Read the diff. Report only defects you can point at.")).toBeVisible();
+  });
+
+  it("sends the scope the message was written under", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    renderComposer({
+      onSubmit,
+      scopes: [
+        { id: "narrow", label: "Files I mention", globs: [] },
+        { id: "crates", label: "crates/**", globs: ["crates/**"] },
+      ],
+      selectedScopeId: "crates",
+    });
+
+    await user.click(screen.getByRole("combobox", { name: "Message" }));
+    await user.keyboard("split the broker");
+    await user.keyboard("{Control>}{Enter}{/Control}");
+
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ scopeId: "crates" }));
+  });
+
+  it("states the scope alongside what the agent may already do", () => {
+    const { container } = renderComposer({
+      scopes: [{ id: "crates", label: "crates/**", globs: ["crates/**"] }],
+      selectedScopeId: "crates",
+    });
+
+    // The same glob is also an option label in the picker, so read the hint.
+    const hint = container.querySelector('[data-slot="permission-hint"]');
+    expect(hint).toHaveTextContent("within");
+    expect(hint).toHaveTextContent("crates/**");
+  });
+
+  it("lets the screen drive the draft", () => {
+    renderComposer({ value: "Explain what changed in 511c628" });
+
+    expect(screen.getByRole("combobox", { name: "Message" })).toHaveValue(
+      "Explain what changed in 511c628",
+    );
+  });
+});

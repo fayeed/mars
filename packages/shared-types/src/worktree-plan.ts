@@ -105,3 +105,22 @@ export interface CleanupRecord {
   archivedOid: string | null;
   state: string;
 }
+
+/**
+ * A setup command as the client asks for it. The classification is deliberately
+ * absent: how risky a command is is decided by the core's classifier, never
+ * asserted by the UI.
+ */
+export interface SetupCommandInput {
+  command: string;
+  purpose: string;
+}
+
+export interface PlanTaskInput {
+  repositoryId: string;
+  title: string;
+  intent: string;
+  baseRef: string;
+  expectedScope?: string[];
+  setupCommands?: SetupCommandInput[];
+}

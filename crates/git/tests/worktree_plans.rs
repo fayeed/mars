@@ -592,3 +592,68 @@ fn cleanup_refuses_a_fingerprint_that_no_longer_describes_the_worktree() {
     assert!(error.to_string().contains("approved as plan"));
     assert!(provisioned.worktree_path.is_dir());
 }
+
+#[test]
+fn amending_a_plan_reclassifies_it_and_withdraws_any_approval() {
+    let fixture = GitFixture::new();
+    let (planner, _) = planner(&fixture);
+    let proposal = planner
+        .propose(request(&fixture, "Edit before approving"))
+        .expect("plan should build");
+    let approved = planner
+        .approve(&proposal.task_id, &proposal.fingerprint, "fayeed")
+        .expect("plan should approve");
+    assert!(approved.approved_at.is_some());
+
+    let amended = planner
+        .amend(
+            &proposal.task_id,
+            vec!["crates/**".into()],
+            vec![SetupCommand::new("rm -rf /", "wipe the disk")],
+        )
+        .expect("plan should amend");
+
+    // The edit is what the plan now declares.
+    assert_eq!(amended.expected_scope, vec!["crates/**".to_owned()]);
+    // The classification is the core's reading of the new command, not the
+    // caller's claim about it.
+    assert_eq!(amended.setup_commands[0].classification, "destructive");
+    assert!(
+        amended
+            .preflight
+            .iter()
+            .any(|finding| finding.code == PreflightCode::RiskySetupCommand),
+        "an amended plan is re-checked, not carried over"
+    );
+
+    // The plan that was said yes to no longer exists, so the yes is gone.
+    assert!(amended.approved_at.is_none());
+    assert!(amended.approved_by.is_none());
+    assert_ne!(amended.fingerprint, proposal.fingerprint);
+    assert!(
+        planner.provision_approved(&proposal.task_id).is_err(),
+        "an amended plan must be approved again before it can be provisioned"
+    );
+}
+
+#[test]
+fn a_provisioned_plan_cannot_be_amended() {
+    let fixture = GitFixture::new();
+    let (planner, _) = planner(&fixture);
+    let proposal = planner
+        .propose(request(&fixture, "Already on disk"))
+        .expect("plan should build");
+    planner
+        .approve(&proposal.task_id, &proposal.fingerprint, "fayeed")
+        .expect("plan should approve");
+    planner
+        .provision_approved(&proposal.task_id)
+        .expect("plan should provision");
+
+    assert!(
+        planner
+            .amend(&proposal.task_id, vec!["crates/**".into()], Vec::new())
+            .is_err(),
+        "the scope a worktree already exists under is not editable in place"
+    );
+}

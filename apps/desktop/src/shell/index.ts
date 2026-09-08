@@ -39,6 +39,7 @@ export {
 export type {
   ComposerAgent,
   ComposerAttachment,
+  ComposerScope,
   ComposerSkill,
   ComposerSubmission,
   InspectorContent,

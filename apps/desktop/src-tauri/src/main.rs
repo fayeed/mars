@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use mars_agents::adapter::{
@@ -22,7 +22,8 @@ use mars_brain::{
     NewProvenance, ProjectBrain, ProposalFilters, ProvenanceKind, RejectRequest, RetrievalContext,
     RetrievedMemory, ReviewError, ReviewHandoff, ReviewHandoffRequest, ReviewProvider,
     ReviewRecord, ReviewService, ReviseRequest, RevokeRequest, WhyAnswer, WhyError, WhyRequest,
-    WhyService, injections_from_pack, render_context_pack, render_extraction_prompt,
+    RunContextPack, RunContextPackBuilder, RunPackRequest, ToolGrant, WhyService,
+    injections_from_pack, render_context_pack, render_extraction_prompt,
 };
 use mars_context::{CaptureError, ContextItem, ContextService};
 use mars_core::Core;
@@ -36,11 +37,11 @@ use mars_forge::{
 };
 use mars_forge_github::GitHubProvider;
 use mars_git::{
-    OverlapError, OverlapWarning, TaskOverlapService, TaskWorktreeError, TaskWorktreeService,
-    WorktreePlan,
+    OverlapError, OverlapWarning, PlanRequest, SetupCommand, TaskOverlapService,
+    TaskWorktreeError, TaskWorktreeService, WorktreePlan, WorktreePlanner, WorktreeProposal,
 };
 use mars_indexer::{IndexError, IndexSummary, Indexer};
-use mars_security::TrustDecision;
+use mars_security::{CapabilityCeiling, PermissionBroker, TrustDecision};
 use mars_security::permissions::{
     Capability, PermissionAudit, PermissionDecision, PermissionError, PermissionOutcome,
     PermissionRequest, PermissionScope,
@@ -57,6 +58,11 @@ use tauri::{AppHandle, Emitter, Manager, State};
 struct AppState {
     agents: ProcessSupervisor,
     brain: BrainService,
+    /// Standing grants, so a capability review can say what the agent will
+    /// *not* be stopped for.
+    broker: PermissionBroker,
+    /// Where Mars keeps what it learns. Disclosed before trust is given.
+    data_dir: PathBuf,
     /// The Phase 1 answer pipeline. Distinct from `brain`, which serves the
     /// bounded structural queries of ADR-019.
     project_brain: ProjectBrain,
@@ -70,6 +76,9 @@ struct AppState {
     indexer: Indexer,
     knowledge: KnowledgeService,
     overlaps: TaskOverlapService,
+    /// Builds, approves and provisions worktree plans. Distinct from
+    /// `tasks`, which only moves a task between worktree states.
+    planner: WorktreePlanner,
     projects: ProjectService,
     reviews: ReviewService,
     permissions: PermissionAudit,
@@ -194,6 +203,9 @@ impl From<ContextPackError> for CommandFailure {
             ContextPackError::Storage(_) => "context_pack.storage",
             ContextPackError::InvalidBudget => "context_pack.invalid_budget",
             ContextPackError::Memory(_) => "context_pack.memory",
+            // The pack a person approved is not the pack that would be sent.
+            // The run does not start; the reviewer looks at it again.
+            ContextPackError::PackChanged { .. } => "context_pack.changed",
         };
         Self::new(code, error.to_string())
     }
@@ -255,6 +267,14 @@ impl From<TaskWorktreeError> for CommandFailure {
             TaskWorktreeError::UnmergedBranch { .. } => "task.unmerged_branch",
             TaskWorktreeError::PathCollision(_) => "task.path_collision",
             TaskWorktreeError::InvalidStoredState(_) => "task.invalid_state",
+            TaskWorktreeError::PlanNotFound(_) => "plan.not_found",
+            TaskWorktreeError::PlanChanged { .. } => "plan.changed",
+            TaskWorktreeError::PlanNotApproved { .. } => "plan.not_approved",
+            TaskWorktreeError::PlanBlocked { .. } => "plan.blocked",
+            TaskWorktreeError::SetupCommandFailed { .. } => "plan.setup_command_failed",
+            TaskWorktreeError::CleanupNotFound(_) => "cleanup.not_found",
+            TaskWorktreeError::CleanupNotRestorable { .. } => "cleanup.not_restorable",
+            TaskWorktreeError::Activity(_) => "task.activity",
             TaskWorktreeError::Filesystem { .. } => "task.filesystem",
             TaskWorktreeError::Timestamp(_) => "task.timestamp",
             TaskWorktreeError::Json(_) => "task.json",
@@ -505,6 +525,126 @@ fn open_repository(
         .map_err(Into::into)
 }
 
+/// One class of file trust will not put in front of an agent, and why.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SkipRule {
+    label: String,
+    detail: String,
+}
+
+/// Where Mars keeps what it learns about this repository. Every path is inside
+/// the app data directory; nothing is written into the repository itself.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StoragePaths {
+    database: PathBuf,
+    worktrees: PathBuf,
+    artifacts: PathBuf,
+    skills: PathBuf,
+}
+
+/// What a person is shown before they decide whether to trust a repository.
+///
+/// Every field is read without writing anything. A field Git could not answer
+/// is `None` rather than a guess, so the screen can say "could not be read"
+/// instead of showing a plausible wrong value.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RepositoryPreview {
+    remote: Option<String>,
+    branch: Option<String>,
+    head_oid: Option<String>,
+    head_summary: Option<String>,
+    /// Files Git tracks. The size of the repository, not of the index.
+    tracked_files: Option<usize>,
+    /// Files the indexer would actually read, after ignore rules are applied.
+    indexable_files: Option<usize>,
+    skipped: Vec<SkipRule>,
+    storage: StoragePaths,
+}
+
+/// A single-line Git read. A command that fails or answers with nothing yields
+/// `None`: a repository with no commits and a repository Git refused to read
+/// are both "not known", and neither is worth inventing a value for.
+fn git_line<const N: usize>(root: &Path, arguments: [&str; N]) -> Option<String> {
+    mars_git::command::run(root, arguments)
+        .ok()
+        .map(|output| output.stdout_text())
+        .filter(|text| !text.is_empty())
+}
+
+/// Read a repository without trusting it, so the trust decision can be made
+/// against what is actually there.
+#[tauri::command]
+fn preview_repository(
+    path: String,
+    state: State<'_, AppState>,
+) -> Result<RepositoryPreview, CommandFailure> {
+    let root = Path::new(&path);
+    if !root.is_dir() {
+        return Err(CommandFailure::new(
+            "repository.not_directory",
+            format!("{path} is not a directory"),
+        ));
+    }
+
+    let remote = git_line(root, ["remote", "get-url", "origin"]).or_else(|| {
+        // A repository with no `origin` may still have exactly one remote.
+        let names = git_line(root, ["remote"])?;
+        let first = names.lines().next()?.trim().to_owned();
+        git_line(root, ["remote", "get-url", &first])
+    });
+
+    let tracked_files = mars_git::command::run(root, ["ls-files"]).ok().map(|output| {
+        output
+            .stdout_text()
+            .lines()
+            .filter(|line| !line.is_empty())
+            .count()
+    });
+
+    // The honest number: what the indexer's own walk would read, not a guess
+    // from the file count. Costly enough to be worth a loading state, cheap
+    // enough to run before anyone commits to anything.
+    let indexable_files = mars_indexer::walk::source_paths(root)
+        .ok()
+        .map(|paths| paths.len());
+
+    Ok(RepositoryPreview {
+        remote,
+        branch: git_line(root, ["rev-parse", "--abbrev-ref", "HEAD"]),
+        head_oid: git_line(root, ["rev-parse", "HEAD"]),
+        head_summary: git_line(root, ["log", "-1", "--pretty=%s"]),
+        tracked_files,
+        indexable_files,
+        skipped: vec![
+            SkipRule {
+                label: "Ignored directories".into(),
+                detail: ".git, node_modules, target, dist, build and .next are never walked".into(),
+            },
+            SkipRule {
+                label: "Ignore files".into(),
+                detail: "anything .gitignore or .marsignore excludes, including nested ones".into(),
+            },
+            SkipRule {
+                label: "Secrets".into(),
+                detail: ".env files, private keys, certificates and credential files".into(),
+            },
+            SkipRule {
+                label: "Large files".into(),
+                detail: "files over 1 MiB are listed but never parsed or embedded".into(),
+            },
+        ],
+        storage: StoragePaths {
+            database: state.data_dir.join("mars.sqlite3"),
+            worktrees: state.data_dir.join("worktrees"),
+            artifacts: state.data_dir.join("artifacts"),
+            skills: state.data_dir.join("skills"),
+        },
+    })
+}
+
 #[tauri::command]
 fn list_files(
     repository_id: String,
@@ -608,6 +748,111 @@ fn index_repository(
         .indexer
         .index_repository(&repository_id, &tokio_util::sync::CancellationToken::new())
         .map_err(Into::into)
+}
+
+/// The index as the home screen states it: what has been read, whether it still
+/// matches the working tree, and what is running.
+#[tauri::command]
+fn index_status(
+    repository_id: String,
+    state: State<'_, AppState>,
+) -> Result<mars_indexer::api::IndexStatus, CommandFailure> {
+    mars_indexer::api::IndexApi::new(state.storage.clone())
+        .status(&repository_id)
+        .map_err(Into::into)
+}
+
+/// Somewhere to start, and the evidence behind it.
+///
+/// A suggestion is only worth as much as the reason attached to it, so every
+/// one of these carries the claim it rests on and where that claim came from.
+/// Nothing here is inferred: each is read from the index or from Git.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StartingPoint {
+    id: String,
+    title: String,
+    /// Why this is being suggested, in terms a person can check.
+    reason: String,
+    /// Where the claim came from, so it can be verified.
+    source: String,
+    /// What picking this would put in the composer.
+    prompt: String,
+}
+
+/// What Mars can suggest doing next, grounded in what it already knows.
+#[tauri::command]
+fn starting_points(
+    repository_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<StartingPoint>, CommandFailure> {
+    let index = mars_indexer::api::IndexApi::new(state.storage.clone());
+    let status = index.status(&repository_id)?;
+    let root = status.root_path.as_path();
+    let mut points = Vec::new();
+
+    if status.counts.files == 0 {
+        points.push(StartingPoint {
+            id: "index".into(),
+            title: "Index this repository".into(),
+            reason: "Nothing has been indexed yet, so questions about this code have nothing to \
+                     read."
+                .into(),
+            source: "index status".into(),
+            prompt: "Index this repository so you can answer questions about it.".into(),
+        });
+        // Everything below reads better against an index. Offering it alone is
+        // clearer than offering it alongside suggestions that cannot work yet.
+        return Ok(points);
+    }
+
+    if !status.head_matches_index {
+        let stale = index.stale_paths(&repository_id).map(|paths| paths.len()).unwrap_or(0);
+        points.push(StartingPoint {
+            id: "reindex".into(),
+            title: "Re-index what moved".into(),
+            reason: format!(
+                "The working tree is at a different commit than the index, and {stale} \
+                 file(s) no longer match what was read."
+            ),
+            source: "index freshness".into(),
+            prompt: "Re-index the files that changed since the last run, then tell me what moved."
+                .into(),
+        });
+    }
+
+    // Uncommitted work is the most likely thing a person came back to finish.
+    if let Ok(output) = mars_git::command::run(root, ["status", "--porcelain"]) {
+        let text = output.stdout_text();
+        let changed: Vec<&str> = text
+            .lines()
+            .filter_map(|line| line.get(3..))
+            .filter(|path| !path.is_empty())
+            .collect();
+        if !changed.is_empty() {
+            let sample = changed.iter().take(3).copied().collect::<Vec<_>>().join(", ");
+            points.push(StartingPoint {
+                id: "working-tree".into(),
+                title: "Pick up the change in your working tree".into(),
+                reason: format!("{} file(s) are modified and uncommitted.", changed.len()),
+                source: "git status".into(),
+                prompt: format!("Explain what is changing in {sample} and what is left to finish."),
+            });
+        }
+    }
+
+    if let Some(head) = status.head_oid.as_deref() {
+        let summary = git_line(root, ["log", "-1", "--pretty=%s"]).unwrap_or_default();
+        points.push(StartingPoint {
+            id: "head".into(),
+            title: "Review what landed last".into(),
+            reason: format!("HEAD is {} — {summary}", &head[..head.len().min(7)]),
+            source: "git log".into(),
+            prompt: format!("Explain what changed in commit {head} and why it was done that way."),
+        });
+    }
+
+    Ok(points)
 }
 
 #[tauri::command]
@@ -1586,6 +1831,206 @@ fn github_api_base(repository: &mars_forge::ForgeRepository) -> String {
     }
 }
 
+/// A setup command as the client asks for it. The classification is *not* here:
+/// how risky a command is is decided by the classifier, never asserted by the
+/// webview, so the person approving the plan is reading Mars's reading of it.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetupCommandInput {
+    command: String,
+    purpose: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PlanTaskInput {
+    repository_id: String,
+    title: String,
+    intent: String,
+    base_ref: String,
+    /// Globs the task expects to stay inside. A write outside these reaches the
+    /// permission broker instead of happening quietly.
+    #[serde(default)]
+    expected_scope: Vec<String>,
+    #[serde(default)]
+    setup_commands: Vec<SetupCommandInput>,
+}
+
+impl From<PlanTaskInput> for PlanRequest {
+    fn from(input: PlanTaskInput) -> Self {
+        Self {
+            repository_id: input.repository_id,
+            title: input.title,
+            intent: input.intent,
+            base_ref: input.base_ref,
+            expected_scope: input.expected_scope,
+            setup_commands: input
+                .setup_commands
+                .into_iter()
+                .map(|command| SetupCommand::new(command.command, command.purpose))
+                .collect(),
+        }
+    }
+}
+
+/// Build a worktree plan. Writes plan rows; touches Git only to read.
+#[tauri::command]
+fn plan_task(
+    request: PlanTaskInput,
+    state: State<'_, AppState>,
+) -> Result<WorktreeProposal, CommandFailure> {
+    state.planner.propose(request.into()).map_err(Into::into)
+}
+
+/// The plan as it stands *now*, with everything that can move underneath it
+/// refreshed: the base commit, the path, the branch, the disk.
+#[tauri::command]
+fn task_plan(
+    task_id: String,
+    state: State<'_, AppState>,
+) -> Result<WorktreeProposal, CommandFailure> {
+    state.planner.current(&task_id).map_err(Into::into)
+}
+
+/// Change what a plan declares, before its worktree exists. Any approval the
+/// plan had is dropped by the core, so the edited plan must be approved again.
+#[tauri::command]
+fn amend_task_plan(
+    task_id: String,
+    expected_scope: Vec<String>,
+    setup_commands: Vec<SetupCommandInput>,
+    state: State<'_, AppState>,
+) -> Result<WorktreeProposal, CommandFailure> {
+    state
+        .planner
+        .amend(
+            &task_id,
+            expected_scope,
+            setup_commands
+                .into_iter()
+                .map(|command| SetupCommand::new(command.command, command.purpose))
+                .collect(),
+        )
+        .map_err(Into::into)
+}
+
+/// Record approval of the exact plan that was on screen. The fingerprint is the
+/// client's assertion of *which* plan it showed, and is checked; who approved it
+/// is filled in here and never taken from the webview.
+#[tauri::command]
+fn approve_task_plan(
+    task_id: String,
+    fingerprint: String,
+    state: State<'_, AppState>,
+) -> Result<WorktreeProposal, CommandFailure> {
+    state
+        .planner
+        .approve(&task_id, &fingerprint, &local_actor())
+        .map_err(Into::into)
+}
+
+/// Create the worktree for an approved plan, then run its setup commands.
+/// Refuses if the plan changed after it was approved.
+#[tauri::command]
+fn provision_approved_task(
+    task_id: String,
+    state: State<'_, AppState>,
+) -> Result<WorktreeProposal, CommandFailure> {
+    state
+        .planner
+        .provision_approved(&task_id)
+        .map_err(Into::into)
+}
+
+/// The role an agent is launched in. The role picks the ceiling; no decision
+/// made during the run can widen it, and the client cannot name a ceiling
+/// directly.
+#[derive(Clone, Copy, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+enum RunRoleInput {
+    Implementer,
+    Reviewer,
+}
+
+impl RunRoleInput {
+    fn ceiling(self) -> CapabilityCeiling {
+        match self {
+            Self::Implementer => CapabilityCeiling::implementer(),
+            Self::Reviewer => CapabilityCeiling::reviewer(),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Implementer => "implementer",
+            Self::Reviewer => "reviewer",
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RunPackInput {
+    task_id: String,
+    agent_id: String,
+    adapter: AdapterKind,
+    role: RunRoleInput,
+    /// What the person actually asked for, verbatim.
+    assignment: String,
+    max_bytes: usize,
+    /// Entity refs the reviewer removed before starting the run.
+    #[serde(default)]
+    excluded_entity_refs: Vec<String>,
+}
+
+/// The tools an agent is offered. Mutating tools are listed here but filtered
+/// by the role's ceiling before the pack is built, so a preview can never
+/// promise a tool the broker would refuse.
+fn offered_tools() -> Vec<ToolGrant> {
+    vec![
+        ToolGrant::read_only("read_file", "Read a file inside the task worktree"),
+        ToolGrant::read_only("list_files", "List files inside the task worktree"),
+        ToolGrant::read_only("search_code", "Search the local code index"),
+        ToolGrant::read_only("brain_query", "Ask the project brain about this repository"),
+        ToolGrant::mutating("write_file", "Write a file inside the declared scope"),
+        ToolGrant::mutating("run_command", "Run a command in the task worktree"),
+    ]
+}
+
+/// Exactly what an agent will see and may do, assembled before the run starts.
+///
+/// The declared scope is not a parameter: it is read from the worktree plan the
+/// person already approved, so the capability review and the plan approval
+/// cannot disagree about where the agent may write.
+#[tauri::command]
+fn build_run_context_pack(
+    request: RunPackInput,
+    state: State<'_, AppState>,
+) -> Result<RunContextPack, CommandFailure> {
+    let plan = state.planner.current(&request.task_id)?;
+    let grants = state.broker.grants(Some(&request.task_id))?;
+    let adapter = match request.adapter {
+        AdapterKind::Claude => "claude",
+        AdapterKind::Codex => "codex",
+    };
+
+    RunContextPackBuilder::new(state.storage.clone())
+        .with_grants(grants)
+        .build(RunPackRequest {
+            task_id: request.task_id,
+            agent_id: request.agent_id,
+            adapter: adapter.to_owned(),
+            role: request.role.as_str().to_owned(),
+            ceiling: request.role.ceiling(),
+            declared_scope: plan.expected_scope,
+            tools: offered_tools(),
+            assignment: request.assignment,
+            max_bytes: request.max_bytes,
+            excluded_entity_refs: request.excluded_entity_refs,
+        })
+        .map_err(Into::into)
+}
+
 #[tauri::command]
 fn provision_task(
     task_id: String,
@@ -1934,6 +2379,7 @@ fn main() {
             fs::create_dir_all(&data_dir)?;
             let storage = Arc::new(Storage::open(data_dir.join("mars.sqlite3"))?);
             let agents = ProcessSupervisor::new(storage.clone());
+            let broker = PermissionBroker::new(storage.clone());
             agents.recover_interrupted()?;
             let forge = ForgeWorkflow::new(storage.clone());
             forge.recover_interrupted()?;
@@ -1941,6 +2387,8 @@ fn main() {
             app.manage(AppState {
                 agents,
                 brain: BrainService::new(storage.clone()),
+                broker,
+                data_dir: data_dir.clone(),
                 project_brain: ProjectBrain::new(
                     storage.clone(),
                     Arc::new(mars_indexer::api::IndexApi::new(storage.clone())),
@@ -1959,6 +2407,7 @@ fn main() {
                 indexer: Indexer::new(storage.clone()),
                 knowledge: KnowledgeService::new(storage.clone()),
                 overlaps: TaskOverlapService::new(storage.clone()),
+                planner: WorktreePlanner::new(storage.clone(), data_dir.join("worktrees")),
                 projects: ProjectService::new(storage.clone()),
                 reviews: ReviewService::new(storage.clone()),
                 permissions: PermissionAudit::new(storage.clone()),
@@ -1973,6 +2422,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             core_info,
             open_repository,
+            preview_repository,
             list_files,
             read_file,
             write_file,
@@ -1981,6 +2431,8 @@ fn main() {
             resize_terminal,
             cancel_terminal,
             index_repository,
+            index_status,
+            starting_points,
             find_symbols,
             brain_references,
             brain_callers,
@@ -2033,6 +2485,12 @@ fn main() {
             list_task_forge_mutations,
             create_github_pull_request,
             refresh_github_pull_request,
+            plan_task,
+            task_plan,
+            amend_task_plan,
+            approve_task_plan,
+            provision_approved_task,
+            build_run_context_pack,
             provision_task,
             remove_task_worktree,
             open_task_worktree,

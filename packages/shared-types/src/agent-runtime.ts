@@ -100,3 +100,19 @@ export interface RunContextPack {
   totalBytes: number;
   digest: string;
 }
+
+/**
+ * What to assemble for a run. The role picks the capability ceiling in the
+ * core; the declared scope is read from the approved worktree plan. Neither is
+ * something this side gets to assert.
+ */
+export interface RunPackInput {
+  taskId: string;
+  agentId: string;
+  adapter: AdapterKind;
+  role: RunRole;
+  /** What the person actually asked for, verbatim. */
+  assignment: string;
+  maxBytes: number;
+  excludedEntityRefs?: string[];
+}

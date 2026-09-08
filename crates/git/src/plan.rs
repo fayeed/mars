@@ -328,6 +328,52 @@ impl WorktreePlanner {
         Ok(proposal)
     }
 
+    /// Change what a plan declares, before its worktree exists.
+    ///
+    /// Approval is recorded against a fingerprint, and both of these fields are
+    /// inside it, so amending drops any approval the plan had: the plan a person
+    /// said yes to is not the plan any more, and they are asked again.
+    pub fn amend(
+        &self,
+        task_id: &str,
+        expected_scope: Vec<String>,
+        setup_commands: Vec<SetupCommand>,
+    ) -> Result<WorktreeProposal, TaskWorktreeError> {
+        let plan = self.worktrees.get(task_id)?;
+        if plan.state != WorktreeState::Planned {
+            return Err(TaskWorktreeError::InvalidTransition {
+                task_id: task_id.to_owned(),
+                state: plan.state.as_str().to_owned(),
+                operation: "amend a plan whose worktree already exists",
+            });
+        }
+        let stored = self.stored(task_id)?;
+        let repository = self.projects.find_repository(&plan.repository_id)?;
+        let request = PlanRequest {
+            repository_id: plan.repository_id.clone(),
+            title: plan.title.clone(),
+            intent: plan.intent.clone(),
+            base_ref: plan.base_ref.clone(),
+            expected_scope,
+            setup_commands,
+        };
+        // The base commit the plan pinned is kept. Amending changes what the
+        // task declares, not what it branches from.
+        let proposal = self.assemble(&plan, &repository, stored.base_oid, &request)?;
+        self.persist(&proposal)?;
+        self.storage.with_connection(|connection| {
+            connection.execute(
+                "UPDATE worktree_plans
+                 SET approved_by = NULL, approved_at = NULL, approved_fingerprint = NULL,
+                     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 WHERE task_id = ?1",
+                params![task_id],
+            )?;
+            Ok(())
+        })?;
+        self.current(task_id)
+    }
+
     /// Record a human's approval of the exact plan they were shown.
     pub fn approve(
         &self,

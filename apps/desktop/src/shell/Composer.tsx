@@ -1,4 +1,12 @@
-import { AtSignIcon, PaperclipIcon, SendIcon, ShieldIcon, SlashIcon, XIcon } from "lucide-react";
+import {
+  AtSignIcon,
+  FileTextIcon,
+  PaperclipIcon,
+  SendIcon,
+  ShieldIcon,
+  SlashIcon,
+  XIcon,
+} from "lucide-react";
 import {
   useCallback,
   useId,
@@ -6,6 +14,7 @@ import {
   useRef,
   useState,
   type ChangeEvent,
+  type DragEvent,
   type KeyboardEvent,
 } from "react";
 
@@ -16,11 +25,12 @@ import { chordHint } from "@/shell/keymap";
 import type {
   ComposerAgent,
   ComposerAttachment,
+  ComposerScope,
   ComposerSkill,
   ComposerSubmission,
   MentionTarget,
 } from "@/shell/model";
-import { KeyHint, Mono, StateDot } from "@/shell/primitives";
+import { KeyHint, MetaLabel, Mono, StateDot } from "@/shell/primitives";
 import { useShell } from "@/shell/shell-store";
 
 export interface ComposerProps {
@@ -28,16 +38,26 @@ export interface ComposerProps {
   attachments?: ComposerAttachment[];
   mentions?: MentionTarget[];
   skills?: ComposerSkill[];
+  scopes?: ComposerScope[];
   selectedAgentId?: string;
+  selectedScopeId?: string;
   onSelectAgent?: (agentId: string) => void;
+  onSelectScope?: (scopeId: string) => void;
   onAttach?: () => void;
+  /** Files dropped onto the composer, in the order the browser reported them. */
+  onDropFiles?: (files: File[]) => void;
   onRemoveAttachment?: (attachmentId: string) => void;
   onSubmit?: (submission: ComposerSubmission) => void;
   onStop?: () => void;
+  /** Controlled draft. Omit to let the composer own its own text. */
+  value?: string;
+  onValueChange?: (value: string) => void;
   /** `streaming` shows Stop; `blocked` says why sending will not help yet. */
   state?: ActivityState;
   blockedReason?: string;
   placeholder?: string;
+  /** Live `@` search. Omit to filter `mentions` in the browser. */
+  onSearchMentions?: (query: string) => void;
 }
 
 interface MenuItem {
@@ -45,13 +65,15 @@ interface MenuItem {
   token: string;
   primary: string;
   secondary: string;
+  /** Present for skills: the instruction text picking this would hand over. */
+  instructions?: string;
 }
 
 /**
  * The composer stays alive and usable while diffs, editors and panels are
  * open — it belongs to the conversation column, not to any screen. Before you
- * send, it states which agent will act and what that agent may already do
- * without stopping to ask.
+ * send, it states which agent will act, where that agent may work, and what it
+ * may already do without stopping to ask.
  */
 export function Composer({
   agents = [],
@@ -59,24 +81,42 @@ export function Composer({
   blockedReason,
   mentions = [],
   onAttach,
+  onDropFiles,
   onRemoveAttachment,
+  onSearchMentions,
   onSelectAgent,
+  onSelectScope,
   onStop,
   onSubmit,
+  onValueChange,
   placeholder = "Describe the change. @ for files and symbols, / for skills.",
+  scopes = [],
   selectedAgentId,
+  selectedScopeId,
   skills = [],
   state = "idle",
+  value: controlledValue,
 }: ComposerProps) {
   const { registerRegion } = useShell();
   const listboxId = useId();
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const [value, setValue] = useState("");
+  const [internalValue, setInternalValue] = useState("");
   const [caret, setCaret] = useState(0);
   const [menuDismissed, setMenuDismissed] = useState(false);
   const [highlight, setHighlight] = useState(0);
+  const [dropping, setDropping] = useState(false);
+
+  const value = controlledValue ?? internalValue;
+  const setValue = useCallback(
+    (next: string) => {
+      if (controlledValue === undefined) setInternalValue(next);
+      onValueChange?.(next);
+    },
+    [controlledValue, onValueChange],
+  );
 
   const agent = agents.find((candidate) => candidate.id === selectedAgentId) ?? agents[0];
+  const scope = scopes.find((candidate) => candidate.id === selectedScopeId) ?? scopes[0];
   const trigger = menuDismissed ? null : readTrigger(value, caret);
 
   const items = useMemo<MenuItem[]>(() => {
@@ -94,6 +134,7 @@ export function Composer({
       token: `/${skill.name}`,
       primary: skill.name,
       secondary: skill.description,
+      instructions: skill.instructions,
     }));
   }, [mentions, skills, trigger]);
 
@@ -118,6 +159,10 @@ export function Composer({
     setMenuDismissed(false);
     setHighlight(0);
     syncCaret(event.target);
+    // The index knows more files than any one page of them, so the screen is
+    // told what is being typed and may widen the candidate list.
+    const next = readTrigger(event.target.value, event.target.selectionStart ?? 0);
+    if (next?.kind === "mention") onSearchMentions?.(next.query);
   }
 
   function complete(item: MenuItem) {
@@ -141,6 +186,7 @@ export function Composer({
       text,
       agentId: agent.id,
       attachmentIds: attachments.map((attachment) => attachment.id),
+      scopeId: scope?.id,
     });
     setValue("");
     setCaret(0);
@@ -173,14 +219,47 @@ export function Composer({
     }
   }
 
+  function onDrop(event: DragEvent<HTMLDivElement>) {
+    if (!onDropFiles) return;
+    event.preventDefault();
+    setDropping(false);
+    const files = Array.from(event.dataTransfer.files);
+    if (files.length > 0) onDropFiles(files);
+  }
+
   const canSend = value.trim().length > 0 && Boolean(agent) && state !== "blocked";
 
   return (
     <div
       data-slot="composer"
-      className="shrink-0 border-t border-border bg-surface"
+      className={cn(
+        "relative shrink-0 border-t border-border bg-surface",
+        dropping && "shadow-[inset_0_0_0_1px_var(--ring)]",
+      )}
       aria-label="Composer"
+      onDragOver={(event) => {
+        if (!onDropFiles) return;
+        event.preventDefault();
+        setDropping(true);
+      }}
+      onDragLeave={(event) => {
+        // Only the composer leaving counts; crossing a child element does not.
+        if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+        setDropping(false);
+      }}
+      onDrop={onDrop}
     >
+      {dropping ? (
+        <div
+          className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center bg-surface/90"
+          aria-hidden="true"
+        >
+          <span className="text-[12px] text-foreground">
+            Drop to attach. Files are captured, classified, and shown before they reach an agent.
+          </span>
+        </div>
+      ) : null}
+
       {attachments.length > 0 ? (
         <ul
           className="flex flex-wrap gap-1 border-b border-border px-2 py-1.5"
@@ -208,32 +287,52 @@ export function Composer({
 
       <div className="relative">
         {menuOpen ? (
-          <ul
-            id={listboxId}
-            role="listbox"
-            aria-label={trigger?.kind === "skill" ? "Skills" : "Files and symbols"}
-            className="absolute bottom-full left-0 z-20 mb-px max-h-64 w-full overflow-y-auto border border-border bg-popover"
-          >
-            {items.map((item, index) => (
-              <li
-                key={item.id}
-                id={`${listboxId}-${item.id}`}
-                role="option"
-                aria-selected={index === highlight}
-                onMouseDown={(event) => {
-                  event.preventDefault();
-                  complete(item);
-                }}
-                className={cn(
-                  "flex cursor-pointer items-baseline gap-2 px-2 py-1",
-                  index === highlight && "bg-surface-raised",
-                )}
-              >
-                <span className="text-[12px] text-foreground">{item.primary}</span>
-                <Mono className="truncate text-faint">{item.secondary}</Mono>
-              </li>
-            ))}
-          </ul>
+          <div className="absolute bottom-full left-0 z-20 mb-px flex w-full border border-border bg-popover">
+            <ul
+              id={listboxId}
+              role="listbox"
+              aria-label={trigger?.kind === "skill" ? "Skills" : "Files and symbols"}
+              className={cn(
+                "max-h-64 overflow-y-auto",
+                activeItem?.instructions ? "w-1/2 shrink-0 border-r border-border" : "w-full",
+              )}
+            >
+              {items.map((item, index) => (
+                <li
+                  key={item.id}
+                  id={`${listboxId}-${item.id}`}
+                  role="option"
+                  aria-selected={index === highlight}
+                  onMouseDown={(event) => {
+                    event.preventDefault();
+                    complete(item);
+                  }}
+                  onMouseEnter={() => setHighlight(index)}
+                  className={cn(
+                    "flex cursor-pointer items-baseline gap-2 px-2 py-1",
+                    index === highlight && "bg-surface-raised",
+                  )}
+                >
+                  <span className="text-[12px] text-foreground">{item.primary}</span>
+                  <Mono className="truncate text-faint">{item.secondary}</Mono>
+                </li>
+              ))}
+            </ul>
+
+            {activeItem?.instructions ? (
+              // Picking a skill hands an agent instructions somebody else wrote.
+              // They are shown verbatim, before the choice, not summarised after.
+              <div className="flex min-w-0 flex-1 flex-col gap-1 p-2">
+                <MetaLabel className="flex items-center gap-1.5">
+                  <FileTextIcon className="size-3" />
+                  {activeItem.primary} instructions
+                </MetaLabel>
+                <pre className="max-h-56 overflow-auto whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-muted-foreground">
+                  {activeItem.instructions}
+                </pre>
+              </div>
+            ) : null}
+          </div>
         ) : null}
 
         <textarea
@@ -273,7 +372,30 @@ export function Composer({
           skills
         </span>
 
-        <label className="ml-auto flex items-center gap-1.5 text-[11px] text-muted-foreground">
+        {scopes.length > 0 ? (
+          <label className="ml-auto flex items-center gap-1.5 text-[11px] text-muted-foreground">
+            <span className="sr-only">Scope</span>
+            <select
+              className="border border-border bg-transparent px-1.5 py-0.5 text-[11px] text-foreground outline-none focus-visible:border-border-strong"
+              value={scope?.id ?? ""}
+              onChange={(event) => onSelectScope?.(event.target.value)}
+              aria-label="Scope"
+            >
+              {scopes.map((candidate) => (
+                <option key={candidate.id} value={candidate.id}>
+                  {candidate.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
+
+        <label
+          className={cn(
+            "flex items-center gap-1.5 text-[11px] text-muted-foreground",
+            scopes.length === 0 && "ml-auto",
+          )}
+        >
           <span className="sr-only">Agent</span>
           <select
             className="border border-border bg-transparent px-1.5 py-0.5 text-[11px] text-foreground outline-none focus-visible:border-border-strong"
@@ -317,7 +439,7 @@ export function Composer({
       </div>
 
       <div
-        className="flex items-center gap-1.5 border-t border-border px-2 py-1"
+        className="flex flex-wrap items-center gap-x-1.5 gap-y-1 border-t border-border px-2 py-1"
         aria-live="polite"
         data-slot="permission-hint"
       >
@@ -327,15 +449,23 @@ export function Composer({
             {blockedReason ?? "A permission request is waiting for your answer."}
           </span>
         ) : agent ? (
-          <span className="text-[11px] text-muted-foreground">
-            <span className="text-foreground">{agent.name}</span> may {agent.permissionScope}
-            {agent.asks && agent.asks.length > 0 ? (
-              <>
-                {" · asks before "}
-                <Mono className="text-faint">{agent.asks.join(", ")}</Mono>
-              </>
+          <>
+            <span className="text-[11px] text-muted-foreground">
+              <span className="text-foreground">{agent.name}</span> may {agent.permissionScope}
+              {agent.asks && agent.asks.length > 0 ? (
+                <>
+                  {" · asks before "}
+                  <Mono className="text-faint">{agent.asks.join(", ")}</Mono>
+                </>
+              ) : null}
+            </span>
+            {scope ? (
+              <span className="text-[11px] text-muted-foreground">
+                {" · within "}
+                <Mono className="text-faint">{scope.globs.join(" ") || scope.label}</Mono>
+              </span>
             ) : null}
-          </span>
+          </>
         ) : (
           <span className="text-[11px] text-faint">No agent selected — nothing can run yet.</span>
         )}

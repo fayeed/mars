@@ -50,6 +50,26 @@ export interface ComposerSkill {
   id: string;
   name: string;
   description: string;
+  /**
+   * The skill's own instruction text, verbatim. Picking a skill hands an agent
+   * instructions written by somebody else, so the composer can show exactly
+   * what those instructions say before it is picked — not a summary of them.
+   */
+  instructions?: string;
+}
+
+/**
+ * Where the agent will be allowed to work, chosen before the message is sent.
+ *
+ * The globs are the scope, not a description of it: they are what the worktree
+ * plan will declare and what the permission broker will measure a write
+ * against, so they are shown verbatim.
+ */
+export interface ComposerScope {
+  id: string;
+  label: string;
+  globs: string[];
+  detail?: string;
 }
 
 export interface ComposerAttachment {
@@ -62,4 +82,6 @@ export interface ComposerSubmission {
   text: string;
   agentId: string;
   attachmentIds: string[];
+  /** Absent when the screen offered no scopes to choose between. */
+  scopeId?: string;
 }
