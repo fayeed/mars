@@ -79,7 +79,12 @@ fn a_proposal_without_its_motivating_excerpt_is_refused() {
         .propose(input)
         .expect_err("a memory nobody can trace is not a memory");
     assert!(
-        matches!(error, MemoryError::Empty { field: "quotedText" }),
+        matches!(
+            error,
+            MemoryError::Empty {
+                field: "quotedText"
+            }
+        ),
         "got {error}"
     );
 }
@@ -152,7 +157,9 @@ fn approval_records_who_approved_and_makes_the_memory_retrievable() {
         "the approval is a new turn, not the one being quoted"
     );
 
-    let reloaded = service.proposal(&queued.id).expect("proposal should reload");
+    let reloaded = service
+        .proposal(&queued.id)
+        .expect("proposal should reload");
     assert_eq!(reloaded.status, ProposalStatus::Approved);
     assert_eq!(reloaded.memory_id.as_deref(), Some(memory.id.as_str()));
 }
@@ -200,7 +207,12 @@ fn approval_requires_a_named_approver() {
         })
         .expect_err("an unattributed approval is not an approval");
     assert!(
-        matches!(error, MemoryError::Empty { field: "approvedBy" }),
+        matches!(
+            error,
+            MemoryError::Empty {
+                field: "approvedBy"
+            }
+        ),
         "got {error}"
     );
 }
@@ -265,7 +277,10 @@ fn a_contradicting_memory_blocks_approval_until_a_human_chooses() {
     fixture.approve(&service, "always use the retry helper for network calls");
 
     let queued = service
-        .propose(proposal(&fixture, "never use the retry helper for network calls"))
+        .propose(proposal(
+            &fixture,
+            "never use the retry helper for network calls",
+        ))
         .expect("proposal should queue");
     let outcome = service
         .approve(&ApproveRequest {
@@ -345,7 +360,10 @@ fn keeping_the_existing_memory_rejects_the_proposal() {
     let existing = fixture.approve(&service, "always use the retry helper for network calls");
 
     let queued = service
-        .propose(proposal(&fixture, "never use the retry helper for network calls"))
+        .propose(proposal(
+            &fixture,
+            "never use the retry helper for network calls",
+        ))
         .expect("proposal should queue");
     let outcome = service
         .approve(&ApproveRequest {
@@ -392,7 +410,10 @@ fn a_resolution_set_that_no_longer_matches_is_refused() {
             }],
         })
         .expect_err("a stale conflict set must not be applied");
-    assert!(matches!(error, MemoryError::StaleConflictSet), "got {error}");
+    assert!(
+        matches!(error, MemoryError::StaleConflictSet),
+        "got {error}"
+    );
 }
 
 #[test]
@@ -429,7 +450,10 @@ fn retrieval_selects_by_scope_and_relevance_and_logs_every_injection() {
     let fixture = MemoryFixture::new();
     let service = fixture.service();
     let relevant = fixture.approve(&service, "run the database migrations before the tests");
-    let unrelated = fixture.approve(&service, "the marketing copy lives in a separate repository");
+    let unrelated = fixture.approve(
+        &service,
+        "the marketing copy lives in a separate repository",
+    );
 
     let retrieved = service
         .for_retrieval(&RetrievalContext {
@@ -456,7 +480,10 @@ fn retrieval_selects_by_scope_and_relevance_and_logs_every_injection() {
     assert_eq!(usage.use_count, 1);
     assert_eq!(usage.used_in_tasks, 1);
     assert_eq!(usage.uses[0].surface, "agent_context");
-    assert_eq!(usage.uses[0].task_id.as_deref(), Some(fixture.task_id.as_str()));
+    assert_eq!(
+        usage.uses[0].task_id.as_deref(),
+        Some(fixture.task_id.as_str())
+    );
 
     let untouched = service.usage(&unrelated.id).expect("usage should load");
     assert_eq!(untouched.use_count, 0);
@@ -580,7 +607,9 @@ fn revoked_and_superseded_memories_are_never_retrieved() {
     );
 
     // But it is still there, with its reason, for audit.
-    let kept = service.get(&memory.id).expect("revoked memory still exists");
+    let kept = service
+        .get(&memory.id)
+        .expect("revoked memory still exists");
     assert_eq!(kept.status, MemoryStatus::Revoked);
     assert_eq!(kept.revoked_by.as_deref(), Some("fayeed"));
     assert_eq!(
@@ -773,7 +802,9 @@ fn a_transcript_source_verifies_the_excerpt_and_rejects_an_invented_one() {
     input.conversation_id = session_id.clone();
     input.message_id = "1".into();
     input.quoted_text = "we always run the formatter before committing".into();
-    let verified = service.propose(input).expect("a real excerpt should verify");
+    let verified = service
+        .propose(input)
+        .expect("a real excerpt should verify");
     assert!(verified.origin.verified);
 
     let mut invented = proposal(&fixture, "skip the formatter");
@@ -783,5 +814,8 @@ fn a_transcript_source_verifies_the_excerpt_and_rejects_an_invented_one() {
     let error = service
         .propose(invented)
         .expect_err("an excerpt nobody said must not be accepted");
-    assert!(matches!(error, MemoryError::OriginNotFound { .. }), "got {error}");
+    assert!(
+        matches!(error, MemoryError::OriginNotFound { .. }),
+        "got {error}"
+    );
 }

@@ -56,7 +56,10 @@ fn an_approved_memory_reaches_the_agent_as_an_instruction() {
         .unwrap_or_else(|| {
             panic!(
                 "the approved memory should be in the pack: {:#?}",
-                pack.items.iter().map(|item| &item.entity_ref).collect::<Vec<_>>()
+                pack.items
+                    .iter()
+                    .map(|item| &item.entity_ref)
+                    .collect::<Vec<_>>()
             )
         });
 
@@ -116,7 +119,10 @@ fn a_pending_proposal_never_reaches_the_agent() {
             .iter()
             .any(|item| item.content.contains("run the database migrations")),
         "an unapproved proposal must never reach an agent: {:#?}",
-        pack.items.iter().map(|item| &item.content).collect::<Vec<_>>()
+        pack.items
+            .iter()
+            .map(|item| &item.content)
+            .collect::<Vec<_>>()
     );
 }
 

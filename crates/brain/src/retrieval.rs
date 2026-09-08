@@ -54,8 +54,8 @@ pub(crate) fn retrieve(
     task_id: &str,
     adapter: &str,
 ) -> Result<(Vec<Candidate>, Vec<Excluded>), ContextPackError> {
-    let (project_id, repository_id, intent, root_path): (String, String, String, String) =
-        storage.with_connection(|connection| {
+    let (project_id, repository_id, intent, root_path): (String, String, String, String) = storage
+        .with_connection(|connection| {
             connection.query_row(
                 "SELECT t.project_id, t.repository_id, t.intent, r.root_path FROM tasks t
              JOIN repositories r ON r.id = t.repository_id WHERE t.id = ?1",

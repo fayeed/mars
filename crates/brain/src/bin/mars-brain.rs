@@ -12,7 +12,15 @@
 //! mars-brain --repo <path> where-is <concept...>
 //! mars-brain --repo <path> dependencies <path-or-symbol-id>
 //! mars-brain --repo <path> prompt <question...>
+//! mars-brain --repo <path> memory-pending
+//! mars-brain --repo <path> memory-list [--kind K] [--scope S] [--contains TEXT]
+//! mars-brain --repo <path> memory-usage <memory-id>
 //! ```
+//!
+//! The memory commands are read-only on purpose. Proposing needs a
+//! conversation to quote and approving needs a person, and neither belongs to
+//! a shell script: an approval typed by a script would be exactly the
+//! rubber-stamp the design exists to prevent.
 //!
 //! `prompt` renders the exact synthesis prompt for a question without calling a
 //! provider, so what a model would be asked can be inspected directly.
@@ -22,7 +30,8 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use mars_brain::{
-    AskRequest, BrainEvent, ClaimKind, DEFAULT_BUDGET_TOKENS, DEFAULT_MAX_SOURCES, ProjectBrain,
+    AskRequest, BrainEvent, ClaimKind, DEFAULT_BUDGET_TOKENS, DEFAULT_MAX_SOURCES, MemoryFilters,
+    MemoryKind, MemoryScope, MemoryService, ProjectBrain, ProposalFilters,
 };
 use mars_core::projects::{OpenRepositoryOutcome, ProjectService};
 use mars_indexer::api::IndexApi;
@@ -135,9 +144,107 @@ fn run() -> Result<(), String> {
             };
             println!("{}", mars_brain::render_synthesis_prompt(&request));
         }
+        "memory-pending" => {
+            let (memory, project_id) = memory_service(&storage, &repository_id)?;
+            let pending = memory
+                .pending(&ProposalFilters {
+                    project_id,
+                    ..ProposalFilters::default()
+                })
+                .map_err(stringify)?;
+            eprintln!("{} proposal(s) awaiting a human", pending.len());
+            print(&pending);
+        }
+        "memory-list" => {
+            let (memory, project_id) = memory_service(&storage, &repository_id)?;
+            let memories = memory
+                .list(&MemoryFilters {
+                    project_id,
+                    repository_id: Some(repository_id.clone()),
+                    kinds: arguments
+                        .flag("kind")
+                        .map(|kind| parse_kind(&kind))
+                        .transpose()?
+                        .into_iter()
+                        .collect(),
+                    scopes: arguments
+                        .flag("scope")
+                        .map(|scope| parse_scope(&scope))
+                        .transpose()?
+                        .into_iter()
+                        .collect(),
+                    contains: arguments.flag("contains"),
+                    ..MemoryFilters::default()
+                })
+                .map_err(stringify)?;
+            for record in &memories {
+                eprintln!(
+                    "  [{}/{}] {} -- approved by {}, used in {} task(s)",
+                    record.kind.as_str(),
+                    record.scope.as_str(),
+                    record.text,
+                    record.approved_by,
+                    record.used_in_tasks
+                );
+            }
+            print(&memories);
+        }
+        "memory-usage" => {
+            let memory_id = arguments
+                .positional
+                .first()
+                .ok_or("memory-usage needs a memory id")?;
+            let (memory, _) = memory_service(&storage, &repository_id)?;
+            let usage = memory.usage(memory_id).map_err(stringify)?;
+            eprintln!(
+                "{} injection(s) across {} task(s)",
+                usage.use_count, usage.used_in_tasks
+            );
+            print(&usage);
+        }
         other => return Err(format!("unknown command `{other}`")),
     }
     Ok(())
+}
+
+fn memory_service(
+    storage: &Arc<Storage>,
+    repository_id: &str,
+) -> Result<(MemoryService, String), String> {
+    let project_id: String = storage
+        .with_connection(|connection| {
+            connection.query_row(
+                "SELECT project_id FROM repositories WHERE id = ?1",
+                [repository_id],
+                |row| row.get(0),
+            )
+        })
+        .map_err(stringify)?;
+    Ok((MemoryService::new(storage.clone()), project_id))
+}
+
+fn parse_kind(value: &str) -> Result<MemoryKind, String> {
+    match value {
+        "convention" => Ok(MemoryKind::Convention),
+        "decision" => Ok(MemoryKind::Decision),
+        "preference" => Ok(MemoryKind::Preference),
+        "fact" => Ok(MemoryKind::Fact),
+        "caution" => Ok(MemoryKind::Caution),
+        other => Err(format!(
+            "unknown kind `{other}`; expected convention, decision, preference, fact, or caution"
+        )),
+    }
+}
+
+fn parse_scope(value: &str) -> Result<MemoryScope, String> {
+    match value {
+        "repo" => Ok(MemoryScope::Repo),
+        "task" => Ok(MemoryScope::Task),
+        "global" => Ok(MemoryScope::Global),
+        other => Err(format!(
+            "unknown scope `{other}`; expected repo, task, or global"
+        )),
+    }
 }
 
 /// Pipeline events on stderr, so stdout stays a single JSON document.
@@ -301,5 +408,7 @@ fn usage() -> String {
         .file_stem()
         .and_then(|stem| stem.to_str())
         .unwrap_or("mars-brain");
-    format!("usage: {name} --repo <path> <ask|explain|where-is|dependencies|prompt> [arguments]")
+    format!(
+        "usage: {name} --repo <path> \n<ask|explain|where-is|dependencies|prompt|memory-pending|memory-list|memory-usage> [arguments]"
+    )
 }

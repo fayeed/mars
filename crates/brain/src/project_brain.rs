@@ -81,7 +81,14 @@ impl AskRequest {
 /// Progress from a running answer. A consumer can render claims as they are
 /// confirmed instead of waiting for the whole pipeline.
 #[derive(Clone, Debug, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase", tag = "type")]
+// `rename_all` renames variants; struct-variant fields need `rename_all_fields`
+// as well, or they reach the webview as snake_case while every other field in
+// the protocol is camelCase.
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "type"
+)]
 pub enum BrainEvent {
     Planned {
         queries: Vec<String>,

@@ -65,7 +65,13 @@ impl MemoryFixture {
     /// Proposes and approves in one step, for tests whose subject is what
     /// happens after a memory already exists.
     pub fn approve(&self, service: &MemoryService, text: &str) -> Memory {
-        self.approve_with(service, text, MemoryScope::Repo, MemoryKind::Convention, text)
+        self.approve_with(
+            service,
+            text,
+            MemoryScope::Repo,
+            MemoryKind::Convention,
+            text,
+        )
     }
 
     pub fn approve_kind(

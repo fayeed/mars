@@ -23,9 +23,9 @@ pub use memory::{
     AgentSessionTranscript, ApprovalOutcome, ApproveRequest, ConflictChoice, ConflictResolution,
     ConflictSignal, DetectedConflict, InjectionContext, Memory, MemoryError, MemoryEvent,
     MemoryEventKind, MemoryFilters, MemoryInjection, MemoryKind, MemoryOrigin, MemoryProposal,
-    MemoryScope, MemoryService, MemoryStatus, MemoryUsage, MemoryUse, NewProposal,
-    ProposalFilters, ProposalStatus, RejectRequest, RetrievalContext, RetrievedMemory,
-    ReviseRequest, RevokeRequest, TranscriptSource, injections_from_pack,
+    MemoryScope, MemoryService, MemoryStatus, MemoryUsage, MemoryUse, NewProposal, ProposalFilters,
+    ProposalStatus, RejectRequest, RetrievalContext, RetrievedMemory, ReviseRequest, RevokeRequest,
+    TranscriptSource, injections_from_pack,
 };
 pub use project_brain::{
     AskError, AskRequest, BrainEvent, DEFAULT_MAX_SOURCES, DependencyEdge, DependencyNode,

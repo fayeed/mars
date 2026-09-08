@@ -404,7 +404,11 @@ pub struct ConflictResolution {
 // nothing and boxing would only make the public API noisier to consume.
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase", tag = "outcome")]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "outcome"
+)]
 pub enum ApprovalOutcome {
     Approved {
         memory: Memory,
@@ -817,12 +821,15 @@ impl MemoryService {
         let rows = self.storage.with_connection(|connection| {
             let mut statement = connection.prepare(&sql)?;
             statement
-                .query_map(params_from_iter(arguments.iter().map(AsRef::as_ref)), |row| {
-                    StoredProposal::from_row(row)
-                })?
+                .query_map(
+                    params_from_iter(arguments.iter().map(AsRef::as_ref)),
+                    StoredProposal::from_row,
+                )?
                 .collect::<rusqlite::Result<Vec<_>>>()
         })?;
-        rows.into_iter().map(StoredProposal::into_proposal).collect()
+        rows.into_iter()
+            .map(StoredProposal::into_proposal)
+            .collect()
     }
 
     /// `memory.approve` — a human accepts, edits and accepts, or is shown a
@@ -880,10 +887,7 @@ impl MemoryService {
             let proposal = self.reject(&RejectRequest {
                 proposal_id: proposal.id.clone(),
                 rejected_by: request.approved_by.clone(),
-                reason: format!(
-                    "an existing memory was kept instead: {}",
-                    kept.join(", ")
-                ),
+                reason: format!("an existing memory was kept instead: {}", kept.join(", ")),
             })?;
             return Ok(ApprovalOutcome::KeptExisting { proposal, kept });
         }
@@ -1303,9 +1307,10 @@ impl MemoryService {
         let rows = self.storage.with_connection(|connection| {
             let mut statement = connection.prepare(&sql)?;
             statement
-                .query_map(params_from_iter(arguments.iter().map(AsRef::as_ref)), |row| {
-                    StoredMemory::from_row(row)
-                })?
+                .query_map(
+                    params_from_iter(arguments.iter().map(AsRef::as_ref)),
+                    StoredMemory::from_row,
+                )?
                 .collect::<rusqlite::Result<Vec<_>>>()
         })?;
         rows.into_iter().map(StoredMemory::into_memory).collect()
@@ -1333,8 +1338,7 @@ impl MemoryService {
             .into_iter()
             .map(|(memory, vector)| {
                 let similarity = embedding::similarity(&query, &vector);
-                let relevance =
-                    (similarity + memory.scope.specificity_bonus()).clamp(0.0, 1.0);
+                let relevance = (similarity + memory.scope.specificity_bonus()).clamp(0.0, 1.0);
                 (memory, similarity, relevance)
             })
             .filter(|(_, _, relevance)| *relevance >= RETRIEVAL_FLOOR)
@@ -2088,6 +2092,10 @@ mod tests {
         let mut sorted = NEGATIONS.to_vec();
         sorted.sort_unstable();
         assert_eq!(sorted, NEGATIONS, "NEGATIONS must stay sorted");
-        assert!(NEGATIONS.iter().all(|marker| marker.to_lowercase() == *marker));
+        assert!(
+            NEGATIONS
+                .iter()
+                .all(|marker| marker.to_lowercase() == *marker)
+        );
     }
 }

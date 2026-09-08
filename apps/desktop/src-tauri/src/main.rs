@@ -13,13 +13,16 @@ use mars_agents::process::{
 };
 use mars_brain::tools::{BrainEdge, BrainNeighborhood, BrainSymbol, Dependency};
 use mars_brain::{
-    AskError, AskRequest, BrainAnswer, BrainError, BrainEvent, BrainService, ContextPack,
-    ContextPackError, ContextPackRequest, ContextPackService, DependencySlice, EntityKind,
-    EntityRef, ExtractionError, ExtractionProvider, ExtractionRequest, ExtractionService,
-    FindingStatus, KnowledgeError, KnowledgeKind, KnowledgeRecord, KnowledgeService,
-    MemoryCategory, NewKnowledge, NewProvenance, ProjectBrain, ProvenanceKind, ReviewError,
-    ReviewHandoff, ReviewHandoffRequest, ReviewProvider, ReviewRecord, ReviewService, WhyAnswer,
-    WhyError, WhyRequest, WhyService, render_context_pack, render_extraction_prompt,
+    ApprovalOutcome, ApproveRequest, AskError, AskRequest, BrainAnswer, BrainError, BrainEvent,
+    BrainService, ContextPack, ContextPackError, ContextPackRequest, ContextPackService,
+    DependencySlice, EntityKind, EntityRef, ExtractionError, ExtractionProvider, ExtractionRequest,
+    ExtractionService, FindingStatus, InjectionContext, KnowledgeError, KnowledgeKind,
+    KnowledgeRecord, KnowledgeService, Memory, MemoryCategory, MemoryError, MemoryEvent,
+    MemoryFilters, MemoryProposal, MemoryService, MemoryUsage, NewKnowledge, NewProposal,
+    NewProvenance, ProjectBrain, ProposalFilters, ProvenanceKind, RejectRequest, RetrievalContext,
+    RetrievedMemory, ReviewError, ReviewHandoff, ReviewHandoffRequest, ReviewProvider,
+    ReviewRecord, ReviewService, ReviseRequest, RevokeRequest, WhyAnswer, WhyError, WhyRequest,
+    WhyService, injections_from_pack, render_context_pack, render_extraction_prompt,
 };
 use mars_context::{CaptureError, ContextItem, ContextService};
 use mars_core::Core;
@@ -57,6 +60,8 @@ struct AppState {
     /// The Phase 1 answer pipeline. Distinct from `brain`, which serves the
     /// bounded structural queries of ADR-019.
     project_brain: ProjectBrain,
+    /// Phase 2 human-approved memory.
+    memory: MemoryService,
     context_packs: ContextPackService,
     context: ContextService,
     credentials: OsCredentialVault,
@@ -188,6 +193,7 @@ impl From<ContextPackError> for CommandFailure {
         let code = match error {
             ContextPackError::Storage(_) => "context_pack.storage",
             ContextPackError::InvalidBudget => "context_pack.invalid_budget",
+            ContextPackError::Memory(_) => "context_pack.memory",
         };
         Self::new(code, error.to_string())
     }
@@ -823,6 +829,137 @@ fn brain_dependency_graph(
             &tokio_util::sync::CancellationToken::new(),
         )
         .map_err(Into::into)
+}
+
+/// The person at this machine.
+///
+/// An approval is the entire authority behind a memory, so who gave it is not
+/// something the webview gets to assert. Every actor field on a memory command
+/// is filled here and any value the client sent is discarded.
+fn local_actor() -> String {
+    std::env::var("USERNAME")
+        .or_else(|_| std::env::var("USER"))
+        .unwrap_or_else(|_| "local user".to_owned())
+}
+
+impl From<MemoryError> for CommandFailure {
+    fn from(error: MemoryError) -> Self {
+        let code = match error {
+            MemoryError::Storage(_) => "memory.storage",
+            MemoryError::Timestamp(_) => "memory.timestamp",
+            MemoryError::InvalidStoredValue(_) => "memory.invalid_stored_value",
+            MemoryError::ProposalNotFound(_) => "memory.proposal_not_found",
+            MemoryError::MemoryNotFound(_) => "memory.not_found",
+            MemoryError::ProposalNotPending { .. } => "memory.proposal_not_pending",
+            MemoryError::MemoryNotActive { .. } => "memory.not_active",
+            MemoryError::Empty { .. } => "memory.empty",
+            MemoryError::TooLong { .. } => "memory.too_long",
+            MemoryError::ConfidenceOutOfRange(_) => "memory.confidence_out_of_range",
+            MemoryError::ScopeIncomplete { .. } => "memory.scope_incomplete",
+            MemoryError::StaleConflictSet => "memory.stale_conflict_set",
+            MemoryError::MultipleSupersedes => "memory.multiple_supersedes",
+            MemoryError::OriginNotFound { .. } => "memory.origin_not_found",
+            MemoryError::TaskNotFound(_) => "memory.task_not_found",
+        };
+        Self::new(code, error.to_string())
+    }
+}
+
+/// `memory.propose` — an agent queues a candidate. This is the only memory
+/// command an agent tool is given, and it cannot write a memory.
+#[tauri::command]
+fn memory_propose(
+    proposal: NewProposal,
+    state: State<'_, AppState>,
+) -> Result<MemoryProposal, CommandFailure> {
+    state.memory.propose(proposal).map_err(Into::into)
+}
+
+/// `memory.pending` — the human's approval queue.
+#[tauri::command]
+fn memory_pending(
+    filters: ProposalFilters,
+    state: State<'_, AppState>,
+) -> Result<Vec<MemoryProposal>, CommandFailure> {
+    state.memory.pending(&filters).map_err(Into::into)
+}
+
+/// `memory.approve` — accept, edit and accept, or resolve a conflict first.
+#[tauri::command]
+fn memory_approve(
+    mut request: ApproveRequest,
+    state: State<'_, AppState>,
+) -> Result<ApprovalOutcome, CommandFailure> {
+    request.approved_by = local_actor();
+    state.memory.approve(&request).map_err(Into::into)
+}
+
+/// `memory.reject`.
+#[tauri::command]
+fn memory_reject(
+    mut request: RejectRequest,
+    state: State<'_, AppState>,
+) -> Result<MemoryProposal, CommandFailure> {
+    request.rejected_by = local_actor();
+    state.memory.reject(&request).map_err(Into::into)
+}
+
+/// `memory.list(filters)`.
+#[tauri::command]
+fn memory_list(
+    filters: MemoryFilters,
+    state: State<'_, AppState>,
+) -> Result<Vec<Memory>, CommandFailure> {
+    state.memory.list(&filters).map_err(Into::into)
+}
+
+/// `memory.forRetrieval(context)`. The UI calls this to preview what an agent
+/// would be given, so it passes `recordUses: false`; a caller that is itself
+/// the injection passes true.
+#[tauri::command]
+fn memory_for_retrieval(
+    context: RetrievalContext,
+    state: State<'_, AppState>,
+) -> Result<Vec<RetrievedMemory>, CommandFailure> {
+    state.memory.for_retrieval(&context).map_err(Into::into)
+}
+
+/// `memory.usage(id)` — which tasks this memory has actually shaped.
+#[tauri::command]
+fn memory_usage(
+    memory_id: String,
+    state: State<'_, AppState>,
+) -> Result<MemoryUsage, CommandFailure> {
+    state.memory.usage(&memory_id).map_err(Into::into)
+}
+
+/// The full audit trail, including the approval message.
+#[tauri::command]
+fn memory_history(
+    memory_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<MemoryEvent>, CommandFailure> {
+    state.memory.history(&memory_id).map_err(Into::into)
+}
+
+/// Editing an approved memory creates a new version linked by `supersedes`.
+#[tauri::command]
+fn memory_revise(
+    mut request: ReviseRequest,
+    state: State<'_, AppState>,
+) -> Result<Memory, CommandFailure> {
+    request.revised_by = local_actor();
+    state.memory.revise(&request).map_err(Into::into)
+}
+
+/// Withdraws a memory from retrieval while keeping it for audit.
+#[tauri::command]
+fn memory_revoke(
+    mut request: RevokeRequest,
+    state: State<'_, AppState>,
+) -> Result<Memory, CommandFailure> {
+    request.revoked_by = local_actor();
+    state.memory.revoke(&request).map_err(Into::into)
 }
 
 #[tauri::command]
@@ -1540,6 +1677,18 @@ async fn launch_agent(
             "task context changed after preview; review the refreshed pack before launch",
         ));
     }
+    // The pack is now the one the agent will actually receive, so this is the
+    // moment its memories count as used -- not when it was previewed, and not
+    // when it was rebuilt for the comparison above, either of which would
+    // record influence the memory never had.
+    state.memory.record_uses(
+        &injections_from_pack(&verified_pack),
+        &InjectionContext {
+            task_id: Some(task_id.clone()),
+            session_id: None,
+            surface: "context_pack".into(),
+        },
+    )?;
     let prompt = render_context_pack(&verified_pack, &prompt);
 
     let adapter_impl = adapter_for(adapter);
@@ -1796,6 +1945,12 @@ fn main() {
                     storage.clone(),
                     Arc::new(mars_indexer::api::IndexApi::new(storage.clone())),
                 ),
+                // Proposals are verified against the agent transcript they
+                // claim to come from, so an excerpt nobody said is refused.
+                memory: MemoryService::with_transcript(
+                    storage.clone(),
+                    Arc::new(mars_brain::AgentSessionTranscript::new(storage.clone())),
+                ),
                 context_packs: ContextPackService::new(storage.clone()),
                 context: ContextService::new(storage.clone(), data_dir.join("artifacts")),
                 credentials: OsCredentialVault,
@@ -1837,6 +1992,16 @@ fn main() {
             brain_explain,
             brain_where_is,
             brain_dependency_graph,
+            memory_propose,
+            memory_pending,
+            memory_approve,
+            memory_reject,
+            memory_list,
+            memory_for_retrieval,
+            memory_usage,
+            memory_history,
+            memory_revise,
+            memory_revoke,
             capture_text_context,
             capture_context_bytes,
             search_context,
