@@ -105,6 +105,8 @@ pub enum ContextPackError {
     Storage(#[from] StorageError),
     #[error("context pack budget must be between 512 and 262144 bytes")]
     InvalidBudget,
+    #[error("approved memories could not be retrieved for this pack: {0}")]
+    Memory(String),
 }
 
 #[derive(Clone)]

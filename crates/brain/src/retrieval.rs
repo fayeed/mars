@@ -1,11 +1,13 @@
 use std::collections::{BTreeSet, HashSet};
 use std::path::Path;
 use std::process::Command;
+use std::sync::Arc;
 
 use mars_storage::Storage;
 use rusqlite::params;
 
 use crate::context_pack::{ContextPackError, PackSection};
+use crate::memory;
 
 type ContextRow = (
     String,
@@ -48,22 +50,64 @@ pub(crate) struct Excluded {
 }
 
 pub(crate) fn retrieve(
-    storage: &Storage,
+    storage: &Arc<Storage>,
     task_id: &str,
     adapter: &str,
 ) -> Result<(Vec<Candidate>, Vec<Excluded>), ContextPackError> {
-    let (repository_id, intent, root_path): (String, String, String) =
+    let (project_id, repository_id, intent, root_path): (String, String, String, String) =
         storage.with_connection(|connection| {
             connection.query_row(
-                "SELECT t.repository_id, t.intent, r.root_path FROM tasks t
+                "SELECT t.project_id, t.repository_id, t.intent, r.root_path FROM tasks t
              JOIN repositories r ON r.id = t.repository_id WHERE t.id = ?1",
                 [task_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
         })?;
     let terms = terms(&intent);
     let mut candidates = Vec::new();
     let mut exclusions = Vec::new();
+
+    // Approved memories are instructions: a convention or a caution is
+    // something the agent must follow, not background reading. Only active
+    // memories are eligible.
+    //
+    // Building a pack never counts as using them. A pack is built to be
+    // previewed, and rebuilt again to be revalidated, before anything is
+    // handed to an agent; counting those would make the usage trail claim
+    // influence that was never had. The injection is recorded at launch, from
+    // the pack that was actually sent, by `memory::record_uses`.
+    let memories = memory::MemoryService::new(storage.clone())
+        .for_retrieval(&memory::RetrievalContext {
+            project_id,
+            repository_id: Some(repository_id.clone()),
+            task_id: Some(task_id.to_owned()),
+            session_id: None,
+            query: intent.clone(),
+            surface: "context_pack".into(),
+            limit: None,
+            record_uses: false,
+        })
+        .map_err(|error| ContextPackError::Memory(error.to_string()))?;
+    for retrieved in memories {
+        let memory = retrieved.memory;
+        candidates.push(Candidate {
+            section: PackSection::Instructions,
+            entity_ref: memory::pack_entity_ref(&memory.id),
+            title: format!("{} ({})", memory.kind.as_str(), memory.scope.as_str()),
+            content: memory.text,
+            provenance: format!("HUMAN approved by {}", memory.approved_by),
+            freshness: format!("approved {}", memory.approved_at),
+            source_location: format!(
+                "conversation:{}:{}",
+                memory.origin.conversation_id, memory.origin.message_id
+            ),
+            reason: retrieved.reason,
+            score: retrieved.relevance,
+            // A caution is the one kind whose absence can cause harm, so it is
+            // carried even when the section budget is tight.
+            required: memory.kind == memory::MemoryKind::Caution,
+        });
+    }
 
     let context_rows: Vec<ContextRow> = storage.with_connection(|connection| {
         let mut statement = connection.prepare(

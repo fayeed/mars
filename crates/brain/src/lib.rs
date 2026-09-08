@@ -4,6 +4,7 @@ pub mod context_pack;
 pub mod extraction;
 mod gather;
 pub mod knowledge;
+pub mod memory;
 pub mod project_brain;
 pub mod query;
 pub mod retrieval;
@@ -18,6 +19,14 @@ pub use answer::{
     AnswerInvalid, AnswerSource, BrainAnswer, Citation, Claim, ClaimKind, Gap, GapKind, Signal,
 };
 pub use budget::{DEFAULT_BUDGET_TOKENS, MAX_BUDGET_TOKENS, MIN_BUDGET_TOKENS, estimate_tokens};
+pub use memory::{
+    AgentSessionTranscript, ApprovalOutcome, ApproveRequest, ConflictChoice, ConflictResolution,
+    ConflictSignal, DetectedConflict, InjectionContext, Memory, MemoryError, MemoryEvent,
+    MemoryEventKind, MemoryFilters, MemoryInjection, MemoryKind, MemoryOrigin, MemoryProposal,
+    MemoryScope, MemoryService, MemoryStatus, MemoryUsage, MemoryUse, NewProposal,
+    ProposalFilters, ProposalStatus, RejectRequest, RetrievalContext, RetrievedMemory,
+    ReviseRequest, RevokeRequest, TranscriptSource, injections_from_pack,
+};
 pub use project_brain::{
     AskError, AskRequest, BrainEvent, DEFAULT_MAX_SOURCES, DependencyEdge, DependencyNode,
     DependencySlice, DependencyTarget, ProjectBrain,

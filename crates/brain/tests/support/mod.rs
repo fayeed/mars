@@ -1,3 +1,14 @@
+//! Shared fixtures.
+//!
+//! This module is compiled into every test binary, so a helper used by one of
+//! them looks unused to the others.
+#![allow(dead_code)]
+
+pub mod memory;
+
+#[allow(unused_imports)]
+pub use memory::MemoryFixture;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -179,10 +190,10 @@ fn copy_directory(source: &Path, destination: &Path) {
     }
 }
 
-struct TestDirectory(PathBuf);
+pub struct TestDirectory(PathBuf);
 
 impl TestDirectory {
-    fn new() -> Self {
+    pub fn new() -> Self {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("clock should follow Unix epoch")
@@ -192,7 +203,7 @@ impl TestDirectory {
         Self(path)
     }
 
-    fn path(&self) -> &Path {
+    pub fn path(&self) -> &Path {
         &self.0
     }
 }
