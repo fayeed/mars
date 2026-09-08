@@ -2279,8 +2279,6 @@ dependencies = [
 name = "mars-activity"
 version = "0.1.0"
 dependencies = [
- "mars-core",
- "mars-security",
  "mars-storage",
  "rusqlite",
  "serde",
@@ -2418,12 +2416,15 @@ dependencies = [
 name = "mars-git"
 version = "0.1.0"
 dependencies = [
+ "libc",
+ "mars-activity",
  "mars-core",
  "mars-security",
  "mars-storage",
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.18",
  "time",
  "uuid",
@@ -2463,10 +2464,13 @@ dependencies = [
 name = "mars-security"
 version = "0.1.0"
 dependencies = [
+ "mars-activity",
  "mars-storage",
+ "rusqlite",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "tokio",
  "uuid",
 ]
 

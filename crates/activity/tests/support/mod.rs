@@ -10,8 +10,6 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use mars_activity::{ActivityRecord, RunStore};
-use mars_core::projects::{OpenRepositoryOutcome, ProjectService};
-use mars_security::TrustDecision;
 use mars_storage::Storage;
 
 pub struct ActivityFixture {
@@ -38,25 +36,36 @@ impl ActivityFixture {
         let storage = Arc::new(
             Storage::open(directory.path().join("mars-test.sqlite3")).expect("storage should open"),
         );
-        let OpenRepositoryOutcome::Opened(project) = ProjectService::new(storage.clone())
-            .open_repository(&root, TrustDecision::Trust)
-            .expect("repository should open")
-        else {
-            panic!("trusted repository should open")
-        };
-        let project_id = storage
+        // The projects and repositories rows exist only so the task foreign keys
+        // resolve; nothing in this crate reads them.
+        let project_id = "project-fixture".to_owned();
+        let repository_id = "repository-fixture".to_owned();
+        storage
             .with_connection(|connection| {
-                connection.query_row(
-                    "SELECT project_id FROM repositories WHERE id = ?1",
-                    [&project.repository_id],
-                    |row| row.get::<_, String>(0),
-                )
+                connection.execute(
+                    "INSERT INTO projects (id, name, created_at, updated_at)
+                     VALUES (?1, 'fixture', '2026-09-08T00:00:00Z', '2026-09-08T00:00:00Z')",
+                    [&project_id],
+                )?;
+                connection.execute(
+                    "INSERT INTO repositories
+                         (id, project_id, root_path, git_common_dir, state, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, 'active',
+                             '2026-09-08T00:00:00Z', '2026-09-08T00:00:00Z')",
+                    rusqlite::params![
+                        &repository_id,
+                        &project_id,
+                        root.to_string_lossy(),
+                        root.join(".git").to_string_lossy(),
+                    ],
+                )?;
+                Ok(())
             })
-            .expect("repository should belong to a project");
+            .expect("fixture project and repository should insert");
 
         Self {
             storage,
-            repository_id: project.repository_id,
+            repository_id,
             project_id,
             payload_root,
             worktree_root,
