@@ -15,6 +15,7 @@ import type {
   ProjectSnapshot,
   RecoveryAction,
   ReviewFinding,
+  ReviewHandoff,
   ReviewRecord,
   RunContextPack,
   SetupCommandInput,
@@ -713,6 +714,34 @@ export function ShellWorkspace({
     }
   }
 
+  /**
+   * Hand the change to the other agent.
+   *
+   * The handoff is built first and shown to have a digest before anything runs,
+   * so what the reviewer was given is recorded rather than reconstructed later.
+   */
+  async function runReview() {
+    if (!selectedTaskId) return;
+    setReviewState("loading");
+    try {
+      const handoff = await invoke<ReviewHandoff>("build_review_handoff", {
+        taskId: selectedTaskId,
+        reviewerAdapter: agentId === "codex" ? "claude" : "codex",
+        maxBytes: PACK_BUDGET_BYTES,
+      });
+      const record = await invoke<ReviewRecord>("run_cross_agent_review", {
+        handoff,
+        modelPermission: true,
+      });
+      setReview(record);
+      setReviewState("idle");
+      await loadRecord(selectedTaskId);
+    } catch (caught) {
+      setReviewState("failed");
+      note(`The review could not be run: ${messageFor(caught)}`, "failed");
+    }
+  }
+
   async function decideFinding(finding: ReviewFinding, status: FindingStatus) {
     setBusyFindingId(finding.id);
     try {
@@ -1001,10 +1030,12 @@ export function ShellWorkspace({
           />
         </div>
       ) : null}
-      {review ? (
+      {review || (diff && diff.files.length > 0) ? (
         <div className="border-b border-border">
           <ReviewFindings
             busyFindingId={busyFindingId}
+            onRunReview={() => void runReview()}
+            reviewerLabel={agentId === "codex" ? "Claude" : "Codex"}
             implementerLabel={AGENTS.find((agent) => agent.id === agentId)?.name}
             onAskForFix={(finding) =>
               setDraft(

@@ -141,3 +141,20 @@ describe("ReviewFindings", () => {
     expect(screen.getByText(/cannot alter anything while it reads/)).toBeVisible();
   });
 });
+
+describe("ReviewFindings starting a review", () => {
+  it("names the agent that would read the change before asking it to", async () => {
+    const user = userEvent.setup();
+    const onRunReview = vi.fn();
+    renderFindings({ review: null, onRunReview, reviewerLabel: "Codex" });
+
+    await user.click(screen.getByRole("button", { name: "Have Codex read it" }));
+    expect(onRunReview).toHaveBeenCalled();
+  });
+
+  it("offers nothing to run when no second agent is available", () => {
+    renderFindings({ review: null });
+
+    expect(screen.queryByRole("button", { name: /read it/ })).not.toBeInTheDocument();
+  });
+});

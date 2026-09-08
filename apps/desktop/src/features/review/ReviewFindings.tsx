@@ -23,6 +23,10 @@ export interface ReviewFindingsProps {
   onDecide: (finding: ReviewFinding, status: FindingStatus) => void;
   onAskForFix: (finding: ReviewFinding) => void;
   busyFindingId?: string | null;
+  /** Hands the change to a second agent to read. Absent when none can run. */
+  onRunReview?: () => void;
+  /** The agent that would read it, named before it is asked to. */
+  reviewerLabel?: string;
 }
 
 /**
@@ -152,8 +156,10 @@ export function ReviewFindings({
   onAskForFix,
   onDecide,
   onOpenFinding,
+  onRunReview,
   review,
   reviewerCeiling,
+  reviewerLabel,
   state,
 }: ReviewFindingsProps) {
   if (state === "loading") {
@@ -174,6 +180,18 @@ export function ReviewFindings({
         state="idle"
         title="No review yet"
         description="A second agent can read this change and report what it finds. It cannot alter anything while it reads."
+        action={
+          onRunReview ? (
+            <button
+              type="button"
+              onClick={onRunReview}
+              className="flex items-center gap-1.5 border border-border bg-primary px-2 py-1 text-[11px] font-medium text-primary-foreground outline-none"
+            >
+              <ArrowRightIcon className="size-3.5" />
+              Have {reviewerLabel ?? "another agent"} read it
+            </button>
+          ) : null
+        }
       />
     );
   }
