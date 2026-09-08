@@ -24,10 +24,15 @@ pub enum PermissionScope {
     Worktree { task_id: String, root: PathBuf },
     Command { program: String, cwd: PathBuf },
     NetworkHost { host: String },
+    Remote { remote: String, branch: String },
 }
 
 impl PermissionScope {
-    fn contains(&self, child: &Self) -> bool {
+    /// Whether a grant over `self` covers a request over `child`. Containment
+    /// only ever narrows: a broader scope admits a narrower one, never the
+    /// reverse, and a lexical `..` in either path disqualifies both.
+    #[must_use]
+    pub fn contains(&self, child: &Self) -> bool {
         match (self, child) {
             (
                 Self::Repository { repository_id },
@@ -52,6 +57,13 @@ impl PermissionScope {
             (Self::NetworkHost { host }, Self::NetworkHost { host: child_host }) => {
                 host == child_host
             }
+            (
+                Self::Remote { remote, branch },
+                Self::Remote {
+                    remote: child_remote,
+                    branch: child_branch,
+                },
+            ) => remote == child_remote && branch == child_branch,
             _ => false,
         }
     }
@@ -145,6 +157,14 @@ pub enum PermissionError {
     Json(#[from] serde_json::Error),
     #[error("permission state lock was poisoned")]
     StatePoisoned,
+    #[error("permission request `{0}` does not exist")]
+    RequestNotFound(String),
+    #[error("permission request `{0}` has already been decided")]
+    RequestAlreadyDecided(String),
+    #[error("permission grant `{0}` does not exist or is already revoked")]
+    GrantNotFound(String),
+    #[error("failed to record a permission decision in the activity log: {0}")]
+    Activity(String),
 }
 
 pub struct PermissionAudit {
@@ -292,12 +312,27 @@ mod tests {
         PermissionScope,
     };
 
+    /// Scope containment is defined over absolute paths, and what counts as
+    /// absolute differs by platform, so the fixtures are rooted rather than
+    /// written as POSIX literals.
+    fn absolute(path: &str) -> PathBuf {
+        let mut rooted = if cfg!(windows) {
+            PathBuf::from("C:\\")
+        } else {
+            PathBuf::from("/")
+        };
+        for segment in path.split('/') {
+            rooted.push(segment);
+        }
+        rooted
+    }
+
     fn write_request(path: &str) -> PermissionRequest {
         PermissionRequest::new(
             Capability::WriteFiles,
             PermissionScope::Worktree {
                 task_id: "task-1".into(),
-                root: PathBuf::from(path),
+                root: absolute(path),
             },
         )
     }
@@ -305,7 +340,7 @@ mod tests {
     #[test]
     fn deny_ask_once_and_session_decisions_follow_their_scope() {
         let engine = PermissionEngine::new();
-        let request = write_request("/worktree/src");
+        let request = write_request("worktree/src");
         assert_eq!(
             engine
                 .evaluate(&request, None)
@@ -355,7 +390,7 @@ mod tests {
     #[test]
     fn child_requests_can_narrow_but_never_widen_the_parent_grant() {
         let engine = PermissionEngine::new();
-        let parent_request = write_request("/worktree");
+        let parent_request = write_request("worktree");
         engine
             .record_decision(&parent_request, PermissionDecision::AllowSession)
             .expect("parent grant should record");
@@ -366,7 +401,7 @@ mod tests {
             panic!("parent should be allowed")
         };
 
-        let child = write_request("/worktree/src/main.ts");
+        let child = write_request("worktree/src/main.ts");
         engine
             .record_decision(&child, PermissionDecision::AllowSession)
             .expect("child grant should record");
@@ -377,7 +412,7 @@ mod tests {
             PermissionOutcome::Allowed(_)
         ));
 
-        let outside = write_request("/other-repository");
+        let outside = write_request("other-repository");
         engine
             .record_decision(&outside, PermissionDecision::AllowSession)
             .expect("outside grant should record");
@@ -388,7 +423,7 @@ mod tests {
             PermissionOutcome::Denied
         );
 
-        let lexical_escape = write_request("/worktree/../other-repository");
+        let lexical_escape = write_request("worktree/../other-repository");
         engine
             .record_decision(&lexical_escape, PermissionDecision::AllowSession)
             .expect("escape grant should record");
@@ -403,7 +438,7 @@ mod tests {
             Capability::RunCommand,
             PermissionScope::Command {
                 program: "git".into(),
-                cwd: PathBuf::from("/worktree"),
+                cwd: absolute("worktree"),
             },
         );
         engine
