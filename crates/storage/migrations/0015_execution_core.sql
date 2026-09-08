@@ -149,6 +149,9 @@ CREATE TABLE worktree_plans (
     preflight_json TEXT NOT NULL CHECK (json_valid(preflight_json)),
     disk_json TEXT NOT NULL CHECK (json_valid(disk_json)),
     fingerprint TEXT NOT NULL,
+    -- Set when a human chose to keep this base after it moved, so the same
+    -- drift is not reported at them again.
+    acknowledged_drift_oid TEXT,
     approved_by TEXT,
     approved_at TEXT,
     approved_fingerprint TEXT,
