@@ -13,6 +13,7 @@
   "dependencies": {
     "@base-ui/react": "^1.7.0",
     "@fontsource-variable/geist": "^5.3.0",
+    "@fontsource/ibm-plex-mono": "^5.3.0",
     "@mars/protocol": "workspace:*",
     "@mars/shared-types": "workspace:*",
     "@monaco-editor/react": "^4.7.0",

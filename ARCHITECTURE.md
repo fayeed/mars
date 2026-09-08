@@ -892,15 +892,19 @@ Storage is migration 15: `activity_events`, `activity_payloads`, `agent_runs`,
 
 ```text
 Project window
-├─ Activity rail: Tasks | Explorer | Brain | Context | Skills | Git/PRs
-├─ Left pane: selected activity tree/list
-├─ Center: editor tabs / diff / task canvas / brain result
-├─ Right inspector: task context, agent timeline, provenance, review findings
-├─ Bottom panel: terminal | agent stream | problems | checks | logs
+├─ App rail (48px): Conversation | Editor | Source control, then theme, account
+├─ Task rail: active tasks with live state; collapses to a labelled strip
+├─ Workbench: editor tabs / diff — opens beside the conversation, never over it
+├─ Center: conversation — always present, always live, never replaced
+├─ Right inspector: context pack, plan, diff summary, brain answers
+├─ Composer: pinned under the conversation, usable while panels are open
+├─ Bottom utility panel: Problems | Tests | Checks | Terminal, resizable
 └─ Status bar: repo/worktree/branch, index state, agents, permissions
 ```
 
-The primary landing view is Tasks, not chat. A task page has intent, context tray, worktree/branch, selected skills, agent controls, event timeline, changes/tests, memory candidates, and review/PR status. Clicking any source opens Monaco or the original artifact. “Review with other agent” is a first-class action next to the diff. The user can always open the current worktree in Explorer/editor/terminal.
+The app rail is a set of destinations, not a toolbar of every feature (ADR-043). Tasks remain the organizing unit — a conversation belongs to a task, so every turn has a branch and a worktree to happen in — but the landing surface is the task's live conversation rather than a list. A task carries intent, context tray, worktree/branch, selected skills, agent controls, event timeline, changes/tests, memory candidates, and review/PR status; those appear in the conversation and the inspector, not in chrome of their own. Clicking any source opens Monaco or the original artifact in the workbench, beside the conversation rather than in place of it. “Review with other agent” is a first-class action next to the diff. The user can always open the current worktree in the editor, source-control view, or terminal.
+
+The shell is one component system in `apps/desktop/src/shell`: regions, panel headers, the state vocabulary (`idle`, `queued`, `loading`, `streaming`, `blocked`, `failed`, `stale`, `done`), the keymap, and the design tokens. Screens compose those regions; no screen supplies its own chrome, empty states, or state vocabulary.
 
 Global quick capture is a small separate Tauri window. It captures first and lets the user scope second; sensitive items can be discarded before persistence.
 
