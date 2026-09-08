@@ -1,6 +1,6 @@
 # Mars Architecture
 
-Status: MVP implementation in progress; Proofs A–E implemented, deterministic F path implemented; Phase 0 indexing and Phase 1 Project Brain implemented
+Status: MVP implementation in progress; Proofs A–E implemented, deterministic F path implemented; Phase 0 indexing, Phase 1 Project Brain, and Phase 2 memory implemented
 Last updated: 2026-09-08
 
 ## 1. Concrete MVP restatement
@@ -34,6 +34,14 @@ Phase 0 rebuilt the index as the substrate every later feature reads from: ten
 languages, a complete file layer, chunks with local embeddings, Git history, and
 an explicit freshness verdict on every answer. It is recorded in
 `docs/proofs/0-repo-indexing.md`.
+
+Phase 2 is implemented. Memory is human-approved and traceable by
+construction: agents may only queue proposals, approval is the sole path to a
+retrievable memory, every proposal carries the exact excerpt that motivated it,
+and conflicting memories block approval until a person chooses which survives.
+Approved memories reach agents through the context pack as instructions, and
+every injection is recorded so a memory can say which tasks it has shaped. It is
+recorded in `docs/proofs/2-memory.md`.
 
 Phase 1 is implemented. Project Brain answers questions about a repository with
 citations, as a structured document rather than prose: claims separated into
@@ -700,6 +708,53 @@ rather than prose. Consumers are the agent tool, the Tauri commands
 `brain_ask`/`brain_explain`/`brain_where_is`/`brain_dependency_graph` with
 `brain-event` streaming, the desktop Ask activity, and the `mars-brain` CLI
 harness. Proof: `docs/proofs/1-project-brain.md`.
+
+## 13b. Memory (Phase 2)
+
+Durable guidance a person has explicitly accepted, anchored to the conversation
+turn that motivated it. Distinct from the milestone D `knowledge_records`
+projection, which summarises one completed agent session; memory outlives the
+conversation it came from and carries a record of where it has been used.
+
+Two rules, both structural rather than procedural:
+
+```text
+agent --> memory.propose --> memory_proposals   (queued, never retrieved)
+                                   |
+                          human approval only
+                                   v
+                              memories  --> retrieval --> agent context
+```
+
+An agent reaches only `propose`, which writes to a different table than
+retrieval reads. The only path between them records who approved it. A proposal
+without the exact motivating excerpt is refused.
+
+```text
+{ id, text, scope: repo|task|global,
+  kind: convention|decision|preference|fact|caution,
+  origin: { conversationId, messageId, quotedText, verified },
+  approvedBy, approvedAt, confidence, supersedes?,
+  status: active|superseded|revoked, useCount, usedInTasks }
+```
+
+Lifecycle: propose, approve (accept / edit-then-accept / reject), retrieve by
+scope plus embedding relevance with a bonus for the narrower scope, and
+supersede or revoke. No hard deletes; a revoked memory leaves retrieval and
+keeps its audit trail. On approval, active memories whose scope co-applies are
+compared by similarity and any match blocks the write until a person chooses
+which survives (ADR-035).
+
+Approved memories enter the context pack as `Instructions`, carrying
+`HUMAN approved by <name>` and `conversation:<id>:<message>`. Building a pack is
+not a use; the injection is recorded at launch from the pack that was actually
+sent (ADR-036).
+
+Storage is migration 14: `memories`, `memory_proposals`, `memory_uses`,
+`memory_events`, `memory_conflicts`. API: `memory.propose`, `memory.pending`,
+`memory.approve`, `memory.reject`, `memory.list`, `memory.forRetrieval`,
+`memory.usage`, plus `memory.revise`, `memory.revoke`, and `memory.history`.
+Proof: `docs/proofs/2-memory.md`.
 
 ## 14. Minimal IDE information architecture
 
