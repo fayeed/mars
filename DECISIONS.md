@@ -204,3 +204,31 @@ Status values: proposed, accepted, superseded. These decisions are proposed toge
 - Decision: Embed chunks with a feature-hashing model over case- and punctuation-split identifier tokens, stored as normalized 256-dimension vectors in SQLite alongside the model name. Make no cloud or model-server call. Fuse lexical and semantic results with reciprocal-rank fusion rather than a tuned weighted sum.
 - Rationale: Phase 0 forbids network and model calls, and a reproducible embedder means a chunk's vector changes only when its text does. Recording the model name lets a learned embedder be introduced later without a schema change.
 - Consequence: Semantic recall captures identifier and path overlap, not meaning; it complements lexical search rather than replacing it. Similarity is scanned in memory per repository, which bounds how far this scales before an approximate index is needed.
+
+## ADR-030 — A Brain answer separates fact from inference, and fails closed
+
+- Status: accepted
+- Decision: Model an answer as `claims[]` where each claim is either `fact` — what a cited span of source says, carrying at least one citation — or `inference`, a conclusion that names the claim ids it reasons over. Never merge the two in the data model or in any surface that renders them. Validate the whole answer before returning it: an uncited fact, a fact resting on another claim, a citation the pipeline never supplied, or a duplicate id fails the answer rather than degrading it. Keep `sources`, `retrieved`, `latencyMs`, `confidence`, and `gaps[]` on the answer and surface the counts verbatim.
+- Rationale: A reader who cannot tell an observation from a conclusion cannot calibrate trust, and a fluent uncited assertion is exactly the failure mode a retrieval layer exists to prevent. Degrading an uncited fact into a hedge would preserve the fluency and destroy the accountability; refusing the answer makes the producer's error visible. This extends ADR-022's evidence boundary from durable memory to live retrieval.
+- Consequence: The validator, not the synthesis provider, is what the contract rests on, so a provider may be swapped without renegotiating trust. A caller must handle a contract error as a real outcome. Surfaces owe two visually distinct regions, and a gap list is part of a complete answer rather than an admission of failure.
+
+## ADR-031 — Citations are resolved against the working tree, not the index
+
+- Status: accepted
+- Decision: After synthesis, open every cited file as it is on disk and re-find the cited text. Confirm the span, relabel it when the text has moved within its file, or drop the citation when the text is gone — and drop any claim left resting on nothing, cascading to inferences whose supporting claims all vanished. Report the loss as a `stale` gap. Match on significant lines, ignoring blank lines and indentation, with the first and last lines matched partially because a chunk is a byte range rather than a run of whole lines. Blame an edit for a relabel only when the blob SHA actually changed.
+- Rationale: The index is a projection that can lag the working tree, per ADR-003. Between indexing a chunk and rendering an answer its file may have been edited, moved, or deleted, and a citation that no longer resolves is worse than no citation: it is a wrong answer wearing the costume of evidence. Reformatting should not invalidate a citation while deleting the code should, which is why matching is line-significant rather than byte-exact.
+- Consequence: Every answer costs one read of each cited file. An answer over a heavily edited tree may return fewer claims than retrieval found, which is the correct outcome and is reported rather than hidden. Claim prose must not embed line numbers, since the citation is the authority on location and validation may move it.
+
+## ADR-032 — Context budget packing keeps symbols whole and drops by marginal value
+
+- Status: accepted
+- Decision: Pack the synthesis context against a token budget estimated by a deterministic local approximation rather than any provider's tokenizer. Include a symbol whole or not at all. Select greedily by score-per-token discounted by how much of a candidate is already covered by what is packed, recomputing novelty after each pick, and record a reason for every dropped source.
+- Rationale: A truncated function body makes a model describe behaviour that is not there and cite a range that never contained it, so a partial symbol is worse than an absent one. Ranking by score alone lets a cluster of near-identical chunks consume the budget while the source that would actually answer the question is dropped. Depending on a vendor tokenizer would make what fits a function of which provider is configured.
+- Consequence: Token figures are approximate and deliberately err high. A symbol larger than the whole budget is never included, and says so. Budget pressure is reported as a `budgetExhausted` gap rather than silently narrowing the answer.
+
+## ADR-033 — Synthesis is an injected provider over a deterministic default
+
+- Status: accepted
+- Decision: Define a `SynthesisProvider` trait and ship `DeterministicSynthesizer` as the default, which reads citation-backed structural facts off the packed evidence, makes no network call, and declares the absence of reasoning as a `noReasoning` gap. Give every provider the same system prompt forbidding uncited factual claims and declaring repository content untrusted data, and parse output through a strict schema.
+- Rationale: Project Brain must work, and must be testable, with no model configured — the same constraint Phase 0 accepted for embeddings under ADR-029. A default that describes without concluding is honest; one that generates plausible reasoning from a template would be the exact failure the answer contract exists to prevent.
+- Consequence: Retrieval, packing, and validation are covered by tests that need no provider. A configured model changes the quality of reasoning but cannot widen what counts as a fact. The rendered prompt is inspectable through the CLI harness, so what a model is asked is auditable without running one.

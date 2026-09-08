@@ -1,7 +1,7 @@
 # Mars Architecture
 
-Status: MVP implementation in progress; Proofs A–E implemented, deterministic F path implemented
-Last updated: 2026-08-30
+Status: MVP implementation in progress; Proofs A–E implemented, deterministic F path implemented; Phase 0 indexing and Phase 1 Project Brain implemented
+Last updated: 2026-09-08
 
 ## 1. Concrete MVP restatement
 
@@ -29,6 +29,20 @@ Proof D is implemented. Completed normalized sessions, exact Git diffs, task int
 Proof E is implemented. Provider-neutral implementation events persist alongside redacted raw frames. A completed Claude/Codex session can produce a bounded handoff for the other adapter containing the visible task context, concise implementation/test evidence, and exact untruncated diff plus digest. The shadcn/ui review dialog previews that payload; launch reconstructs it server-side and invokes the reviewer read-only. Strict findings must cite real hunk IDs and in-range lines, persist atomically, and can be resolved/dismissed or sent back as an evidence-backed implementer follow-up. Active worktrees are also compared using real diffs plus indexed symbol spans and one-hop graph edges; evidence-bearing overlap warnings degrade visibly when the index is incomplete. The live Claude → Codex proof is recorded in `docs/proofs/e-cross-agent-review.md`.
 
 Proof F has a complete deterministic production path but not a live GitHub gate. Git remotes normalize behind `ForgeProvider`; GitHub credentials are verified against the current-user endpoint, stored in the native OS keychain, and represented in SQLite only by an opaque reference. Issues import idempotently into durable normalized records and explicitly become task plans. PR creation previews and revalidates the exact fetch/push targets, commit, head/base/title/body, and requires separate push and forge approvals. System Git performs the push; the GitHub provider creates or recovers the matching PR, paginates checks/comments, and persists a restart-safe snapshot. Permission decisions and forge attempts are journaled before their effect, abandoned attempts become interrupted on restart, and a confirmed PR identity is saved before secondary check/comment refresh. The shadcn UI exposes bounded task publish history with plan identity and recovery state, polls PR state while open, and can route a hosted review comment back into the agent prompt. The local proof is recorded in `docs/proofs/f-github.md`; a real disposable repository/issue/token is still required for the external-write gate.
+
+Phase 0 rebuilt the index as the substrate every later feature reads from: ten
+languages, a complete file layer, chunks with local embeddings, Git history, and
+an explicit freshness verdict on every answer. It is recorded in
+`docs/proofs/0-repo-indexing.md`.
+
+Phase 1 is implemented. Project Brain answers questions about a repository with
+citations, as a structured document rather than prose: claims separated into
+facts and inferences that are never merged, citations that resolve back to the
+working tree, the source count and latency reported verbatim, and an explicit
+list of what could not be determined. `brain.ask`, `brain.explain`,
+`brain.whereIsX`, and `brain.dependencies` serve the agent as a tool, the
+desktop as an Ask activity streaming claims as their evidence is confirmed, and
+a CLI harness. It is recorded in `docs/proofs/1-project-brain.md`.
 
 The editor, terminal, agents, context, graph, and Git lifecycle are one product. The MVP does not include an autonomous swarm, hosted collaboration, organization policy, non-GitHub forge parity, broad language support, or automatic merge.
 
@@ -451,6 +465,19 @@ pub trait WorkspaceService {
     async fn remove(&self, request: RemoveWorktreeRequest) -> Result<RemovalPreview>;
 }
 
+pub trait ProjectBrain {
+    fn ask(&self, request: &AskRequest, cancel: &CancellationToken) -> Result<BrainAnswer>;
+    fn ask_observing(
+        &self,
+        request: &AskRequest,
+        cancel: &CancellationToken,
+        observer: impl FnMut(&BrainEvent),
+    ) -> Result<BrainAnswer>;
+    fn explain(&self, repository: &str, symbol: &str, cancel: &CancellationToken) -> Result<BrainAnswer>;
+    fn where_is(&self, repository: &str, concept: &str, cancel: &CancellationToken) -> Result<BrainAnswer>;
+    fn dependencies(&self, repository: &str, target: &str, cancel: &CancellationToken) -> Result<DependencySlice>;
+}
+
 #[async_trait]
 pub trait PermissionService {
     async fn evaluate(&self, request: CapabilityRequest) -> Result<PermissionDecision>;
@@ -626,6 +653,53 @@ Hard rules outrank scores: explicit task attachments and active constraints are 
 Golden tests assert relevance, exclusions, stable ordering, provenance, and budget bounds. Retrieval telemetry stays local and records candidate scores, not sensitive prompt contents by default.
 
 The implemented baseline uses a 24 KiB launch budget and deterministic section shares of 20% instructions, 25% context, 35% code, 10% history, and 10% skills. Required explicit attachments, active constraints, and explicitly task-scoped skills may exceed their soft section share but never the total hard limit. Optional candidates stop at both section and total ceilings. Normalized-content fingerprints suppress duplicates across sections. Before launch, the backend reconstructs the pack from durable entities and the user's removal list and requires exact equality with the preview; a changed pack must be reviewed again.
+
+## 13a. Project Brain answers (Phase 1)
+
+Context packs answer "what should this agent see before it starts". Project
+Brain answers "what is true of this repository, and where does it say so". The
+two share the Phase 0 index and nothing else: a pack is a budgeted bundle handed
+to a provider, while an answer is a validated document handed to a reader.
+
+```text
+question
+  -> query rewrite (deterministic: verbatim, keywords, identifiers, subwords, concepts)
+  -> hybrid retrieval per query, fused by weighted reciprocal rank
+  -> one-hop graph expansion around the top hits
+  -> rerank against the question with named signals
+  -> token-aware budget packing (whole symbols, lowest marginal value dropped)
+  -> synthesis behind a provider trait, uncited facts forbidden by prompt
+  -> validation: resolve every citation against the working tree
+  -> claims streamed as their evidence is confirmed
+```
+
+Rerank signals, each recorded on the packed source that carries them:
+
+```text
+1.00 retrieval (fused rank, normalized)
++ 0.60 term overlap with the question
++ 0.50 identifier match
++ 0.25 path match
++ 0.20 intent fit
+- 0.25 stale
+```
+
+The answer contract is ADR-030: `claims[]` split into `fact` and `inference` and
+never merged, `citations[]` of `{path, lineStart, lineEnd, blobSha, snippet,
+why}`, `sources`/`retrieved`/`latencyMs` surfaced verbatim, `confidence`, and
+`gaps[]` naming what could not be determined. Validation (ADR-031) resolves
+citations against the working tree rather than the index, relabelling text that
+moved and dropping text that is gone along with the claims that rested on it.
+Packing (ADR-032) keeps symbols whole and drops by marginal value. Synthesis
+(ADR-033) sits behind a provider trait over a deterministic default that makes
+no network call.
+
+Entry points: `brain.ask`, `brain.explain(symbolId)`, `brain.whereIsX(concept)`,
+and `brain.dependencies(target)`, the last returning a renderable graph slice
+rather than prose. Consumers are the agent tool, the Tauri commands
+`brain_ask`/`brain_explain`/`brain_where_is`/`brain_dependency_graph` with
+`brain-event` streaming, the desktop Ask activity, and the `mars-brain` CLI
+harness. Proof: `docs/proofs/1-project-brain.md`.
 
 ## 14. Minimal IDE information architecture
 

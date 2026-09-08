@@ -13,12 +13,13 @@ use mars_agents::process::{
 };
 use mars_brain::tools::{BrainEdge, BrainNeighborhood, BrainSymbol, Dependency};
 use mars_brain::{
-    BrainError, BrainService, ContextPack, ContextPackError, ContextPackRequest,
-    ContextPackService, EntityKind, EntityRef, ExtractionError, ExtractionProvider,
-    ExtractionRequest, ExtractionService, FindingStatus, KnowledgeError, KnowledgeKind,
-    KnowledgeRecord, KnowledgeService, MemoryCategory, NewKnowledge, NewProvenance, ProvenanceKind,
-    ReviewError, ReviewHandoff, ReviewHandoffRequest, ReviewProvider, ReviewRecord, ReviewService,
-    WhyAnswer, WhyError, WhyRequest, WhyService, render_context_pack, render_extraction_prompt,
+    AskError, AskRequest, BrainAnswer, BrainError, BrainEvent, BrainService, ContextPack,
+    ContextPackError, ContextPackRequest, ContextPackService, DependencySlice, EntityKind,
+    EntityRef, ExtractionError, ExtractionProvider, ExtractionRequest, ExtractionService,
+    FindingStatus, KnowledgeError, KnowledgeKind, KnowledgeRecord, KnowledgeService,
+    MemoryCategory, NewKnowledge, NewProvenance, ProjectBrain, ProvenanceKind, ReviewError,
+    ReviewHandoff, ReviewHandoffRequest, ReviewProvider, ReviewRecord, ReviewService, WhyAnswer,
+    WhyError, WhyRequest, WhyService, render_context_pack, render_extraction_prompt,
 };
 use mars_context::{CaptureError, ContextItem, ContextService};
 use mars_core::Core;
@@ -53,6 +54,9 @@ use tauri::{AppHandle, Emitter, Manager, State};
 struct AppState {
     agents: ProcessSupervisor,
     brain: BrainService,
+    /// The Phase 1 answer pipeline. Distinct from `brain`, which serves the
+    /// bounded structural queries of ADR-019.
+    project_brain: ProjectBrain,
     context_packs: ContextPackService,
     context: ContextService,
     credentials: OsCredentialVault,
@@ -153,6 +157,8 @@ impl From<IndexError> for CommandFailure {
             IndexError::OutsideRepository(_) => "index.outside_repository",
             IndexError::Walk(_) => "index.walk",
             IndexError::Parse(_) => "index.parse",
+            IndexError::Git(_) => "index.git",
+            IndexError::Watch(_) => "index.watch",
             IndexError::Cancelled { .. } => "index.cancelled",
         };
         Self {
@@ -687,6 +693,135 @@ fn brain_blast_radius(
     state
         .brain
         .blast_radius(&repository_id, &symbol_id, depth, limit)
+        .map_err(Into::into)
+}
+
+impl From<AskError> for CommandFailure {
+    fn from(error: AskError) -> Self {
+        let code = match error {
+            AskError::Storage(_) => "brain.storage",
+            AskError::Index(_) => "brain.index",
+            AskError::RepositoryNotFound(_) => "brain.repository_not_found",
+            AskError::EmptyQuestion => "brain.empty_question",
+            AskError::SymbolNotFound(_) => "brain.symbol_not_found",
+            AskError::TargetNotFound(_) => "brain.target_not_found",
+            AskError::InvalidBudget(_) => "brain.invalid_budget",
+            AskError::Provider(_) => "brain.provider",
+            AskError::InvalidOutput(_) => "brain.invalid_output",
+            AskError::UnknownSource { .. } => "brain.unknown_source",
+            AskError::UnknownSupport { .. } => "brain.unknown_support",
+            AskError::DuplicateClaim(_) => "brain.duplicate_claim",
+            // A contract violation is the validator refusing to emit an answer
+            // that would blur fact and inference. It is reported as such rather
+            // than as a generic failure.
+            AskError::Contract(_) => "brain.contract",
+            AskError::Cancelled { .. } => "brain.cancelled",
+        };
+        Self::new(code, error.to_string())
+    }
+}
+
+/// The event name a Brain answer streams on. One channel per question, keyed by
+/// the caller's `stream_id`, so two questions in flight cannot interleave.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BrainStreamPayload {
+    stream_id: String,
+    event: BrainEvent,
+}
+
+/// Streams pipeline events to the webview when the caller supplied a stream id.
+fn emit_brain_events(app: &AppHandle, stream_id: Option<&String>, event: &BrainEvent) {
+    let Some(stream_id) = stream_id else {
+        return;
+    };
+    let _ = app.emit(
+        "brain-event",
+        BrainStreamPayload {
+            stream_id: stream_id.clone(),
+            event: event.clone(),
+        },
+    );
+}
+
+#[tauri::command]
+fn brain_ask(
+    repository_id: String,
+    question: String,
+    budget_tokens: Option<usize>,
+    max_sources: Option<usize>,
+    stream_id: Option<String>,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<BrainAnswer, CommandFailure> {
+    let mut request = AskRequest::new(repository_id, question);
+    if let Some(budget) = budget_tokens {
+        request.budget_tokens = budget;
+    }
+    if let Some(sources) = max_sources {
+        request.max_sources = sources;
+    }
+    state
+        .project_brain
+        .ask_observing(
+            &request,
+            &tokio_util::sync::CancellationToken::new(),
+            |event| emit_brain_events(&app, stream_id.as_ref(), event),
+        )
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+fn brain_explain(
+    repository_id: String,
+    symbol_id: String,
+    stream_id: Option<String>,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<BrainAnswer, CommandFailure> {
+    state
+        .project_brain
+        .explain_observing(
+            &repository_id,
+            &symbol_id,
+            &tokio_util::sync::CancellationToken::new(),
+            |event| emit_brain_events(&app, stream_id.as_ref(), event),
+        )
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+fn brain_where_is(
+    repository_id: String,
+    concept: String,
+    stream_id: Option<String>,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<BrainAnswer, CommandFailure> {
+    state
+        .project_brain
+        .where_is_observing(
+            &repository_id,
+            &concept,
+            &tokio_util::sync::CancellationToken::new(),
+            |event| emit_brain_events(&app, stream_id.as_ref(), event),
+        )
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+fn brain_dependency_graph(
+    repository_id: String,
+    target: String,
+    state: State<'_, AppState>,
+) -> Result<DependencySlice, CommandFailure> {
+    state
+        .project_brain
+        .dependencies(
+            &repository_id,
+            &target,
+            &tokio_util::sync::CancellationToken::new(),
+        )
         .map_err(Into::into)
 }
 
@@ -1657,6 +1792,10 @@ fn main() {
             app.manage(AppState {
                 agents,
                 brain: BrainService::new(storage.clone()),
+                project_brain: ProjectBrain::new(
+                    storage.clone(),
+                    Arc::new(mars_indexer::api::IndexApi::new(storage.clone())),
+                ),
                 context_packs: ContextPackService::new(storage.clone()),
                 context: ContextService::new(storage.clone(), data_dir.join("artifacts")),
                 credentials: OsCredentialVault,
@@ -1694,6 +1833,10 @@ fn main() {
             brain_dependencies,
             brain_related_code,
             brain_blast_radius,
+            brain_ask,
+            brain_explain,
+            brain_where_is,
+            brain_dependency_graph,
             capture_text_context,
             capture_context_bytes,
             search_context,
