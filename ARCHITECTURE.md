@@ -1,6 +1,6 @@
 # Mars Architecture
 
-Status: MVP implementation in progress; Proofs A–E implemented, deterministic F path implemented; Phase 0 indexing, Phase 1 Project Brain, and Phase 2 memory implemented
+Status: MVP implementation in progress; Proofs A–E implemented, deterministic F path implemented; Phase 0 indexing, Phase 1 Project Brain, Phase 2 memory, and the Phase 3 execution core implemented
 Last updated: 2026-09-08
 
 ## 1. Concrete MVP restatement
@@ -42,6 +42,14 @@ and conflicting memories block approval until a person chooses which survives.
 Approved memories reach agents through the context pack as instructions, and
 every injection is recorded so a memory can say which tasks it has shaped. It is
 recorded in `docs/proofs/2-memory.md`.
+
+Phase 3 is implemented in the core. The execution path is four services over
+one log: agents behind a single interface whose capabilities are decided by role
+at construction, worktrees that exist only after a fingerprinted plan is
+approved, a permission broker every side effect passes through, and an
+append-only activity record that the UI, crash recovery, and export all replay.
+Nothing auto-resumes after a crash. It is recorded in
+`docs/proofs/3-foundations.md`.
 
 Phase 1 is implemented. Project Brain answers questions about a repository with
 citations, as a structured document rather than prose: claims separated into
@@ -755,6 +763,130 @@ Storage is migration 14: `memories`, `memory_proposals`, `memory_uses`,
 `memory.approve`, `memory.reject`, `memory.list`, `memory.forRetrieval`,
 `memory.usage`, plus `memory.revise`, `memory.revoke`, and `memory.history`.
 Proof: `docs/proofs/2-memory.md`.
+
+## 13c. Execution core (Phase 3)
+
+Phases 0–2 built what Mars knows. Phase 3 builds what it does: four services
+that every agent action passes through, and one log that all of them write to.
+
+```text
+worktree plan --approved--> worktree            (mutation-free until approved)
+        |                       |
+        v                       v
+    agent (role) --effect--> permission broker --pending--> human
+        |                       |                              |
+        |                    grant/deny <---------------------- decision
+        v
+   activity record  <-- everything above, in order, append-only
+        |
+        +--> replay --> the UI, crash recovery, export
+```
+
+### The activity record
+
+One append-only log per task (`activity_events`), with a monotonic sequence
+assigned inside the insert transaction, wall-clock time, an optional duration,
+and either an inline payload or the digest of a content-addressed one. Payloads
+over 8 KiB — command output, diffs, test results — spill to a SHA-256 object
+store, so identical output across runs is stored once and event rows stay
+pageable.
+
+Immutability is enforced by triggers, not by convention: `BEFORE UPDATE` aborts,
+and `BEFORE DELETE` aborts unless the parent task is already gone (ADR-037).
+
+The vocabulary is `message`, `thought`, `tool_call`, `command`, `file_edit`,
+`test_run`, `permission_request`, `permission_decision`, `error`, `done`, plus
+the lifecycle kinds `run_started`, `worktree_planned`, `worktree_created`,
+`worktree_removed`, `worktree_restored`, and `recovery_noted`.
+
+`replay()` folds the log into a `TaskProjection` — runs and their states, pending
+and decided permissions, files touched, commands, tests, errors, worktree state.
+Nothing in that projection reads a status column, which is what makes reload,
+crash recovery, and export agree. `export()` emits the log as NDJSON with
+spilled payloads resolved inline.
+
+### Agents
+
+One `Agent` trait over every backend: `capabilities()`, `start(task, context)`,
+a streaming `events` channel, `respond_to_permission()`, `interrupt()`, and
+`status()`. `CliAgent` implements it over the existing adapters and process
+supervisor.
+
+An agent is selected per task *and per role*. `AgentRole::Reviewer` constructs a
+`CapabilityCeiling` with no writes, no network, and no push, and that ceiling
+reaches three places: the launch command (built without write tools), the broker
+(which refuses rather than asks), and the pack preview (which filters the tool
+list). A reviewing agent is read-only by construction (ADR-038).
+
+The event pump decodes adapter frames, records each event, then acts on it. A
+command, or a write outside the plan's declared file scope, goes to the broker
+*before* it is reported as having happened.
+
+### The permission broker
+
+Every side effect passes through it: shell commands, file writes outside the
+declared scope, network egress, pushes. Commands are classified `read_only`,
+`mutating`, `destructive`, or `network`, failing towards the dangerous reading —
+an unrecognised program is mutating, a chain takes its worst link, a redirect
+makes a read into a write.
+
+A request that no live grant covers writes a `pending` row, appears in the task
+conversation, and blocks the agent on a ticket. Four answers: allow once, allow
+for this task, allow for this pattern, deny. A denial ends the run: the reason
+is emitted, the process cancelled, the run settled to `cancelled` before `done`
+(ADR-039).
+
+Grants are durable objects — scoped, expiring (10 minutes / 12 hours / 24 hours),
+and revocable from Settings, with revocation written as a timestamp so the
+transcript keeps its history. Every timestamp comes from SQLite, so grants,
+requests, and expiry checks share one clock and one comparable format.
+
+### Worktree plans
+
+A `WorktreeProposal` is produced without mutating anything: base ref *and the
+commit it resolved to*, branch, path, expected file scope, setup commands, disk
+report, and preflight findings — base moved, dirty base, path occupied, branch
+exists, low disk, risky setup command — each with resolutions that state their
+consequence.
+
+The plan is fingerprinted over what it *decides*, deliberately excluding free
+space and preflight findings, which are readings of a moving world; those are
+re-checked separately at approval and provisioning (ADR-040). Provisioning
+rebuilds the plan and refuses a fingerprint that no longer matches, then runs
+the approved setup commands in the new worktree, recording each with its output.
+
+Base drift keeps the pinned commit and raises a blocking finding naming both
+commits, offering rebase, recreate, or continue-and-diverge. Choosing to diverge
+is recorded so the same question is not asked twice; moving to a new base
+withdraws the approval.
+
+Cleanup previews what it would remove — uncommitted files, commits ahead of
+base, reversibility — archives the branch tip to `refs/mars/archive/<branch>`
+*before* touching the working tree, and can be restored to the same path at the
+same commit (ADR-041).
+
+### Crash recovery
+
+On start, `RecoveryService::detect()` finds runs that were not terminal when
+Mars stopped. It is read-only: it changes no status and starts no process.
+For each it reconstructs, from the log, what was in flight (commands with no
+outcome, unanswered permission requests), what was written to disk (with each
+file checked for presence), and what cannot be verified. Three choices are
+offered, each stating its consequence: resume in the same worktree, discard the
+run and keep the files, or reset and run again. Nothing auto-resumes. The human's
+choice is written to the log before it is carried out.
+
+### The context pack
+
+`RunContextPack` extends the retrieval pack with the two things retrieval cannot
+know — the tools the agent is given and the permissions it holds — and carries
+the prompt verbatim. The digest is over that prompt, and the agent is launched
+with exactly that string, so preview and launch compare byte for byte (ADR-042).
+`revalidate()` refuses a pack that changed after approval.
+
+Storage is migration 15: `activity_events`, `activity_payloads`, `agent_runs`,
+`permission_requests`, `permission_grants`, `worktree_plans`,
+`worktree_cleanups`. Proof: `docs/proofs/3-foundations.md`.
 
 ## 14. Minimal IDE information architecture
 
