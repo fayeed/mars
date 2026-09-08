@@ -1,6 +1,7 @@
 import type {
   ActivityEvent,
   ActivityPayload,
+  BrainAnswer as BrainAnswerValue,
   CommandFailure,
   ContextItem,
   FileDocument,
@@ -8,10 +9,13 @@ import type {
   IndexStatus,
   InterruptedRun,
   MemoryProposal,
+  FindingStatus,
   PendingPermissionRequest,
   PermissionDecisionChoice,
   ProjectSnapshot,
   RecoveryAction,
+  ReviewFinding,
+  ReviewRecord,
   RunContextPack,
   SetupCommandInput,
   SkillInstallation,
@@ -29,6 +33,11 @@ import { ActivityLog } from "@/features/activity/ActivityLog";
 import { CompletionSummary } from "@/features/activity/CompletionSummary";
 import { InterruptedRunRecovery } from "@/features/activity/InterruptedRunRecovery";
 import { RunStatusLine, runActivityState } from "@/features/activity/RunStatusLine";
+import { BrainAnswerMessage } from "@/features/brain/BrainAnswerMessage";
+import { ApprovalGate } from "@/features/review/ApprovalGate";
+import { DiffReview } from "@/features/review/DiffReview";
+import { ReviewFindings } from "@/features/review/ReviewFindings";
+import { parseUnifiedDiff, untrackedFiles, type DiffFile } from "@/features/review/unified-diff";
 import { PermissionRequestMessage } from "@/features/agents/PermissionRequestMessage";
 import { RunContextReview } from "@/features/agents/RunContextReview";
 import { BrainAnswer } from "@/features/brain/BrainAnswer";
@@ -206,6 +215,28 @@ export function ShellWorkspace({
   const [recoveryBusy, setRecoveryBusy] = useState(false);
   const [proposals, setProposals] = useState<MemoryProposal[]>([]);
   const [interrupting, setInterrupting] = useState(false);
+
+  const [diff, setDiff] = useState<{
+    taskId: string;
+    files: DiffFile[];
+    headOid: string | null;
+    branchName: string;
+  } | null>(null);
+  const [diffState, setDiffState] = useState<ActivityState>("idle");
+  const [diffError, setDiffError] = useState<string | null>(null);
+
+  const [review, setReview] = useState<ReviewRecord | null>(null);
+  const [reviewState, setReviewState] = useState<ActivityState>("idle");
+  const [busyFindingId, setBusyFindingId] = useState<string | null>(null);
+
+  /** A brain question and its answer, as a turn in the conversation. */
+  const [ask, setAsk] = useState<{
+    id: string;
+    question: string;
+    answer: BrainAnswerValue | null;
+    state: ActivityState;
+    error: string | null;
+  } | null>(null);
 
   const [index, setIndex] = useState<IndexStatus | null>(null);
   const [indexState, setIndexState] = useState<ActivityState>("loading");
@@ -459,6 +490,62 @@ export function ShellWorkspace({
     setNotes((current) => [...current, { id: crypto.randomUUID(), state, text }]);
   }
 
+  /**
+   * Read the change in the task worktree.
+   *
+   * Untracked files are listed alongside the diff because a diff against HEAD
+   * cannot mention a file Git has never seen, and a review that silently
+   * omitted every new file would be worse than no review.
+   */
+  const loadDiff = useCallback(
+    (taskId: string, branch: string) =>
+      invoke<{
+        diff: string;
+        untracked: string[];
+        headOid: string | null;
+        branchName: string;
+      }>("task_diff", { taskId })
+        .then((result) => {
+          setDiff({
+            taskId,
+            files: [...parseUnifiedDiff(result.diff), ...untrackedFiles(result.untracked)],
+            headOid: result.headOid,
+            branchName: result.branchName || branch,
+          });
+          setDiffState("idle");
+          setDiffError(null);
+        })
+        .catch((caught: unknown) => {
+          setDiffError(messageFor(caught));
+          setDiffState("failed");
+        }),
+    [],
+  );
+
+  useEffect(() => {
+    if (!selectedTaskId || !selectedTask || selectedTask.state !== "ready") return;
+    void loadDiff(selectedTaskId, selectedTask.branchName);
+  }, [loadDiff, selectedTask, selectedTaskId, reloadToken]);
+
+  useEffect(() => {
+    if (!selectedTaskId) return;
+    let active = true;
+    invoke<ReviewRecord[]>("list_task_reviews", { taskId: selectedTaskId })
+      .then((records) => {
+        if (!active) return;
+        setReview(records.at(-1) ?? null);
+        setReviewState("idle");
+      })
+      .catch(() => {
+        if (!active) return;
+        setReview(null);
+        setReviewState("failed");
+      });
+    return () => {
+      active = false;
+    };
+  }, [selectedTaskId, reloadToken]);
+
   /** Assemble the pack for a provisioned task, excluding what was removed. */
   const buildPack = useCallback(
     async (taskId: string, excluded: string[]) => {
@@ -491,6 +578,14 @@ export function ShellWorkspace({
    * the plan is assembled from reads, shown as a message, and waits.
    */
   async function submit(text: string) {
+    // `/ask` is a question about the repository, not work to be done. It needs
+    // no branch and no worktree, so it never becomes a task.
+    const asked = /^\/ask\s+/.exec(text);
+    if (asked) {
+      await askBrain(text.slice(asked[0].length));
+      return;
+    }
+
     setAssignment(text);
     setPlanState("loading");
     setPlanError(null);
@@ -598,6 +693,78 @@ export function ShellWorkspace({
       note(`The recovery choice could not be recorded: ${messageFor(caught)}`, "failed");
     } finally {
       setRecoveryBusy(false);
+    }
+  }
+
+  /**
+   * A line comment is a message about the task, so it goes where every other
+   * message about the task goes. Nothing is stored beside the diff.
+   */
+  async function comment(path: string, line: number, text: string, side: "old" | "new") {
+    if (!selectedTaskId) return;
+    try {
+      await invoke("record_message", {
+        taskId: selectedTaskId,
+        text: `${path}:${line}${side === "old" ? " (before the change)" : ""} — ${text}`,
+      });
+      await loadRecord(selectedTaskId);
+    } catch (caught) {
+      note(`The comment could not be recorded: ${messageFor(caught)}`, "failed");
+    }
+  }
+
+  async function decideFinding(finding: ReviewFinding, status: FindingStatus) {
+    setBusyFindingId(finding.id);
+    try {
+      await invoke("set_review_finding_status", { findingId: finding.id, status });
+      setReloadToken((token) => token + 1);
+    } catch (caught) {
+      note(`The finding could not be updated: ${messageFor(caught)}`, "failed");
+    } finally {
+      setBusyFindingId(null);
+    }
+  }
+
+  /**
+   * Approval is a message. Who released this change and what they said about it
+   * belongs in the same record as everything else that happened to the task.
+   */
+  async function approve(noteText: string) {
+    if (!selectedTaskId) return;
+    const outstanding = (review?.findings ?? []).filter(
+      (finding) => finding.status === "open" || finding.status === "sent",
+    );
+    try {
+      await invoke("record_message", {
+        taskId: selectedTaskId,
+        text:
+          `Approved this change for release.` +
+          (noteText ? `\n\n${noteText}` : "") +
+          (outstanding.length > 0
+            ? `\n\nApproved with ${outstanding.length} finding(s) still open.`
+            : ""),
+      });
+      await loadRecord(selectedTaskId);
+    } catch (caught) {
+      note(`The approval could not be recorded: ${messageFor(caught)}`, "failed");
+    }
+  }
+
+  /** Ask the project brain, in the conversation, and answer there too. */
+  async function askBrain(question: string) {
+    const id = crypto.randomUUID();
+    setAsk({ id, question, answer: null, state: "loading", error: null });
+    try {
+      const answer = await invoke<BrainAnswerValue>("brain_ask", {
+        repositoryId: project.repositoryId,
+        question,
+        budgetTokens: null,
+        maxSources: null,
+        streamId: null,
+      });
+      setAsk({ id, question, answer, state: "idle", error: null });
+    } catch (caught) {
+      setAsk({ id, question, answer: null, state: "failed", error: messageFor(caught) });
     }
   }
 
@@ -834,6 +1001,47 @@ export function ShellWorkspace({
           />
         </div>
       ) : null}
+      {review ? (
+        <div className="border-b border-border">
+          <ReviewFindings
+            busyFindingId={busyFindingId}
+            implementerLabel={AGENTS.find((agent) => agent.id === agentId)?.name}
+            onAskForFix={(finding) =>
+              setDraft(
+                `${finding.relativePath}:${finding.line} — ${finding.title}\n\n` +
+                  `${finding.body}\n\nFix this.`,
+              )
+            }
+            onDecide={(finding, status) => void decideFinding(finding, status)}
+            onOpenFinding={(path, line) => void openFile(path, false, line)}
+            review={review}
+            state={reviewState}
+          />
+        </div>
+      ) : null}
+
+      {projection && diff && diff.files.length > 0 ? (
+        <ApprovalGate
+          branchName={diff.branchName}
+          onApprove={(noteText) => void approve(noteText)}
+          outstanding={(review?.findings ?? []).filter(
+            (finding) => finding.status === "open" || finding.status === "sent",
+          )}
+          projection={projection}
+        />
+      ) : null}
+
+      {ask ? (
+        <BrainAnswerMessage
+          answer={ask.answer}
+          error={ask.error}
+          key={ask.id}
+          onOpenCitation={(path, line) => void openFile(path, false, line)}
+          question={ask.question}
+          state={ask.state}
+        />
+      ) : null}
+
       {noteRows}
     </>
   );
@@ -859,7 +1067,8 @@ export function ShellWorkspace({
 
   // The conversation is never empty of purpose: with nothing recorded it is the
   // repository home, and with a record it is that record.
-  const hasRecord = events.length > 0 || notes.length > 0 || recovery.length > 0;
+  const hasRecord =
+    events.length > 0 || notes.length > 0 || recovery.length > 0 || ask !== null;
   const conversationBody = hasRecord ? (
     transcript
   ) : selectedTask ? (
@@ -895,7 +1104,21 @@ export function ShellWorkspace({
           state: fileError ? "failed" : "idle",
           detail: activePath ?? undefined,
         },
-        "source-control": { state: "idle" },
+        "source-control": {
+          content: (
+            <DiffReview
+              branchName={diff?.branchName}
+              error={diffError}
+              files={diff?.taskId === selectedTaskId ? diff.files : []}
+              headOid={diff?.headOid}
+              onComment={(path, line, text, side) => void comment(path, line, text, side)}
+              onOpenFile={(path, line) => void openFile(path, false, line)}
+              state={diffState}
+            />
+          ),
+          state: diffError ? "failed" : "idle",
+          detail: diff?.taskId === selectedTaskId ? `${diff.files.length} file(s)` : undefined,
+        },
       }}
       conversation={{
         title: selectedTask?.title ?? project.name,
