@@ -7,5 +7,6 @@ export * from "./context";
 export * from "./context-pack";
 export * from "./skills";
 export * from "./knowledge";
+export * from "./memory";
 export * from "./reviews";
 export * from "./forge";
