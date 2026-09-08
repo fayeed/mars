@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 libc.workspace = true
+mars-activity.workspace = true
 mars-security.workspace = true
 mars-storage.workspace = true
 rusqlite.workspace = true

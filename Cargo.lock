@@ -2294,6 +2294,7 @@ name = "mars-agents"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "mars-activity",
  "mars-core",
  "mars-git",
  "mars-security",
