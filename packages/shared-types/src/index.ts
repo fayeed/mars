@@ -10,3 +10,7 @@ export * from "./knowledge";
 export * from "./memory";
 export * from "./reviews";
 export * from "./forge";
+export * from "./activity";
+export * from "./permissions";
+export * from "./worktree-plan";
+export * from "./agent-runtime";
