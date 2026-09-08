@@ -11,11 +11,13 @@ use mars_security::TrustDecision;
 use mars_storage::Storage;
 
 pub struct GitFixture {
-    _directory: TestDirectory,
+    // Declaration order is drop order: the database must close before the
+    // directory holding it is removed, or Windows refuses to delete the file.
+    pub storage: Arc<Storage>,
     pub repository_id: String,
     pub repository_root: PathBuf,
-    pub storage: Arc<Storage>,
     pub worktrees_root: PathBuf,
+    _directory: TestDirectory,
 }
 
 impl GitFixture {
@@ -57,11 +59,11 @@ impl GitFixture {
         };
 
         Self {
-            _directory: directory,
+            storage,
             repository_id: project.repository_id,
             repository_root,
-            storage,
             worktrees_root,
+            _directory: directory,
         }
     }
 }
@@ -108,8 +110,10 @@ impl TestDirectory {
 
 impl Drop for TestDirectory {
     fn drop(&mut self) {
+        // Best effort: a failure to clean up must not turn an assertion failure
+        // into a process abort by panicking while the first panic unwinds.
         if self.0.exists() {
-            fs::remove_dir_all(&self.0).expect("fixture should be removable");
+            let _ = fs::remove_dir_all(&self.0);
         }
     }
 }

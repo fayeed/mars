@@ -7,7 +7,7 @@ use std::sync::Arc;
 use mars_storage::projects::{ProjectRecord, ProjectRepository};
 use mars_storage::{Storage, StorageError};
 use rusqlite::{OptionalExtension, params};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use thiserror::Error;
 use time::OffsetDateTime;
@@ -28,7 +28,7 @@ type WorktreeRow = (
     String,
 );
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorktreeState {
     Planned,
@@ -41,7 +41,8 @@ pub enum WorktreeState {
 }
 
 impl WorktreeState {
-    fn as_str(self) -> &'static str {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Planned => "planned",
             Self::Provisioning => "provisioning",
@@ -118,6 +119,26 @@ pub enum TaskWorktreeError {
     PathCollision(PathBuf),
     #[error("stored worktree state is invalid: {0}")]
     InvalidStoredState(String),
+    #[error("task `{0}` has no worktree plan")]
+    PlanNotFound(String),
+    #[error("task `{task_id}` was approved as plan {approved} but the plan is now {current}")]
+    PlanChanged {
+        task_id: String,
+        approved: String,
+        current: String,
+    },
+    #[error("task `{task_id}` has not been approved")]
+    PlanNotApproved { task_id: String },
+    #[error("task `{task_id}` cannot be provisioned: {detail}")]
+    PlanBlocked { task_id: String, detail: String },
+    #[error("setup command `{command}` failed: {detail}")]
+    SetupCommandFailed { command: String, detail: String },
+    #[error("cleanup `{0}` does not exist")]
+    CleanupNotFound(String),
+    #[error("cleanup `{cleanup_id}` cannot be restored: {state}")]
+    CleanupNotRestorable { cleanup_id: String, state: String },
+    #[error("failed to record worktree activity: {0}")]
+    Activity(String),
     #[error("filesystem operation failed for {path}: {source}")]
     Filesystem {
         path: PathBuf,
