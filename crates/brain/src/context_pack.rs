@@ -107,6 +107,8 @@ pub enum ContextPackError {
     InvalidBudget,
     #[error("approved memories could not be retrieved for this pack: {0}")]
     Memory(String),
+    #[error("the pack approved as {approved} is now {current}")]
+    PackChanged { approved: String, current: String },
 }
 
 #[derive(Clone)]

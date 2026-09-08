@@ -10,6 +10,7 @@ pub mod query;
 pub mod retrieval;
 pub mod review;
 pub mod rewrite;
+pub mod run_pack;
 pub mod synthesis;
 pub mod tools;
 mod validate;
@@ -55,6 +56,10 @@ pub use review::{
     FindingSeverity, FindingStatus, HandoffEvent, ReviewDraft, ReviewError, ReviewFinding,
     ReviewFindingDraft, ReviewHandoff, ReviewHandoffRequest, ReviewProvider, ReviewRecord,
     ReviewService, ReviewStatus, ReviewVerdict, render_review_prompt,
+};
+pub use run_pack::{
+    PackEntry, PermissionsView, RunContextPack, RunContextPackBuilder, RunPackRequest,
+    StandingGrant, ToolGrant,
 };
 pub use tools::{BrainEdge, BrainNeighborhood, BrainSymbol, Dependency};
 pub use why_query::{
