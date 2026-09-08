@@ -42,13 +42,14 @@ use mars_forge::{
 };
 use mars_forge_github::GitHubProvider;
 use mars_git::{
-    OverlapError, OverlapWarning, PlanRequest, SetupCommand, TaskOverlapService,
-    TaskWorktreeError, TaskWorktreeService, WorktreePlan, WorktreePlanner, WorktreeProposal,
+    BaseDrift, DriftChoice, OverlapError, OverlapWarning, PlanRequest, SetupCommand,
+    TaskOverlapService, TaskWorktreeError, TaskWorktreeService, WorktreePlan, WorktreePlanner,
+    WorktreeProposal,
 };
 use mars_indexer::{IndexError, IndexSummary, Indexer};
 use mars_security::{
-    BrokerDecision, BrokerOutcome, CapabilityCeiling, PendingRequest, PermissionBroker,
-    TrustDecision,
+    BrokerDecision, BrokerOutcome, CapabilityCeiling, GrantView, PendingRequest,
+    PermissionBroker, TrustDecision,
 };
 use mars_security::permissions::{
     Capability, PermissionAudit, PermissionDecision, PermissionError, PermissionOutcome,
@@ -908,6 +909,229 @@ fn starting_points(
     }
 
     Ok(points)
+}
+
+/// Hybrid search over the code index: lexical and semantic, fused.
+#[tauri::command]
+fn search_code(
+    repository_id: String,
+    query: String,
+    limit: usize,
+    state: State<'_, AppState>,
+) -> Result<mars_indexer::api::SearchResults, CommandFailure> {
+    mars_indexer::api::IndexApi::new(state.storage.clone())
+        .search_hybrid(
+            &repository_id,
+            &query,
+            limit.clamp(1, 100),
+            &mars_indexer::search::SearchFilters::default(),
+        )
+        .map_err(Into::into)
+}
+
+/// Every grant ever made, with whether it is still live. Pass a task to narrow
+/// it; omit it for the whole machine, which is what Settings shows.
+#[tauri::command]
+fn permission_grants(
+    task_id: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<Vec<GrantView>, CommandFailure> {
+    state
+        .broker
+        .grants(task_id.as_deref())
+        .map_err(Into::into)
+}
+
+/// Withdraw a standing grant. Who revoked it is filled in here, not asserted by
+/// the webview.
+#[tauri::command]
+fn revoke_permission_grant(
+    grant_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), CommandFailure> {
+    state
+        .broker
+        .revoke(&grant_id, &local_actor())
+        .map_err(Into::into)
+}
+
+/// Whether the base moved out from under a task, and what can be done about it.
+/// `None` means it did not.
+#[tauri::command]
+fn task_base_drift(
+    task_id: String,
+    state: State<'_, AppState>,
+) -> Result<Option<BaseDrift>, CommandFailure> {
+    state.planner.base_drift(&task_id).map_err(Into::into)
+}
+
+/// Act on drift. Every branch of this records what was chosen and why.
+#[tauri::command]
+fn resolve_task_base_drift(
+    task_id: String,
+    choice: DriftChoice,
+    state: State<'_, AppState>,
+) -> Result<WorktreeProposal, CommandFailure> {
+    state
+        .planner
+        .resolve_base_drift(&task_id, choice, &local_actor())
+        .map_err(Into::into)
+}
+
+/// One hit in the command palette, whatever kind of thing it points at.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PaletteHit {
+    kind: String,
+    /// What to show. Already the most specific name the thing has.
+    label: String,
+    /// Where it is, in the terms that kind of thing is addressed by.
+    detail: String,
+    /// Enough to jump: a task id, a `path`, a `path:line`, or a memory id.
+    target: String,
+    /// Line to reveal, when the target is a file.
+    line: Option<usize>,
+    /// The task a message belongs to, so a jump can select it first.
+    task_id: Option<String>,
+    sequence: Option<i64>,
+}
+
+/// One search across everything Mars knows: tasks, messages, files, symbols and
+/// memories.
+///
+/// Each kind is queried on its own terms and capped on its own, so a repository
+/// with ten thousand files cannot crowd out the one memory that answers the
+/// question. Nothing is ranked across kinds, because there is no honest way to
+/// compare a file name to an approved memory; the caller groups them instead.
+#[tauri::command]
+fn search_everything(
+    repository_id: String,
+    project_id: String,
+    query: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<PaletteHit>, CommandFailure> {
+    let needle = query.trim().to_lowercase();
+    if needle.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut hits = Vec::new();
+
+    for task in state.tasks.list(&repository_id).unwrap_or_default() {
+        if task.title.to_lowercase().contains(&needle)
+            || task.branch_name.to_lowercase().contains(&needle)
+        {
+            hits.push(PaletteHit {
+                kind: "task".into(),
+                label: task.title.clone(),
+                detail: task.branch_name.clone(),
+                target: task.task_id.clone(),
+                line: None,
+                task_id: Some(task.task_id.clone()),
+                sequence: None,
+            });
+        }
+        if hits.len() >= 8 {
+            break;
+        }
+    }
+
+    // Messages are read per task because the log is per task; a global text
+    // index over the transcript does not exist and is not worth faking.
+    let mut messages = 0;
+    for task in state.tasks.list(&repository_id).unwrap_or_default() {
+        if messages >= 8 {
+            break;
+        }
+        for event in state.activity.read(&task.task_id, 0, 500).unwrap_or_default() {
+            if event.kind != ActivityKind::Message {
+                continue;
+            }
+            let text = event
+                .payload
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or(&event.summary);
+            if !text.to_lowercase().contains(&needle) {
+                continue;
+            }
+            hits.push(PaletteHit {
+                kind: "message".into(),
+                label: text.lines().next().unwrap_or_default().to_owned(),
+                detail: format!("{} · {}", task.title, event.actor_label),
+                target: task.task_id.clone(),
+                line: None,
+                task_id: Some(task.task_id.clone()),
+                sequence: Some(event.sequence),
+            });
+            messages += 1;
+            if messages >= 8 {
+                break;
+            }
+        }
+    }
+
+    if let Ok(page) = state.files.list_files(&repository_id, None, 2000) {
+        for entry in page.entries.iter().take(2000) {
+            if entry.relative_path.to_lowercase().contains(&needle) {
+                hits.push(PaletteHit {
+                    kind: "file".into(),
+                    label: entry
+                        .relative_path
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or(&entry.relative_path)
+                        .to_owned(),
+                    detail: entry.relative_path.clone(),
+                    target: entry.relative_path.clone(),
+                    line: None,
+                    task_id: None,
+                    sequence: None,
+                });
+            }
+            if hits.iter().filter(|hit| hit.kind == "file").count() >= 8 {
+                break;
+            }
+        }
+    }
+
+    if let Ok(symbols) = state.brain.find_symbol(&repository_id, &query, 8) {
+        for symbol in symbols {
+            hits.push(PaletteHit {
+                kind: "symbol".into(),
+                label: symbol.name.clone(),
+                detail: format!("{}:{}", symbol.relative_path, symbol.start_line),
+                target: symbol.relative_path.clone(),
+                line: Some(symbol.start_line),
+                task_id: None,
+                sequence: None,
+            });
+        }
+    }
+
+    if let Ok(memories) = state.memory.list(&MemoryFilters {
+        project_id,
+        repository_id: Some(repository_id.clone()),
+        task_id: None,
+        scopes: Vec::new(),
+        kinds: Vec::new(),
+        statuses: Vec::new(),
+        contains: Some(query.clone()),
+        limit: Some(8),
+    }) {
+        for memory in memories {
+            hits.push(PaletteHit {
+                kind: "memory".into(),
+                label: memory.text.clone(),
+                detail: format!("{} · {}", memory.kind.as_str(), memory.scope.as_str()),
+                target: memory.id.clone(),
+                line: None,
+                task_id: memory.task_id.clone(),
+                sequence: None,
+            });
+        }
+    }
+
+    Ok(hits)
 }
 
 #[tauri::command]
@@ -3036,6 +3260,12 @@ fn main() {
             index_status,
             starting_points,
             find_symbols,
+            search_code,
+            search_everything,
+            permission_grants,
+            revoke_permission_grant,
+            task_base_drift,
+            resolve_task_base_drift,
             brain_references,
             brain_callers,
             brain_callees,

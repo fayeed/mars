@@ -52,3 +52,55 @@ export interface StartingPoint {
   /** What picking this would put in the composer. */
   prompt: string;
 }
+
+export type Retrieval = "lexical" | "semantic" | "hybrid";
+
+export interface SearchHit {
+  chunkId: string;
+  relativePath: string;
+  symbolPath: string;
+  header: string;
+  body: string;
+  language: string;
+  startLine: number;
+  endLine: number;
+  blobSha: string;
+  score: number;
+  retrieval: Retrieval;
+  lexicalRank: number | null;
+  semanticRank: number | null;
+}
+
+export type FreshnessState = "fresh" | "stale" | "missing" | "unknown";
+
+export interface Freshness {
+  state: FreshnessState;
+  relativePath: string;
+  indexedBlobSha: string | null;
+  currentBlobSha: string | null;
+}
+
+export interface SearchResults {
+  query: string;
+  hits: SearchHit[];
+  freshness: Freshness[];
+  /** True when any hit rests on a file that changed since it was indexed. */
+  containsStale: boolean;
+}
+
+/**
+ * One hit in the command palette, whatever kind of thing it points at.
+ *
+ * Nothing is ranked across kinds: there is no honest way to compare a file name
+ * to an approved memory, so results are grouped rather than interleaved.
+ */
+export interface PaletteHit {
+  kind: "task" | "message" | "file" | "symbol" | "memory";
+  label: string;
+  detail: string;
+  /** A task id, a path, or a memory id, depending on `kind`. */
+  target: string;
+  line: number | null;
+  taskId: string | null;
+  sequence: number | null;
+}

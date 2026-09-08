@@ -1,19 +1,26 @@
 import type {
   ActivityEvent,
   ActivityPayload,
+  BaseDrift,
+  DriftChoice,
   BrainAnswer as BrainAnswerValue,
   CommandFailure,
   ContextItem,
   FileDocument,
   FilePage,
+  GrantView,
+  AdapterProbe,
   IndexStatus,
   InterruptedRun,
+  Memory,
+  MemoryFilters,
   MemoryProposal,
   FindingStatus,
   PendingPermissionRequest,
   PermissionDecisionChoice,
   PlannedCheck,
   PullRequestPlan,
+  PullRequestSnapshot,
   ProjectSnapshot,
   RecoveryAction,
   ReviewFinding,
@@ -22,6 +29,8 @@ import type {
   RunContextPack,
   SetupCommandInput,
   SkillInstallation,
+  PaletteHit,
+  SearchResults,
   StartingPoint,
   TaskCommit,
   TaskProjection,
@@ -39,6 +48,21 @@ import { CompletionSummary } from "@/features/activity/CompletionSummary";
 import { InterruptedRunRecovery } from "@/features/activity/InterruptedRunRecovery";
 import { RunStatusLine, runActivityState } from "@/features/activity/RunStatusLine";
 import { BrainAnswerMessage } from "@/features/brain/BrainAnswerMessage";
+import { BrainExplorer } from "@/features/brain/BrainExplorer";
+import { LibraryOverlay, type LibraryTab } from "@/features/library/LibraryOverlay";
+import { MemoryBrowser, type MemoryFilterState } from "@/features/memory/MemoryBrowser";
+import { CommandPalette } from "@/features/palette/CommandPalette";
+import { PullRequestActivity } from "@/features/forge/PullRequestActivity";
+import { Settings } from "@/features/settings/Settings";
+import { SkillsLibrary } from "@/features/skills/SkillsLibrary";
+import { SourceControl } from "@/features/review/SourceControl";
+import { BaseDriftMessage } from "@/features/tasks/BaseDriftMessage";
+import {
+  ChecksPanel,
+  ProblemsPanel,
+  TestsPanel,
+  problemsFromProjection,
+} from "@/features/utility/UtilityPanels";
 import { FocusMode } from "@/features/focus/FocusMode";
 import { PublishPreview } from "@/features/forge/PublishPreview";
 import { ApprovalGate } from "@/features/review/ApprovalGate";
@@ -47,7 +71,6 @@ import { ReviewFindings } from "@/features/review/ReviewFindings";
 import { parseUnifiedDiff, untrackedFiles, type DiffFile } from "@/features/review/unified-diff";
 import { PermissionRequestMessage } from "@/features/agents/PermissionRequestMessage";
 import { RunContextReview } from "@/features/agents/RunContextReview";
-import { BrainAnswer } from "@/features/brain/BrainAnswer";
 import { FileExplorer } from "@/features/explorer/FileExplorer";
 import { RepositoryHome, indexActivityState } from "@/features/home/RepositoryHome";
 import { CreateTaskDialog } from "@/features/tasks/CreateTaskDialog";
@@ -235,6 +258,39 @@ export function ShellWorkspace({
   const [review, setReview] = useState<ReviewRecord | null>(null);
   const [reviewState, setReviewState] = useState<ActivityState>("idle");
   const [busyFindingId, setBusyFindingId] = useState<string | null>(null);
+
+  const [library, setLibrary] = useState<LibraryTab | null>(null);
+  const [agentProbes, setAgentProbes] = useState<
+    { id: string; name: string; probe: AdapterProbe | null; error: string | null }[]
+  >([]);
+  const [probeState, setProbeState] = useState<ActivityState>("idle");
+
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [paletteHits, setPaletteHits] = useState<PaletteHit[]>([]);
+  const [paletteState, setPaletteState] = useState<ActivityState>("idle");
+
+  const [memories, setMemories] = useState<Memory[]>([]);
+  const [memoryState, setMemoryState] = useState<ActivityState>("idle");
+  const [memoryFilters, setMemoryFilters] = useState<MemoryFilterState>({
+    scopes: [],
+    kinds: [],
+    statuses: [],
+    contains: "",
+  });
+  const [busyMemoryId, setBusyMemoryId] = useState<string | null>(null);
+
+  const [grants, setGrants] = useState<GrantView[]>([]);
+  const [grantsState, setGrantsState] = useState<ActivityState>("idle");
+  const [busyGrantId, setBusyGrantId] = useState<string | null>(null);
+
+  const [drift, setDrift] = useState<BaseDrift | null>(null);
+  const [driftBusy, setDriftBusy] = useState(false);
+
+  const [pullRequest, setPullRequest] = useState<PullRequestSnapshot | null>(null);
+  const [pullRequestState, setPullRequestState] = useState<ActivityState>("idle");
+
+  const [searchResults, setSearchResults] = useState<SearchResults | null>(null);
+  const [searchState, setSearchState] = useState<ActivityState>("idle");
 
   const [focus, setFocus] = useState(false);
   /** Log length when focus mode was entered, so "new" means new to the reader. */
@@ -873,6 +929,98 @@ export function ShellWorkspace({
     }
   }
 
+  const loadMemories = useCallback(
+    (filters: MemoryFilterState) => {
+      setMemoryState("loading");
+      return invoke<Memory[]>("memory_list", {
+        filters: {
+          projectId: project.projectId,
+          repositoryId: project.repositoryId,
+          scopes: filters.scopes,
+          kinds: filters.kinds,
+          statuses: filters.statuses,
+          contains: filters.contains || null,
+          limit: 200,
+        } satisfies MemoryFilters,
+      })
+        .then((items) => {
+          setMemories(items);
+          setMemoryState("idle");
+        })
+        .catch(() => setMemoryState("failed"));
+    },
+    [project.projectId, project.repositoryId],
+  );
+
+  useEffect(() => {
+    void loadMemories(memoryFilters);
+  }, [loadMemories, memoryFilters]);
+
+  useEffect(() => {
+    if (library !== "settings" || agentProbes.length > 0) return;
+    setProbeState("loading");
+    void Promise.all(
+      AGENTS.map((agent) =>
+        invoke<AdapterProbe>("probe_agent", { adapter: agent.id })
+          .then((probe) => ({ id: agent.id, name: agent.name, probe, error: null }))
+          .catch((caught: unknown) => ({
+            id: agent.id,
+            name: agent.name,
+            probe: null,
+            error: messageFor(caught),
+          })),
+      ),
+    ).then((probes) => {
+      setAgentProbes(probes);
+      setProbeState("idle");
+    });
+  }, [agentProbes.length, library]);
+
+  const loadGrants = useCallback(() => {
+    setGrantsState("loading");
+    return invoke<GrantView[]>("permission_grants", { taskId: null })
+      .then((items) => {
+        setGrants(items);
+        setGrantsState("idle");
+      })
+      .catch(() => setGrantsState("failed"));
+  }, []);
+
+  useEffect(() => {
+    void loadGrants();
+  }, [loadGrants]);
+
+  // Drift is read per task: the base can only move under a plan that pinned it.
+  useEffect(() => {
+    if (!selectedTaskId) return;
+    let active = true;
+    invoke<BaseDrift | null>("task_base_drift", { taskId: selectedTaskId })
+      .then((found) => {
+        if (active) setDrift(found);
+      })
+      .catch(() => {
+        if (active) setDrift(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [selectedTaskId, reloadToken]);
+
+  useEffect(() => {
+    if (!selectedTaskId) return;
+    let active = true;
+    invoke<PullRequestSnapshot | null>("get_task_pull_request", { taskId: selectedTaskId })
+      .then((snapshot) => {
+        if (active) setPullRequest(snapshot);
+      })
+      .catch(() => {
+        if (active) setPullRequest(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [selectedTaskId, reloadToken]);
+
   /** Ask the project brain, in the conversation, and answer there too. */
   async function askBrain(question: string) {
     const id = crypto.randomUUID();
@@ -889,6 +1037,110 @@ export function ShellWorkspace({
     } catch (caught) {
       setAsk({ id, question, answer: null, state: "failed", error: messageFor(caught) });
     }
+  }
+
+  async function revokeGrant(grant: GrantView) {
+    setBusyGrantId(grant.id);
+    try {
+      await invoke("revoke_permission_grant", { grantId: grant.id });
+      await loadGrants();
+    } catch (caught) {
+      note(`The grant could not be revoked: ${messageFor(caught)}`, "failed");
+    } finally {
+      setBusyGrantId(null);
+    }
+  }
+
+  async function memoryAction(id: string, run: () => Promise<unknown>) {
+    setBusyMemoryId(id);
+    try {
+      await run();
+      await loadMemories(memoryFilters);
+      const items = await invoke<MemoryProposal[]>("memory_pending", {
+        filters: { projectId: project.projectId },
+      }).catch(() => [] as MemoryProposal[]);
+      setProposals(items);
+    } catch (caught) {
+      note(`That memory could not be updated: ${messageFor(caught)}`, "failed");
+    } finally {
+      setBusyMemoryId(null);
+    }
+  }
+
+  async function resolveDrift(choice: DriftChoice) {
+    if (!selectedTaskId) return;
+    setDriftBusy(true);
+    try {
+      await invoke("resolve_task_base_drift", { taskId: selectedTaskId, choice });
+      setDrift(null);
+      setReloadToken((token) => token + 1);
+      await loadRecord(selectedTaskId);
+    } catch (caught) {
+      note(`The base drift could not be resolved: ${messageFor(caught)}`, "failed");
+    } finally {
+      setDriftBusy(false);
+    }
+  }
+
+  const runSearch = useCallback(
+    (query: string) => {
+      setSearchState("loading");
+      invoke<SearchResults>("search_code", {
+        repositoryId: project.repositoryId,
+        query,
+        limit: 20,
+      })
+        .then((found) => {
+          setSearchResults(found);
+          setSearchState("idle");
+        })
+        .catch(() => setSearchState("failed"));
+    },
+    [project.repositoryId],
+  );
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "p") {
+        event.preventDefault();
+        setPaletteOpen((open) => !open);
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  function searchPalette(query: string) {
+    if (query.trim().length === 0) {
+      setPaletteHits([]);
+      return;
+    }
+    setPaletteState("loading");
+    invoke<PaletteHit[]>("search_everything", {
+      repositoryId: project.repositoryId,
+      projectId: project.projectId,
+      query,
+    })
+      .then((hits) => {
+        setPaletteHits(hits);
+        setPaletteState("idle");
+      })
+      .catch(() => setPaletteState("failed"));
+  }
+
+  /** A palette hit is a place, and each kind is reached its own way. */
+  function jumpTo(hit: PaletteHit) {
+    setPaletteOpen(false);
+    if (hit.kind === "task" || hit.kind === "message") {
+      if (hit.taskId) setSelectedTaskId(hit.taskId);
+      dispatch({ type: "navigate", destination: "conversation" });
+      return;
+    }
+    if (hit.kind === "file" || hit.kind === "symbol") {
+      void openFile(hit.target, false, hit.line);
+      return;
+    }
+    dispatch({ type: "openInspector", tab: "brain" });
   }
 
   function toggleEntry(entityRef: string, included: boolean) {
@@ -1012,6 +1264,8 @@ export function ShellWorkspace({
   const events = current?.events ?? [];
   const projection = current?.projection ?? null;
   const pending = current?.pending ?? [];
+
+  const problems = useMemo(() => problemsFromProjection(projection), [projection]);
 
   const activeRun = projection?.runs.at(-1) ?? null;
   const latestEvent = events.at(-1) ?? null;
@@ -1172,6 +1426,40 @@ export function ShellWorkspace({
         />
       ) : null}
 
+      {drift ? (
+        <BaseDriftMessage
+          busy={driftBusy}
+          drift={drift}
+          onResolve={(choice) => void resolveDrift(choice)}
+        />
+      ) : null}
+
+      {pullRequest ? (
+        <PullRequestActivity
+          onOpenFile={(path, line) => void openFile(path, false, line)}
+          onOpenUrl={(url) => void invoke("open_external_url", { url }).catch(() => undefined)}
+          onRefresh={() => {
+            if (!selectedTaskId) return;
+            setPullRequestState("loading");
+            invoke<PullRequestSnapshot>("refresh_github_pull_request", { taskId: selectedTaskId })
+              .then((snapshot) => {
+                setPullRequest(snapshot);
+                setPullRequestState("idle");
+              })
+              .catch(() => setPullRequestState("failed"));
+          }}
+          onReplyWithFix={(comment) =>
+            setDraft(
+              `${comment.author} wrote on ${comment.path ?? "the pull request"}` +
+                `${comment.line === null ? "" : `:${comment.line}`}:\n\n` +
+                `${comment.body}\n\nAnswer this with a fix.`,
+            )
+          }
+          snapshot={pullRequest}
+          state={pullRequestState}
+        />
+      ) : null}
+
       {publish ? (
         <PublishPreview
           busy={publish.busy}
@@ -1228,7 +1516,9 @@ export function ShellWorkspace({
     notes.length > 0 ||
     recovery.length > 0 ||
     ask !== null ||
-    publish !== null;
+    publish !== null ||
+    drift !== null ||
+    pullRequest !== null;
   const conversationBody = hasRecord ? (
     transcript
   ) : selectedTask ? (
@@ -1295,8 +1585,106 @@ export function ShellWorkspace({
   }
 
   return (
-    <ShellFrame
+    <>
+      <CommandPalette
+        hits={paletteHits}
+        onClose={() => setPaletteOpen(false)}
+        onJump={jumpTo}
+        onSearch={searchPalette}
+        open={paletteOpen}
+        state={paletteState}
+      />
+      <LibraryOverlay
+        memories={
+          <MemoryBrowser
+            busyId={busyMemoryId}
+            filters={memoryFilters}
+            memories={memories}
+            onApprove={(proposal, editedText) =>
+              void memoryAction(proposal.id, () =>
+                invoke("memory_approve", {
+                  request: { proposalId: proposal.id, editedText },
+                }),
+              )
+            }
+            onFilters={setMemoryFilters}
+            onJumpToOrigin={(conversationId) => {
+              // The conversation a memory came from is a task's log.
+              setSelectedTaskId(conversationId);
+              setLibrary(null);
+              dispatch({ type: "navigate", destination: "conversation" });
+            }}
+            onReject={(proposal, reason) =>
+              void memoryAction(proposal.id, () =>
+                invoke("memory_reject", { request: { proposalId: proposal.id, reason } }),
+              )
+            }
+            onRevise={(memory, text) =>
+              void memoryAction(memory.id, () =>
+                invoke("memory_revise", { request: { memoryId: memory.id, text } }),
+              )
+            }
+            onRevoke={(memory, reason) =>
+              void memoryAction(memory.id, () =>
+                invoke("memory_revoke", { request: { memoryId: memory.id, reason } }),
+              )
+            }
+            proposals={proposals}
+            state={memoryState}
+          />
+        }
+        onClose={() => setLibrary(null)}
+        onTab={setLibrary}
+        open={library !== null}
+        settings={
+          <Settings
+            agents={agentProbes}
+            agentsState={probeState}
+            busyGrantId={busyGrantId}
+            connection={null}
+            grants={grants}
+            grantsState={grantsState}
+            index={index}
+            onConnectGitHub={() =>
+              note("Connecting GitHub needs a token; that flow is not on this screen yet.", "queued")
+            }
+            onReindex={() => {
+              setIndexState("loading");
+              invoke("index_repository", { repositoryId: project.repositoryId })
+                .then(loadIndex)
+                .catch(() => setIndexState("failed"));
+            }}
+            onRevokeGrant={(grant) => void revokeGrant(grant)}
+            repositoryName={project.name}
+            storage={null}
+          />
+        }
+        skills={
+          <SkillsLibrary
+            busyId={null}
+            onRemove={(skill) =>
+              void invoke("remove_skill_installation", { installationId: skill.id })
+                .then(() => setReloadToken((token) => token + 1))
+                .catch((caught: unknown) =>
+                  note(`The skill could not be removed: ${messageFor(caught)}`, "failed"),
+                )
+            }
+            onToggleAdapter={() =>
+              note(
+                "Turning a skill on or off per agent is not wired to a command yet; the skill's " +
+                  "text and scope above are read from what is installed.",
+                "queued",
+              )
+            }
+            skills={skills}
+            state={taskSkills ? "idle" : "loading"}
+          />
+        }
+        tab={library ?? "memories"}
+      />
+      <ShellFrame
       accountLabel="Local profile"
+      onAccount={() => setLibrary("memories")}
       taskRail={{
         tasks: shellTasks,
         selectedTaskId,
@@ -1318,14 +1706,22 @@ export function ShellWorkspace({
         },
         "source-control": {
           content: (
-            <DiffReview
-              branchName={diff?.branchName}
-              error={diffError}
-              files={diff?.taskId === selectedTaskId ? diff.files : []}
-              headOid={diff?.headOid}
-              onComment={(path, line, text, side) => void comment(path, line, text, side)}
-              onOpenFile={(path, line) => void openFile(path, false, line)}
-              state={diffState}
+            <SourceControl
+              diff={
+                <DiffReview
+                  branchName={diff?.branchName}
+                  error={diffError}
+                  files={diff?.taskId === selectedTaskId ? diff.files : []}
+                  headOid={diff?.headOid}
+                  onComment={(path, line, text, side) => void comment(path, line, text, side)}
+                  onOpenFile={(path, line) => void openFile(path, false, line)}
+                  state={diffState}
+                />
+              }
+              onSelectTask={setSelectedTaskId}
+              selectedTaskId={selectedTaskId}
+              tasks={tasks}
+              worktreeState={worktreeActivityState}
             />
           ),
           state: diffError ? "failed" : "idle",
@@ -1427,9 +1823,14 @@ export function ShellWorkspace({
             </ul>
           ) : undefined,
           brain: (
-            <BrainAnswer
-              onOpenSource={(path, line) => void openFile(path, false, line)}
-              repositoryId={project.repositoryId}
+            <BrainExplorer
+              onExplore={(target) => runSearch(target)}
+              onOpen={(path, line) => void openFile(path, false, line)}
+              onSearch={runSearch}
+              results={searchResults}
+              searchState={searchState}
+              slice={null}
+              sliceState="idle"
             />
           ),
         },
@@ -1442,7 +1843,49 @@ export function ShellWorkspace({
         },
       }}
       utility={{
-        content: { terminal: <TerminalPanel project={project} /> },
+        content: {
+          terminal: <TerminalPanel project={project} />,
+          problems: (
+            <ProblemsPanel
+              onOpen={(path, line) => void openFile(path, false, line)}
+              problems={problems}
+              state={eventsState}
+            />
+          ),
+          tests: (
+            <TestsPanel
+              onOpenOutput={(digest) => {
+                void loadPayload(digest).then((payload) =>
+                  note(payload.text.slice(0, 4000), "done"),
+                );
+              }}
+              onRerun={(command) => setDraft(`Run ${command} again and report what changed.`)}
+              projection={projection}
+              state={eventsState}
+            />
+          ),
+          checks: (
+            <ChecksPanel
+              checks={pullRequest?.checks ?? []}
+              onOpenUrl={(url) => void invoke("open_external_url", { url }).catch(() => undefined)}
+              onRefresh={() => setReloadToken((token) => token + 1)}
+              state={pullRequestState}
+            />
+          ),
+        },
+        statuses: {
+          problems:
+            problems.length > 0 ? { state: "failed", count: problems.length } : undefined,
+          tests: projection
+            ? {
+                state: projection.tests.some((test) => test.status === "failed")
+                  ? "failed"
+                  : "idle",
+                count: projection.tests.length,
+              }
+            : undefined,
+          checks: pullRequest ? { state: "idle", count: pullRequest.checks.length } : undefined,
+        },
       }}
       status={{
         repository: project.name,
@@ -1462,6 +1905,7 @@ export function ShellWorkspace({
         },
         connection,
       }}
-    />
+      />
+    </>
   );
 }

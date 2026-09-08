@@ -30,6 +30,7 @@ export type WorkbenchSurfaces = Partial<
 
 export interface ShellFrameProps {
   accountLabel?: string;
+  onAccount?: () => void;
   conversation?: ConversationColumnProps;
   inspector?: InspectorProps;
   status?: StatusBarProps;
@@ -53,6 +54,7 @@ const WORKBENCH_TITLE: Record<Exclude<Destination, "conversation">, string> = {
  */
 export function ShellFrame({
   accountLabel,
+  onAccount,
   conversation = {},
   inspector = {},
   status = {},
@@ -137,7 +139,7 @@ export function ShellFrame({
   return (
     <div className="flex h-screen min-w-[820px] flex-col overflow-hidden bg-sunken text-foreground">
       <div className="flex min-h-0 flex-1">
-        <AppRail accountLabel={accountLabel} />
+        <AppRail accountLabel={accountLabel} onAccount={onAccount} />
         <TaskRail {...taskRail} />
 
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">

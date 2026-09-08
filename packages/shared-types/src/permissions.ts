@@ -77,3 +77,10 @@ export type PermissionOutcomeView =
       byConstruction: boolean;
     }
   | { outcome: "pending"; requestId: string };
+
+/**
+ * The name the core gives a grant when Settings lists them. Identical to
+ * `PermissionGrant`; aliased so a reader can match the command's return type to
+ * the type they find here.
+ */
+export type GrantView = PermissionGrant;

@@ -34,7 +34,14 @@ const themeMeta: Record<ThemeMode, { icon: ComponentType<{ className?: string }>
  * Three destinations, then theme and account. Nothing else is ever added here:
  * the rail says where you are, not what you can do.
  */
-export function AppRail({ accountLabel = "Account" }: { accountLabel?: string }) {
+export function AppRail({
+  accountLabel = "Account",
+  onAccount,
+}: {
+  accountLabel?: string;
+  /** Opens the management surfaces, which are not destinations. */
+  onAccount?: () => void;
+}) {
   const { dispatch, focusRegion, layout } = useShell();
   const theme = useTheme();
   const ThemeIcon = themeMeta[theme.mode].icon;
@@ -70,7 +77,7 @@ export function AppRail({ accountLabel = "Account" }: { accountLabel?: string })
         <ThemeIcon />
         <span className="sr-only">{themeMeta[theme.mode].label}</span>
       </RailButton>
-      <RailButton marker="none" title={accountLabel}>
+      <RailButton marker="none" title={accountLabel} onClick={onAccount}>
         <CircleUserIcon />
         <span className="sr-only">{accountLabel}</span>
       </RailButton>
