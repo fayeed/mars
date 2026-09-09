@@ -57,6 +57,7 @@ import {
 } from "react";
 
 import { ActivityLog } from "@/features/activity/ActivityLog";
+import { AuditExport } from "@/features/activity/AuditExport";
 import { CompletionSummary } from "@/features/activity/CompletionSummary";
 import { InterruptedRunRecovery } from "@/features/activity/InterruptedRunRecovery";
 import { RunStatusLine, runActivityState } from "@/features/activity/RunStatusLine";
@@ -330,6 +331,7 @@ export function ShellWorkspace({
 
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [auditOpen, setAuditOpen] = useState(false);
   const [paletteHits, setPaletteHits] = useState<PaletteHit[]>([]);
   const [paletteState, setPaletteState] = useState<ActivityState>("idle");
 
@@ -1940,18 +1942,26 @@ export function ShellWorkspace({
         tab={library ?? "memories"}
       />
       <ShortcutSheet onClose={() => setShortcutsOpen(false)} open={shortcutsOpen} />
+      <AuditExport
+        onClose={() => setAuditOpen(false)}
+        open={auditOpen}
+        taskId={selectedTaskId}
+        taskTitle={selectedTask?.title}
+      />
       <ShellFrame
       accountLabel="Local profile"
       onAccount={() => setLibrary("memories")}
       keys={{
         onPalette: () => setPaletteOpen((open) => !open),
         onShortcuts: () => setShortcutsOpen((open) => !open),
+        onAudit: () => setAuditOpen((open) => !open),
         // The composer is promised to be one key away, so reaching it takes
         // down whatever is covering it rather than leaving a dialog stranded
         // on screen with the cursor behind it.
         onDismissModals: () => {
           setPaletteOpen(false);
           setShortcutsOpen(false);
+          setAuditOpen(false);
           setLibrary(null);
         },
       }}

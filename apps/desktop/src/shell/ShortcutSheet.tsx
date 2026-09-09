@@ -24,6 +24,7 @@ const GROUPS: { label: string; ids: string[] }[] = [
     label: "Panels",
     ids: ["toggle.taskRail", "toggle.inspector", "toggle.utility"],
   },
+  { label: "Record", ids: ["open.audit"] },
 ];
 
 /**

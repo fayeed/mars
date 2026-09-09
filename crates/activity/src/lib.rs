@@ -13,6 +13,7 @@
 //! Because the log holds everything, reload, crash recovery, and export are the
 //! same operation at different times: replay it.
 
+pub mod audit;
 pub mod payloads;
 pub mod record;
 pub mod recovery;
@@ -23,6 +24,7 @@ use std::path::PathBuf;
 
 use thiserror::Error;
 
+pub use audit::{MAX_EVENTS as AUDIT_MAX_EVENTS, MAX_PAYLOAD_BYTES as AUDIT_MAX_PAYLOAD_BYTES};
 pub use payloads::{PayloadStore, StoredPayload};
 pub use record::{
     ActivityEntry, ActivityEvent, ActivityKind, ActivityRecord, ActivityWindow, Actor, Attachment,
@@ -66,4 +68,8 @@ pub enum ActivityError {
     InvalidStoredStatus(String),
     #[error("stored run role is invalid: {0}")]
     InvalidStoredRole(String),
+    /// A record too large to render as one document. Refused loudly rather than
+    /// exported partially: an audit is whole or it is not an audit.
+    #[error("{0}")]
+    TooLargeToRender(String),
 }

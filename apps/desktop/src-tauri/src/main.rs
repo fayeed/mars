@@ -1995,6 +1995,53 @@ fn task_activity(
         .map_err(Into::into)
 }
 
+/// What was written, and how much of it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AuditExport {
+    path: String,
+    byte_size: usize,
+}
+
+/// A task's whole record as a document a person can read.
+///
+/// Rendered from the append-only log and nothing else — no status column, no
+/// cached summary — so what the document says and what the transcript shows
+/// cannot disagree. Returned rather than written so the UI can show it before
+/// anybody decides where it should go.
+#[tauri::command]
+fn task_audit(task_id: String, state: State<'_, AppState>) -> Result<String, CommandFailure> {
+    state
+        .activity
+        .audit_markdown_now(&task_id)
+        .map_err(Into::into)
+}
+
+/// Write that document to a path the person chose in the OS save dialog.
+///
+/// The destination is theirs, so this does not second-guess it; it does refuse
+/// to render a task whose record is too large to be one document rather than
+/// writing a partial file that looks whole.
+#[tauri::command]
+fn write_task_audit(
+    task_id: String,
+    destination: String,
+    state: State<'_, AppState>,
+) -> Result<AuditExport, CommandFailure> {
+    let document = state.activity.audit_markdown_now(&task_id)?;
+    let path = PathBuf::from(&destination);
+    std::fs::write(&path, document.as_bytes()).map_err(|error| {
+        CommandFailure::new(
+            "audit.write",
+            format!("the audit could not be written to {destination}: {error}"),
+        )
+    })?;
+    Ok(AuditExport {
+        path: destination,
+        byte_size: document.len(),
+    })
+}
+
 /// The newest page of a task's record, and how much sits before it.
 ///
 /// The conversation reads from the end. `task_activity` walks forward from the
@@ -3375,6 +3422,8 @@ fn main() {
             task_worktree_file,
             task_activity,
             task_activity_window,
+            task_audit,
+            write_task_audit,
             task_projection,
             activity_payload,
             task_runs,

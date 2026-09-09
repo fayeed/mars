@@ -52,6 +52,7 @@ export const SHELL_BINDINGS: readonly ShellBinding[] = [
   binding("focus.composer", { key: "l", mod: true }, "Focus composer"),
   binding("open.palette", { key: "p", mod: true }, "Search everything"),
   binding("open.shortcuts", { key: "/", mod: true }, "Keyboard shortcuts"),
+  binding("open.audit", { key: "e", mod: true, shift: true }, "Export this task's activity record"),
   binding("focus.next", { key: "F6" }, "Next region"),
   binding("focus.previous", { key: "F6", shift: true }, "Previous region"),
 ];
@@ -65,7 +66,12 @@ export const SHELL_BINDINGS: readonly ShellBinding[] = [
  * in the other direction: the composer is *never* more than one key away, so
  * this closes whatever is open on the way there rather than refusing.
  */
-const MODAL_SAFE: readonly string[] = ["open.palette", "open.shortcuts", "focus.composer"];
+const MODAL_SAFE: readonly string[] = [
+  "open.palette",
+  "open.shortcuts",
+  "open.audit",
+  "focus.composer",
+];
 
 export function matchesChord(event: KeyboardEvent, chord: KeyChord): boolean {
   const modPressed = isApple ? event.metaKey : event.ctrlKey;
@@ -91,6 +97,8 @@ export interface ShellKeymapHandlers {
   onPalette?: () => void;
   /** Opens the keyboard reference. */
   onShortcuts?: () => void;
+  /** Opens the selected task's activity record as a document. */
+  onAudit?: () => void;
   /**
    * Dismisses whatever modal surface is open.
    *
@@ -128,6 +136,12 @@ export function useShellKeymap(handlers: ShellKeymapHandlers = {}) {
       if (match.id === "open.shortcuts") {
         event.preventDefault();
         handlersRef.current.onShortcuts?.();
+        return;
+      }
+
+      if (match.id === "open.audit") {
+        event.preventDefault();
+        handlersRef.current.onAudit?.();
         return;
       }
 
