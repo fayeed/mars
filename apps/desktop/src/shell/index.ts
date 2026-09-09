@@ -35,7 +35,15 @@ export {
   useShellKeymap,
   type KeyChord,
   type ShellBinding,
+  type ShellKeymapHandlers,
 } from "@/shell/keymap";
+export {
+  focusableWithin,
+  useModalFocus,
+  wrapTabTarget,
+  type ModalFocusOptions,
+} from "@/shell/modal";
+export { ShortcutSheet, type ShortcutSheetProps } from "@/shell/ShortcutSheet";
 export type {
   ComposerAgent,
   ComposerAttachment,

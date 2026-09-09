@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 
 import { cn } from "@/lib/utils";
+import { useModalFocus } from "@/shell/modal";
 import { KeyHint, MetaLabel } from "@/shell/primitives";
 
 export type LibraryTab = "memories" | "skills" | "settings";
@@ -39,6 +40,12 @@ export function LibraryOverlay({
   skills,
   tab,
 }: LibraryOverlayProps) {
+  // Escape used to be handled on the backdrop, which only worked while focus
+  // was already inside; nothing put it there, and nothing took it back on
+  // close. This contains focus while the overlay is up and returns it to
+  // whatever opened it.
+  const { ref, onBackdropMouseDown } = useModalFocus<HTMLDivElement>({ active: open, onClose });
+
   if (!open) return null;
 
   const active = TABS.find((candidate) => candidate.id === tab) ?? TABS[0];
@@ -46,18 +53,15 @@ export function LibraryOverlay({
   return (
     <div
       className="fixed inset-0 z-40 flex items-center justify-center bg-sunken/70 p-8"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
-      }}
-      onKeyDown={(event) => {
-        if (event.key === "Escape") onClose();
-      }}
+      onMouseDown={onBackdropMouseDown}
     >
       <div
+        ref={ref}
         role="dialog"
         aria-modal="true"
         aria-label="Library"
-        className="flex h-full w-[min(60rem,96vw)] flex-col border border-border bg-surface"
+        tabIndex={-1}
+        className="flex h-full w-[min(60rem,96vw)] flex-col border border-border bg-surface outline-none"
       >
         <header className="flex shrink-0 items-center gap-1 border-b border-border px-2 py-1.5">
           <div role="tablist" aria-label="Library sections" className="flex items-center gap-1">

@@ -1,11 +1,14 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { describe, expect, it } from "vitest";
 
 import { Composer } from "./Composer";
+import { SHELL_BINDINGS } from "./keymap";
 import type { ComposerAgent, ShellTask } from "./model";
 import { ShellFrame } from "./ShellFrame";
 import { ShellProvider } from "./shell-store";
+import { ShortcutSheet } from "./ShortcutSheet";
 import { ThemeProvider } from "./theme";
 
 const agents: ComposerAgent[] = [
@@ -212,5 +215,80 @@ describe("status bar", () => {
     const status = screen.getByRole("contentinfo", { name: "Status" });
     expect(within(status).getByText("mars/broker")).toBeVisible();
     expect(within(status).getByText("2 pending")).toBeVisible();
+  });
+});
+
+describe("tab strips are walkable", () => {
+  it("keeps focus with the selection so a second arrow steps on from the first", async () => {
+    // The roving tabindex used to change the selection without moving focus.
+    // Focus stayed on the tab it started from, so every further arrow press
+    // stepped from there — pressing Right twice landed on the same tab both
+    // times, and the strip could not be walked at all.
+    const user = userEvent.setup();
+    renderShell();
+
+    const strip = screen.getByRole("tablist", { name: "Utility panel" });
+    const tabs = within(strip).getAllByRole("tab");
+    tabs[0].focus();
+
+    await user.keyboard("{ArrowRight}");
+    expect(tabs[1]).toHaveFocus();
+    await user.keyboard("{ArrowRight}");
+    expect(tabs[2]).toHaveFocus();
+    await user.keyboard("{ArrowLeft}");
+    expect(tabs[1]).toHaveFocus();
+  });
+
+  it("wraps around the end of the strip", async () => {
+    const user = userEvent.setup();
+    renderShell();
+
+    const strip = screen.getByRole("tablist", { name: "Utility panel" });
+    const tabs = within(strip).getAllByRole("tab");
+    tabs[0].focus();
+
+    await user.keyboard("{ArrowLeft}");
+    expect(tabs[tabs.length - 1]).toHaveFocus();
+  });
+});
+
+describe("the keyboard is documented from the keyboard", () => {
+  it("opens the shortcut sheet on its own binding and lists every shell chord", async () => {
+    const user = userEvent.setup();
+
+    function WithSheet() {
+      const [open, setOpen] = useState(false);
+      return (
+        <>
+          <ShortcutSheet onClose={() => setOpen(false)} open={open} />
+          <ShellFrame
+            conversation={{ composer: <Composer agents={agents} /> }}
+            keys={{ onShortcuts: () => setOpen((current) => !current) }}
+          />
+        </>
+      );
+    }
+
+    const memory = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => memory.get(key) ?? null,
+      setItem: (key: string, value: string) => void memory.set(key, value),
+    };
+    render(
+      <ThemeProvider storage={storage}>
+        <ShellProvider storage={storage}>
+          <WithSheet />
+        </ShellProvider>
+      </ThemeProvider>,
+    );
+
+    await user.keyboard("{Control>}/{/Control}");
+    const sheet = screen.getByRole("dialog", { name: "Keyboard shortcuts" });
+
+    // Generated from SHELL_BINDINGS rather than transcribed, so a binding
+    // cannot be added without appearing here.
+    for (const binding of SHELL_BINDINGS) {
+      expect(within(sheet).getByText(binding.label)).toBeVisible();
+    }
   });
 });

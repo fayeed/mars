@@ -103,6 +103,7 @@ import { Mono, StateBlock, StateLabel } from "@/shell/primitives";
 import { anchorPaths, type BlobAnchor } from "@/shell/staleness";
 import { useWorkingTreeShas } from "@/lib/working-tree";
 import { ShellFrame } from "@/shell/ShellFrame";
+import { ShortcutSheet } from "@/shell/ShortcutSheet";
 import { useShell } from "@/shell/shell-store";
 
 const CodeEditor = lazy(() =>
@@ -286,7 +287,9 @@ export function ShellWorkspace({
   // the window the reader is actually on, or answering a prompt would silently
   // drop the earlier turns they had just asked for.
   const recordLimitRef = useRef(RECORD_PAGE);
-  recordLimitRef.current = recordLimit;
+  useEffect(() => {
+    recordLimitRef.current = recordLimit;
+  }, [recordLimit]);
   const [eventsState, setEventsState] = useState<ActivityState>("idle");
   const [decidingId, setDecidingId] = useState<string | null>(null);
   const [permissionError, setPermissionError] = useState<string | null>(null);
@@ -317,6 +320,7 @@ export function ShellWorkspace({
   const [probeState, setProbeState] = useState<ActivityState>("idle");
 
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [paletteHits, setPaletteHits] = useState<PaletteHit[]>([]);
   const [paletteState, setPaletteState] = useState<ActivityState>("idle");
 
@@ -1285,17 +1289,6 @@ export function ShellWorkspace({
     [project.repositoryId],
   );
 
-  useEffect(() => {
-    function onKeyDown(event: KeyboardEvent) {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "p") {
-        event.preventDefault();
-        setPaletteOpen((open) => !open);
-      }
-    }
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
-
   function searchPalette(query: string) {
     if (query.trim().length === 0) {
       setPaletteHits([]);
@@ -1908,9 +1901,22 @@ export function ShellWorkspace({
         }
         tab={library ?? "memories"}
       />
+      <ShortcutSheet onClose={() => setShortcutsOpen(false)} open={shortcutsOpen} />
       <ShellFrame
       accountLabel="Local profile"
       onAccount={() => setLibrary("memories")}
+      keys={{
+        onPalette: () => setPaletteOpen((open) => !open),
+        onShortcuts: () => setShortcutsOpen((open) => !open),
+        // The composer is promised to be one key away, so reaching it takes
+        // down whatever is covering it rather than leaving a dialog stranded
+        // on screen with the cursor behind it.
+        onDismissModals: () => {
+          setPaletteOpen(false);
+          setShortcutsOpen(false);
+          setLibrary(null);
+        },
+      }}
       taskRail={{
         tasks: shellTasks,
         selectedTaskId,

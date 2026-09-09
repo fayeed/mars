@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 
 import {
   DESTINATIONS,
@@ -50,9 +50,22 @@ export const SHELL_BINDINGS: readonly ShellBinding[] = [
   binding("toggle.inspector", { key: "i", mod: true, shift: true }, "Toggle inspector"),
   binding("toggle.utility", { key: "j", mod: true }, "Toggle utility panel"),
   binding("focus.composer", { key: "l", mod: true }, "Focus composer"),
+  binding("open.palette", { key: "p", mod: true }, "Search everything"),
+  binding("open.shortcuts", { key: "/", mod: true }, "Keyboard shortcuts"),
   binding("focus.next", { key: "F6" }, "Next region"),
   binding("focus.previous", { key: "F6", shift: true }, "Previous region"),
 ];
+
+/**
+ * What the shell offers a modal surface.
+ *
+ * Every other chord moves focus to a region, and a region behind a dialog is
+ * somewhere the reader cannot see — the dialog would still be on screen with
+ * the cursor lost behind it. Reaching the composer is the deliberate exception
+ * in the other direction: the composer is *never* more than one key away, so
+ * this closes whatever is open on the way there rather than refusing.
+ */
+const MODAL_SAFE: readonly string[] = ["open.palette", "open.shortcuts", "focus.composer"];
 
 export function matchesChord(event: KeyboardEvent, chord: KeyChord): boolean {
   const modPressed = isApple ? event.metaKey : event.ctrlKey;
@@ -73,14 +86,50 @@ export function bindingHint(id: string): string {
   return SHELL_BINDINGS.find((candidate) => candidate.id === id)?.hint ?? "";
 }
 
+export interface ShellKeymapHandlers {
+  /** Opens the search-everything surface. */
+  onPalette?: () => void;
+  /** Opens the keyboard reference. */
+  onShortcuts?: () => void;
+  /**
+   * Dismisses whatever modal surface is open.
+   *
+   * Called before focus is moved to the composer, so the one shortcut that is
+   * promised to always reach it does not leave a dialog stranded on screen.
+   */
+  onDismissModals?: () => void;
+}
+
 /** Installs the shell keymap on `window` for as long as the frame is mounted. */
-export function useShellKeymap() {
-  const { cycleRegion, dispatch, focusRegion } = useShell();
+export function useShellKeymap(handlers: ShellKeymapHandlers = {}) {
+  const { cycleRegion, dispatch, focusRegion, modalsRef } = useShell();
+  // Read at event time rather than captured, so the listener does not need to
+  // be torn down and rebuilt whenever a caller passes a fresh closure.
+  const handlersRef = useRef(handlers);
+  useEffect(() => {
+    handlersRef.current = handlers;
+  }, [handlers]);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       const match = findBinding(event);
       if (!match) return;
+
+      // A dialog owns the keyboard while it is open. Anything that would move
+      // focus to a region behind it is refused rather than obeyed.
+      if (modalsRef.current > 0 && !MODAL_SAFE.includes(match.id)) return;
+
+      if (match.id === "open.palette") {
+        event.preventDefault();
+        handlersRef.current.onPalette?.();
+        return;
+      }
+
+      if (match.id === "open.shortcuts") {
+        event.preventDefault();
+        handlersRef.current.onShortcuts?.();
+        return;
+      }
 
       const destinationIndex = ["go.conversation", "go.editor", "go.source-control"].indexOf(
         match.id,
@@ -108,6 +157,9 @@ export function useShellKeymap() {
 
       if (match.id === "focus.composer") {
         event.preventDefault();
+        // The composer is always one key away. If something is covering it,
+        // that thing goes rather than the promise.
+        if (modalsRef.current > 0) handlersRef.current.onDismissModals?.();
         focusRegion("composer");
         return;
       }
@@ -120,5 +172,5 @@ export function useShellKeymap() {
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [cycleRegion, dispatch, focusRegion]);
+  }, [cycleRegion, dispatch, focusRegion, modalsRef]);
 }

@@ -4,6 +4,7 @@ import { cn } from "@/lib/utils";
 import type { ActivityState } from "@/shell/activity-state";
 import { bindingHint } from "@/shell/keymap";
 import type { UtilityContent, UtilityStatuses } from "@/shell/model";
+import { focusTab } from "@/shell/Inspector";
 import { Mono, RailButton, StateBlock, StateDot } from "@/shell/primitives";
 import { Region } from "@/shell/Region";
 import { UTILITY_TABS, useShell, type UtilityTab } from "@/shell/shell-store";
@@ -60,6 +61,10 @@ export function UtilityTabStrip({ statuses = {} }: { statuses?: UtilityStatuses 
                 type: "openUtility",
                 tab: UTILITY_TABS[(index + step + UTILITY_TABS.length) % UTILITY_TABS.length],
               });
+              // Focus follows the selection; see `focusTab`. Without it the
+              // roving tabindex strands focus on the previously selected tab
+              // and every further arrow press steps from there.
+              focusTab(event.currentTarget, step);
             }}
           >
             {status ? <StateDot state={status.state} /> : null}

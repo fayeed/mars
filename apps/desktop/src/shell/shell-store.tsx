@@ -216,6 +216,18 @@ interface ShellContextValue {
   focusRegion: (region: ShellRegion) => boolean;
   cycleRegion: (direction: 1 | -1) => void;
   regionsRef: RefObject<Partial<Record<ShellRegion, HTMLElement | null>>>;
+  /**
+   * How many modal surfaces are open.
+   *
+   * A ref rather than state: the keymap reads it inside a `keydown` handler and
+   * must see the current value, and nothing renders differently because of it.
+   * While it is above zero the shell's own chords stand down — moving focus to
+   * a region behind a dialog would leave the dialog on screen with the cursor
+   * somewhere the reader cannot see.
+   */
+  modalsRef: RefObject<number>;
+  /** Claims the keyboard for a modal. Call the returned function to give it back. */
+  pushModal: () => () => void;
 }
 
 const ShellContext = createContext<ShellContextValue | null>(null);
@@ -235,6 +247,7 @@ export function ShellProvider({
     ...initialLayout,
   }));
   const regionsRef = useRef<Partial<Record<ShellRegion, HTMLElement | null>>>({});
+  const modalsRef = useRef(0);
   const lastRegionRef = useRef<ShellRegion>("conversation");
   // A region asked for before it exists — navigating to the editor focuses the
   // workbench that the same click is about to mount.
@@ -281,9 +294,30 @@ export function ShellProvider({
     [focusRegion],
   );
 
+  const pushModal = useCallback(() => {
+    modalsRef.current += 1;
+    let released = false;
+    return () => {
+      // Guarded because React can call a cleanup more than once in development,
+      // and a count that went negative would silently disarm the keymap.
+      if (released) return;
+      released = true;
+      modalsRef.current = Math.max(0, modalsRef.current - 1);
+    };
+  }, []);
+
   const value = useMemo<ShellContextValue>(
-    () => ({ layout, dispatch, registerRegion, focusRegion, cycleRegion, regionsRef }),
-    [cycleRegion, focusRegion, layout, registerRegion],
+    () => ({
+      layout,
+      dispatch,
+      registerRegion,
+      focusRegion,
+      cycleRegion,
+      regionsRef,
+      modalsRef,
+      pushModal,
+    }),
+    [cycleRegion, focusRegion, layout, pushModal, registerRegion],
   );
 
   return <ShellContext value={value}>{children}</ShellContext>;

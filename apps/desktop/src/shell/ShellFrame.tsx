@@ -9,7 +9,7 @@ import type { ActivityState } from "@/shell/activity-state";
 import { AppRail } from "@/shell/AppRail";
 import { ConversationColumn, type ConversationColumnProps } from "@/shell/ConversationColumn";
 import { Inspector, type InspectorProps } from "@/shell/Inspector";
-import { useShellKeymap } from "@/shell/keymap";
+import { useShellKeymap, type ShellKeymapHandlers } from "@/shell/keymap";
 import { Mono, PanelHeader, StateBlock } from "@/shell/primitives";
 import { Region } from "@/shell/Region";
 import { useShell, type Destination } from "@/shell/shell-store";
@@ -31,6 +31,14 @@ export type WorkbenchSurfaces = Partial<
 export interface ShellFrameProps {
   accountLabel?: string;
   onAccount?: () => void;
+  /**
+   * The shell's own chords that need a screen to act on.
+   *
+   * They live in `SHELL_BINDINGS` with everything else rather than in a
+   * hand-rolled listener, so they appear in the shortcut sheet, honour the
+   * platform's modifier, and stand down behind a dialog like the rest.
+   */
+  keys?: ShellKeymapHandlers;
   conversation?: ConversationColumnProps;
   inspector?: InspectorProps;
   status?: StatusBarProps;
@@ -55,6 +63,7 @@ const WORKBENCH_TITLE: Record<Exclude<Destination, "conversation">, string> = {
 export function ShellFrame({
   accountLabel,
   onAccount,
+  keys,
   conversation = {},
   inspector = {},
   status = {},
@@ -62,7 +71,7 @@ export function ShellFrame({
   utility = {},
   workbench = {},
 }: ShellFrameProps) {
-  useShellKeymap();
+  useShellKeymap(keys);
   const { layout } = useShell();
 
   const workbenchKey =

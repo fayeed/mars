@@ -224,3 +224,26 @@
     }
   }
 }
+
+/*
+ * The focus floor.
+ *
+ * `outline-none` is on nearly every control in this product, because almost all
+ * of them draw their own hover and active treatment and the browser's default
+ * ring fights it. The cost was that a keyboard user got no indicator at all on
+ * most of them — the styles said what focus should not look like without ever
+ * saying what it should.
+ *
+ * This is deliberately unlayered so it outranks the Tailwind utility that
+ * removed the outline, whatever the specificity. A screen can still draw a
+ * richer focus treatment on top; it cannot end up with none.
+ *
+ * `.shell-focusable` is the one exclusion: a region is a landmark rather than a
+ * control, and it says so with an inset hairline instead of a ring.
+ */
+:where(a[href], button, input, select, textarea, summary, [tabindex]):not(
+    .shell-focusable
+  ):focus-visible {
+  outline: 1px solid var(--ring);
+  outline-offset: -1px;
+}

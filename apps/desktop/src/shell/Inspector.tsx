@@ -15,6 +15,22 @@ const TAB_LABEL: Record<InspectorTab, string> = {
   brain: "Brain",
 };
 
+/**
+ * Move focus to the neighbouring tab in the same strip.
+ *
+ * Read off the DOM rather than by ref-per-tab: the strip is a flat row of
+ * siblings, the order on screen is the order in the array, and a lookup by
+ * position cannot fall out of step with what was rendered.
+ */
+export function focusTab(current: HTMLElement, step: 1 | -1) {
+  const strip = current.parentElement;
+  if (!strip) return;
+  const tabs = Array.from(strip.querySelectorAll<HTMLElement>('[role="tab"]'));
+  const index = tabs.indexOf(current);
+  if (index === -1 || tabs.length === 0) return;
+  tabs[(index + step + tabs.length) % tabs.length].focus();
+}
+
 export interface InspectorProps {
   content?: InspectorContent;
   statuses?: InspectorStatuses;
@@ -110,8 +126,14 @@ export function Inspector({ content = {}, statuses = {} }: InspectorProps) {
                 event.preventDefault();
                 const step = event.key === "ArrowRight" ? 1 : -1;
                 const index = INSPECTOR_TABS.indexOf(tab);
-                const next = INSPECTOR_TABS[(index + step + INSPECTOR_TABS.length) % INSPECTOR_TABS.length];
+                const next =
+                  INSPECTOR_TABS[(index + step + INSPECTOR_TABS.length) % INSPECTOR_TABS.length];
                 dispatch({ type: "activateInspectorTab", tab: next });
+                // Focus has to follow the selection or the roving tabindex
+                // leaves it on a tab that is no longer selected: the next arrow
+                // press would step from the old tab again, and pressing Right
+                // twice would land on the same place both times.
+                focusTab(event.currentTarget, step);
               }}
             >
               {tabStatus ? <StateDot state={tabStatus.state} /> : null}

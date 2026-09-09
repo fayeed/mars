@@ -3,6 +3,8 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
+import { ShellProvider } from "@/shell/shell-store";
+
 import { CommandPalette } from "./CommandPalette";
 
 const hits: PaletteHit[] = [
@@ -35,17 +37,24 @@ const hits: PaletteHit[] = [
   },
 ];
 
+/**
+ * The palette is a shell surface: it claims the keyboard from the shell's own
+ * chords while it is open, so it is rendered inside the provider that owns
+ * them rather than on its own.
+ */
 function renderPalette(props: Partial<Parameters<typeof CommandPalette>[0]> = {}) {
   return render(
-    <CommandPalette
-      hits={hits}
-      onClose={vi.fn()}
-      onJump={vi.fn()}
-      onSearch={vi.fn()}
-      open
-      state="idle"
-      {...props}
-    />,
+    <ShellProvider>
+      <CommandPalette
+        hits={hits}
+        onClose={vi.fn()}
+        onJump={vi.fn()}
+        onSearch={vi.fn()}
+        open
+        state="idle"
+        {...props}
+      />
+    </ShellProvider>,
   );
 }
 

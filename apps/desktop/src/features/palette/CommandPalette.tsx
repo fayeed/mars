@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { cn } from "@/lib/utils";
 import type { ActivityState } from "@/shell/activity-state";
+import { useModalFocus } from "@/shell/modal";
 import { KeyHint, MetaLabel, Mono, StateLabel } from "@/shell/primitives";
 
 export interface CommandPaletteProps {
@@ -46,6 +47,9 @@ export function CommandPalette({
   const [query, setQuery] = useState("");
   const [highlight, setHighlight] = useState(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  // Contains Tab and Escape while open, and hands focus back to whatever the
+  // palette was opened from when it closes.
+  const { ref, onBackdropMouseDown } = useModalFocus<HTMLDivElement>({ active: open, onClose });
 
   const grouped = useMemo(() => {
     const buckets = new Map<PaletteHit["kind"], PaletteHit[]>();
@@ -74,15 +78,15 @@ export function CommandPalette({
   return (
     <div
       className="fixed inset-0 z-50 flex items-start justify-center bg-sunken/70 pt-24"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
-      }}
+      onMouseDown={onBackdropMouseDown}
     >
       <div
+        ref={ref}
         role="dialog"
         aria-label="Search everything"
         aria-modal="true"
-        className="flex max-h-[60vh] w-[min(44rem,92vw)] flex-col border border-border bg-surface"
+        tabIndex={-1}
+        className="flex max-h-[60vh] w-[min(44rem,92vw)] flex-col border border-border bg-surface outline-none"
       >
         <div className="flex items-center gap-2 border-b border-border px-2 py-1.5">
           <input
