@@ -453,3 +453,76 @@ fn export_is_newline_delimited_and_carries_its_payloads() {
         diff
     );
 }
+
+/// The conversation reads from the end of the record, not the beginning.
+///
+/// A forward page would pin a long task to its first thousand events and never
+/// show the live tail — the transcript would appear to stop while the run was
+/// still going. These fix the direction and the count of what is left behind.
+#[test]
+fn the_newest_page_reports_what_it_left_behind() {
+    let fixture = ActivityFixture::new();
+    let record = fixture.record();
+    let task = fixture.task("task-window", "Window");
+
+    for index in 0..25 {
+        record
+            .append(ActivityEntry::new(
+                &task,
+                ActivityKind::Message,
+                Actor::Agent,
+                "claude",
+                format!("message {index}"),
+            ))
+            .expect("event should append");
+    }
+
+    let newest = record
+        .read_window(&task, None, 10)
+        .expect("newest page should read");
+
+    // Read backwards for the limit, handed back in reading order.
+    assert_eq!(
+        newest
+            .events
+            .iter()
+            .map(|event| event.sequence)
+            .collect::<Vec<_>>(),
+        (16..=25).collect::<Vec<_>>()
+    );
+    assert_eq!(newest.earlier, 15);
+
+    let older = record
+        .read_window(&task, Some(newest.events[0].sequence), 10)
+        .expect("earlier page should read");
+    assert_eq!(
+        older
+            .events
+            .iter()
+            .map(|event| event.sequence)
+            .collect::<Vec<_>>(),
+        (6..=15).collect::<Vec<_>>()
+    );
+    assert_eq!(older.earlier, 5);
+
+    let beginning = record
+        .read_window(&task, Some(older.events[0].sequence), 10)
+        .expect("first page should read");
+    assert_eq!(beginning.events.len(), 5);
+    // Reaching the start says so with a zero rather than an absence.
+    assert_eq!(beginning.earlier, 0);
+}
+
+#[test]
+fn an_empty_record_has_nothing_before_it() {
+    let fixture = ActivityFixture::new();
+    let record = fixture.record();
+    let task = fixture.task("task-empty", "Empty");
+
+    let window = record
+        .read_window(&task, None, 10)
+        .expect("empty log should read");
+
+    assert!(window.events.is_empty());
+    assert_eq!(window.earlier, 0);
+}

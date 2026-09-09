@@ -1,6 +1,7 @@
 import type {
   ActivityEvent,
   ActivityPayload,
+  ActivityWindow,
   BaseDrift,
   DriftChoice,
   BrainAnswer as BrainAnswerValue,
@@ -44,7 +45,16 @@ import type {
 import { invoke } from "@tauri-apps/api/core";
 import { MaximizeIcon } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 
 import { ActivityLog } from "@/features/activity/ActivityLog";
 import { CompletionSummary } from "@/features/activity/CompletionSummary";
@@ -161,6 +171,15 @@ const SCOPES: ComposerScope[] = [
   { id: "repository", label: "Whole repository", globs: ["**"] },
 ];
 
+/**
+ * How much of a task's record the conversation holds at once.
+ *
+ * The record is authoritative and unbounded; this is only what is rendered.
+ * The page is taken from the *end* of the log, because that is where a reader
+ * arrives, and what sits before it is counted rather than dropped silently.
+ */
+const RECORD_PAGE = 400;
+
 /** The pack budget a run is assembled against. Bytes, as the core measures it. */
 const PACK_BUDGET_BYTES = 64 * 1024;
 
@@ -250,9 +269,24 @@ export function ShellWorkspace({
   const [record, setRecord] = useState<{
     taskId: string;
     events: ActivityEvent[];
+    /** Events before the first one held. Named, so the screen can say so. */
+    earlier: number;
     projection: TaskProjection;
     pending: PendingPermissionRequest[];
   } | null>(null);
+  /**
+   * How much of the record the conversation is holding.
+   *
+   * Grown by the reader asking for more, and never shrunk while they are
+   * reading: a re-read that dropped back to one page would pull the earlier
+   * turns they just asked for out from under them.
+   */
+  const [recordLimit, setRecordLimit] = useState(RECORD_PAGE);
+  // Every re-read — a permission answered, a save, an agent event — must use
+  // the window the reader is actually on, or answering a prompt would silently
+  // drop the earlier turns they had just asked for.
+  const recordLimitRef = useRef(RECORD_PAGE);
+  recordLimitRef.current = recordLimit;
   const [eventsState, setEventsState] = useState<ActivityState>("idle");
   const [decidingId, setDecidingId] = useState<string | null>(null);
   const [permissionError, setPermissionError] = useState<string | null>(null);
@@ -415,14 +449,27 @@ export function ShellWorkspace({
    * reload are the same code path: both ask the log for what they have not seen.
    */
   const loadRecord = useCallback(
-    (taskId: string) =>
+    (taskId: string, limit: number = recordLimitRef.current) =>
       Promise.all([
-        invoke<ActivityEvent[]>("task_activity", { taskId, afterSequence: 0, limit: 1000 }),
+        // From the end of the log, not the beginning. Reading forward would pin
+        // a long task to its first page and never show the live tail — the
+        // transcript would appear to stop while the run was still going.
+        invoke<ActivityWindow>("task_activity_window", {
+          taskId,
+          beforeSequence: null,
+          limit,
+        }),
         invoke<TaskProjection>("task_projection", { taskId }),
         invoke<PendingPermissionRequest[]>("pending_permissions", { taskId }),
       ])
-        .then(([events, projection, pending]) => {
-          setRecord({ taskId, events, projection, pending });
+        .then(([window, projection, pending]) => {
+          setRecord({
+            taskId,
+            events: window.events,
+            earlier: window.earlier,
+            projection,
+            pending,
+          });
           setEventsState("idle");
           // A run that has just started has output to show and somewhere to
           // show it: the utility panel earns the space, and the inspector can
@@ -442,8 +489,14 @@ export function ShellWorkspace({
 
   useEffect(() => {
     if (!selectedTaskId) return;
-    void loadRecord(selectedTaskId);
-  }, [loadRecord, selectedTaskId, reloadToken]);
+    void loadRecord(selectedTaskId, recordLimit);
+  }, [loadRecord, recordLimit, selectedTaskId, reloadToken]);
+
+  // A different task starts at one page again. The limit belongs to the reading
+  // of one record, not to the session.
+  useEffect(() => {
+    setRecordLimit(RECORD_PAGE);
+  }, [selectedTaskId]);
 
   /**
    * Project Brain's pipeline, as it runs.
@@ -1398,6 +1451,7 @@ export function ShellWorkspace({
   // A record belonging to a different task is not this task's record.
   const current = record?.taskId === selectedTaskId ? record : null;
   const events = current?.events ?? [];
+  const earlier = current?.earlier ?? 0;
   const projection = current?.projection ?? null;
   const pending = current?.pending ?? [];
 
@@ -1508,6 +1562,22 @@ export function ShellWorkspace({
 
   const transcript = (
     <>
+      {/* What the conversation is not showing, said rather than left out. The
+          record is authoritative and unbounded; this column holds a window on
+          the end of it, and a reader must be able to see the edge of that
+          window and step past it. */}
+      {earlier > 0 ? (
+        <div className="flex items-center gap-2 border-b border-border px-3 py-1.5">
+          <StateLabel state="stale" detail={`${earlier} earlier event(s) not shown`} />
+          <button
+            type="button"
+            onClick={() => setRecordLimit((limit) => limit + RECORD_PAGE)}
+            className="ml-auto shrink-0 border border-border px-1.5 py-0.5 text-[11px] text-foreground outline-none hover:border-border-strong"
+          >
+            Show {Math.min(earlier, RECORD_PAGE)} more
+          </button>
+        </div>
+      ) : null}
       {recovery}
       <ActivityLog
         events={events}

@@ -221,6 +221,16 @@ pub struct ActivityEvent {
     pub duration_ms: Option<i64>,
 }
 
+/// A page of the record, with what sits before it.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityWindow {
+    pub events: Vec<ActivityEvent>,
+    /// Events earlier than the first one here. Zero means this page reaches the
+    /// beginning of the record.
+    pub earlier: usize,
+}
+
 #[derive(Clone)]
 pub struct ActivityRecord {
     storage: Arc<Storage>,
@@ -338,6 +348,75 @@ impl ActivityRecord {
         })?;
 
         rows.into_iter().map(decode_row).collect()
+    }
+
+    /// The newest page of the log, and how much of it is not in the page.
+    ///
+    /// `read` walks forward from the beginning, which is right for an export and
+    /// wrong for a conversation: a task that outgrows one page would show its
+    /// first thousand events forever and never its live tail. A reader arrives
+    /// at the end of a transcript, so this starts there and works backwards,
+    /// and `earlier` is what lets the screen say how much it is not showing
+    /// instead of silently ending the record.
+    ///
+    /// `before_sequence` walks further back, one page at a time.
+    pub fn read_window(
+        &self,
+        task_id: &str,
+        before_sequence: Option<i64>,
+        limit: usize,
+    ) -> Result<ActivityWindow, ActivityError> {
+        let limit = i64::try_from(limit.clamp(1, 5_000)).unwrap_or(500);
+        let rows = self.storage.with_connection(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT task_id, sequence, id, run_id, kind, actor, actor_label, summary,
+                        payload_json, payload_digest, occurred_at, duration_ms
+                 FROM activity_events
+                 WHERE task_id = ?1 AND (?2 IS NULL OR sequence < ?2)
+                 ORDER BY sequence DESC
+                 LIMIT ?3",
+            )?;
+            let mapped = statement.query_map(params![task_id, before_sequence, limit], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, Option<String>>(9)?,
+                    row.get::<_, String>(10)?,
+                    row.get::<_, Option<i64>>(11)?,
+                ))
+            })?;
+            mapped.collect::<rusqlite::Result<Vec<_>>>()
+        })?;
+
+        let mut events: Vec<ActivityEvent> = rows
+            .into_iter()
+            .map(decode_row)
+            .collect::<Result<Vec<_>, _>>()?;
+        // Read newest-first for the LIMIT, rendered oldest-first for the reader.
+        events.reverse();
+
+        let earlier = match events.first() {
+            None => 0,
+            Some(first) => self.storage.with_connection(|connection| {
+                connection.query_row(
+                    "SELECT COUNT(*) FROM activity_events WHERE task_id = ?1 AND sequence < ?2",
+                    params![task_id, first.sequence],
+                    |row| row.get::<_, i64>(0),
+                )
+            })?,
+        };
+
+        Ok(ActivityWindow {
+            events,
+            earlier: usize::try_from(earlier).unwrap_or(0),
+        })
     }
 
     /// The highest sequence written for a task, or zero when it has no log yet.

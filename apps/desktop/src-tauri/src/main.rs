@@ -1995,6 +1995,26 @@ fn task_activity(
         .map_err(Into::into)
 }
 
+/// The newest page of a task's record, and how much sits before it.
+///
+/// The conversation reads from the end. `task_activity` walks forward from the
+/// beginning, which is right for an export and wrong here: a task that outgrows
+/// one page would keep showing its first thousand events and never its live
+/// tail. This starts at the end, and reports what it left behind so the screen
+/// can say so rather than ending the record without comment.
+#[tauri::command]
+fn task_activity_window(
+    task_id: String,
+    before_sequence: Option<i64>,
+    limit: usize,
+    state: State<'_, AppState>,
+) -> Result<mars_activity::ActivityWindow, CommandFailure> {
+    state
+        .activity
+        .read_window(&task_id, before_sequence, limit)
+        .map_err(Into::into)
+}
+
 /// The whole of a task's state, folded from its log.
 ///
 /// Nothing here reads a status column, so what the summary says and what the
@@ -3354,6 +3374,7 @@ fn main() {
             task_diff,
             task_worktree_file,
             task_activity,
+            task_activity_window,
             task_projection,
             activity_payload,
             task_runs,

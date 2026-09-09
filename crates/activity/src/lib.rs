@@ -24,7 +24,9 @@ use std::path::PathBuf;
 use thiserror::Error;
 
 pub use payloads::{PayloadStore, StoredPayload};
-pub use record::{ActivityEntry, ActivityEvent, ActivityKind, ActivityRecord, Actor, Attachment};
+pub use record::{
+    ActivityEntry, ActivityEvent, ActivityKind, ActivityRecord, ActivityWindow, Actor, Attachment,
+};
 pub use recovery::{
     InFlightItem, InterruptedRun, RecoveryAction, RecoveryOption, RecoveryService, WrittenFile,
 };

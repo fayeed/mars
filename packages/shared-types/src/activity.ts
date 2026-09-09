@@ -211,3 +211,17 @@ export interface ActivityPayload {
   /** Lossy UTF-8. Every payload the record spills is program output. */
   text: string;
 }
+
+/**
+ * A page of the record, with what sits before it.
+ *
+ * The conversation reads from the end, so a page starts there and works
+ * backwards. `earlier` is what lets the screen say how much of the record it is
+ * not showing, rather than ending the transcript without comment.
+ */
+export interface ActivityWindow {
+  /** In reading order — oldest first — even though the page was read backwards. */
+  events: ActivityEvent[];
+  /** Events before the first one here. Zero means this page reaches the start. */
+  earlier: number;
+}
