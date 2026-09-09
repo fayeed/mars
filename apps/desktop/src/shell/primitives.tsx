@@ -6,6 +6,7 @@ import {
   ACTIVITY_STATE,
   type ActivityState,
 } from "@/shell/activity-state";
+import { classifyFailure, failureCopy } from "@/shell/failure";
 import {
   anchorVerdict,
   shortSha,
@@ -339,6 +340,71 @@ export function DerivedFromSummary({
         verdict === "missing" ? "gone" : "changed"
       }`}
       state={state}
+      {...props}
+    />
+  );
+}
+
+/**
+ * A failure, as the whole product states failures.
+ *
+ * Screens used to write `description={error ?? "something went wrong"}`, which
+ * put a code like `adapter.probe_failed` in front of a person and left them to
+ * work out both what it meant and whether their work had survived. This says
+ * the class of thing that went wrong, says what was *not* changed, offers the
+ * one move that could resolve it — and still shows the core's own message
+ * verbatim underneath, because ours is a framing of theirs and never a
+ * replacement for it.
+ */
+export function FailureBlock({
+  className,
+  error,
+  onRemedy,
+  remedyLabel,
+  title,
+  ...props
+}: Omit<ComponentProps<"div">, "title" | "onError"> & {
+  /** Anything thrown by `invoke`, or a `CommandFailure` from the core. */
+  error: unknown;
+  /** Runs the copy's suggested move. Omit and no action is offered. */
+  onRemedy?: () => void;
+  /** Overrides the cause's own remedy label, for a screen with a better one. */
+  remedyLabel?: string;
+  /** Overrides the cause's title, for a screen that can be more specific. */
+  title?: string;
+}) {
+  const classified = classifyFailure(error);
+  const copy = failureCopy(classified.cause);
+  const label = remedyLabel ?? copy.remedy;
+
+  return (
+    <StateBlock
+      className={className}
+      data-cause={classified.cause}
+      description={
+        <>
+          {copy.description}
+          {classified.message ? (
+            <>
+              {" "}
+              <Mono className="text-faint">{classified.message}</Mono>
+            </>
+          ) : null}
+        </>
+      }
+      state={copy.state}
+      title={title ?? copy.title}
+      action={
+        onRemedy && label ? (
+          <button
+            type="button"
+            onClick={onRemedy}
+            className="border border-border px-2 py-1 text-[11px] text-foreground hover:border-border-strong"
+          >
+            {label}
+          </button>
+        ) : null
+      }
       {...props}
     />
   );

@@ -47,8 +47,11 @@ function renderHome(props: Partial<Parameters<typeof RepositoryHome>[0]> = {}) {
 }
 
 describe("indexActivityState", () => {
-  it("calls an unread index idle, not done", () => {
-    expect(indexActivityState({ ...status, counts: { ...status.counts, files: 0 } })).toBe("idle");
+  it("calls an unread index stale, not idle and not done", () => {
+    // Idle reads as "nothing to do". A repository that has not been read is the
+    // one state where every search, symbol lookup and brain answer comes back
+    // empty regardless of the question, which is what stale is for.
+    expect(indexActivityState({ ...status, counts: { ...status.counts, files: 0 } })).toBe("stale");
   });
 
   it("calls a moved-on index stale, not failed", () => {

@@ -227,6 +227,9 @@ export function Composer({
     if (files.length > 0) onDropFiles(files);
   }
 
+  // An unavailable agent does not disable the composer: `/ask` is a question
+  // about the repository and needs no agent at all, and refusing to let it be
+  // typed would take away the one thing that still works.
   const canSend = value.trim().length > 0 && Boolean(agent) && state !== "blocked";
 
   return (
@@ -447,6 +450,17 @@ export function Composer({
         {state === "blocked" ? (
           <span className="text-[11px] text-primary">
             {blockedReason ?? "A permission request is waiting for your answer."}
+          </span>
+        ) : agent?.unavailable ? (
+          // Said before the message is written, not after it is sent. Mars runs
+          // the CLIs installed on this machine and bundles none of them, so an
+          // absent agent is the normal case on a fresh install rather than an
+          // error to be discovered at launch time.
+          <span className="flex items-center gap-1.5 text-[11px] text-primary">
+            <StateDot state="blocked" />
+            <span>
+              <span className="text-foreground">{agent.name}</span> {agent.unavailable}
+            </span>
           </span>
         ) : agent ? (
           <>

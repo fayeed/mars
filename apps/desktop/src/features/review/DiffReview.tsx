@@ -4,12 +4,27 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { languageOf, type DiffFile, type DiffLine } from "@/features/review/unified-diff";
 import type { ActivityState } from "@/shell/activity-state";
-import { MetaLabel, Mono, PanelHeader, StateBlock, StateLabel } from "@/shell/primitives";
+import {
+  FailureBlock,
+  MetaLabel,
+  Mono,
+  PanelHeader,
+  StateBlock,
+  StateLabel,
+} from "@/shell/primitives";
 
 export interface DiffReviewProps {
   files: DiffFile[];
   state: ActivityState;
-  error?: string | null;
+  /**
+   * Whatever the call threw, unflattened.
+   *
+   * `unknown` rather than a string so the core's error code survives to the
+   * screen: it is what tells a reader whether an agent is missing, a permission
+   * is refused or the forge is unreachable, and each of those wants a different
+   * next move.
+   */
+  error?: unknown;
   branchName?: string;
   headOid?: string | null;
   /**
@@ -208,10 +223,11 @@ export function DiffReview({
   }
   if (state === "failed") {
     return (
-      <StateBlock
-        state="failed"
+      <FailureBlock
+        error={error}
+        onRemedy={onReread}
+        remedyLabel="Read it again"
         title="The diff could not be read"
-        description={error ?? "Nothing was changed. The worktree is as it was."}
       />
     );
   }

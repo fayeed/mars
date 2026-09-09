@@ -8,6 +8,7 @@ import { useMemo, useState } from "react";
 
 import { cn } from "@/lib/utils";
 import type { ActivityState } from "@/shell/activity-state";
+import { classifyFailure, failureCopy, failureMessage } from "@/shell/failure";
 import { KeyHint, MetaLabel, Mono, StateLabel } from "@/shell/primitives";
 import { chordHint } from "@/shell/keymap";
 
@@ -24,7 +25,15 @@ export interface WorktreePlanMessageProps {
   proposal: WorktreeProposal;
   /** `loading` while an amend or approval is in flight. */
   state?: ActivityState;
-  error?: string | null;
+  /**
+   * Whatever the call threw, unflattened.
+   *
+   * `unknown` rather than a string so the core's error code survives to the
+   * screen: it is what tells a reader whether an agent is missing, a permission
+   * is refused or the forge is unreachable, and each of those wants a different
+   * next move.
+   */
+  error?: unknown;
   onApprove: (edits: PlanEdits) => void;
 }
 
@@ -327,9 +336,14 @@ export function WorktreePlanMessage({
       ) : null}
 
       {error ? (
-        <p className="border border-destructive/40 px-2 py-1 text-[11px] text-destructive">
-          <Mono>{error}</Mono>
-        </p>
+        <div className="border border-destructive/40 px-2 py-1">
+          {/* The plan message keeps its own compact shape rather than a full
+              block: the plan above it is still readable and still the point. */}
+          <StateLabel state={failureCopy(classifyFailure(error).cause).state} />
+          <p className="text-[11px] text-destructive">
+            <Mono>{failureMessage(error)}</Mono>
+          </p>
+        </div>
       ) : null}
 
       <footer className="flex flex-wrap items-center gap-2">

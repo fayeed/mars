@@ -59,9 +59,19 @@ export type {
   UtilityStatuses,
 } from "@/shell/model";
 export {
+  classifyFailure,
+  failureCopy,
+  failureMessage,
+  isIndexCold,
+  type ClassifiedFailure,
+  type FailureCause,
+  type FailureCopy,
+} from "@/shell/failure";
+export {
   CollapsedStrip,
   DerivedFrom,
   DerivedFromSummary,
+  FailureBlock,
   KeyHint,
   MetaLabel,
   Mono,

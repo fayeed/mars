@@ -3,6 +3,7 @@ import { ArrowUpRightIcon, RefreshCwIcon } from "lucide-react";
 
 import type { ActivityState } from "@/shell/activity-state";
 import type { ShellTask } from "@/shell/model";
+import { isIndexCold } from "@/shell/failure";
 import { MetaLabel, Mono, StateBlock, StateDot, StateLabel } from "@/shell/primitives";
 
 export interface RepositoryHomeProps {
@@ -28,7 +29,12 @@ export interface RepositoryHomeProps {
 export function indexActivityState(status: IndexStatus | null): ActivityState {
   if (!status) return "loading";
   if (status.runningRuns > 0) return "loading";
-  if (status.counts.files === 0) return "idle";
+  // A cold index is not "idle". Idle reads as nothing to do, and a repository
+  // that has not been read is the one state where search, symbols and every
+  // Project Brain answer will come back empty no matter what is asked — which
+  // is exactly what `stale` exists to say: what is on screen cannot be trusted
+  // until this is refreshed.
+  if (status.counts.files === 0) return "stale";
   return status.headMatchesIndex ? "done" : "stale";
 }
 
@@ -99,16 +105,19 @@ export function RepositoryHome({
             {index && index.counts.files > 0 ? "Re-index" : "Index now"}
           </button>
         </div>
-        {state === "stale" ? (
-          <p className="text-[11px] text-muted-foreground">
-            The working tree moved to a different commit after the last run. Answers will be drawn
-            from what was read then, and every one of them will say so.
-          </p>
-        ) : null}
-        {state === "idle" ? (
+        {/* Both of these are `stale` in the shell's vocabulary — what is on
+            screen cannot be trusted until the index is refreshed — but they are
+            not the same situation and do not get the same sentence. The branch
+            is on the condition, not on the state it maps to. */}
+        {isIndexCold(index) ? (
           <p className="text-[11px] text-muted-foreground">
             Nothing has been read yet. The conversation works either way, but questions about this
             code have nothing to draw on until an index exists.
+          </p>
+        ) : state === "stale" ? (
+          <p className="text-[11px] text-muted-foreground">
+            The working tree moved to a different commit after the last run. Answers will be drawn
+            from what was read then, and every one of them will say so.
           </p>
         ) : null}
       </Group>

@@ -234,3 +234,40 @@ describe("Composer skills and scope", () => {
     );
   });
 });
+
+describe("an agent this machine does not have", () => {
+  it("says so before a message is written, not after it is sent", () => {
+    renderComposer({
+      agents: [
+        {
+          id: "codex",
+          name: "Codex",
+          permissionScope: "read files in this task's worktree",
+          unavailable: "is not installed on this machine",
+        },
+      ],
+    });
+
+    expect(screen.getByText("is not installed on this machine")).toBeVisible();
+  });
+
+  it("still lets the message be typed and sent, because /ask needs no agent", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    renderComposer({
+      agents: [
+        {
+          id: "codex",
+          name: "Codex",
+          permissionScope: "read files",
+          unavailable: "is not installed on this machine",
+        },
+      ],
+      onSubmit,
+    });
+
+    await user.type(screen.getByRole("combobox", { name: "Message" }), "/ask what is this");
+    await user.click(screen.getByRole("button", { name: /Send/ }));
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+  });
+});

@@ -34,6 +34,15 @@ export interface ComposerAgent {
   permissionScope: string;
   /** Capabilities that will still stop and ask. */
   asks?: string[];
+  /**
+   * Why this agent cannot run, in words, or absent when it can.
+   *
+   * Mars runs the agent CLIs installed on the machine and does not bundle them,
+   * so "which agents exist" is a fact about this computer rather than about the
+   * product. Stating it in the composer is the point: finding out after writing
+   * and sending a message is finding out too late.
+   */
+  unavailable?: string;
 }
 
 /** An `@` mention target: a file or a symbol the index already knows. */

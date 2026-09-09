@@ -9,12 +9,20 @@ import { ArrowRightIcon, CheckIcon, WrenchIcon, XIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import type { ActivityState } from "@/shell/activity-state";
-import { MetaLabel, Mono, StateBlock, StateLabel } from "@/shell/primitives";
+import { FailureBlock, MetaLabel, Mono, StateBlock, StateLabel } from "@/shell/primitives";
 
 export interface ReviewFindingsProps {
   review: ReviewRecord | null;
   state: ActivityState;
-  error?: string | null;
+  /**
+   * Whatever the call threw, unflattened.
+   *
+   * `unknown` rather than a string so the core's error code survives to the
+   * screen: it is what tells a reader whether an agent is missing, a permission
+   * is refused or the forge is unreachable, and each of those wants a different
+   * next move.
+   */
+  error?: unknown;
   /** What the reviewing agent was allowed to do while it read. */
   reviewerCeiling?: CapabilityCeiling | null;
   /** The agent that wrote the code being reviewed. */
@@ -193,10 +201,11 @@ export function ReviewFindings({
   }
   if (state === "failed") {
     return (
-      <StateBlock
-        state="failed"
+      <FailureBlock
+        error={error}
+        onRemedy={onRunReview}
+        remedyLabel={onRunReview ? "Try the review again" : undefined}
         title="The review could not be run"
-        description={error ?? "Nothing was changed."}
       />
     );
   }

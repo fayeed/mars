@@ -11,12 +11,21 @@ import { useMemo, useState } from "react";
 
 import { cn } from "@/lib/utils";
 import type { ActivityState } from "@/shell/activity-state";
-import { MetaLabel, Mono, StateBlock, StateLabel } from "@/shell/primitives";
+import { failureMessage } from "@/shell/failure";
+import { FailureBlock, MetaLabel, Mono, StateBlock, StateLabel } from "@/shell/primitives";
 
 export interface RunContextReviewProps {
   pack: RunContextPack | null;
   state: ActivityState;
-  error?: string | null;
+  /**
+   * Whatever the call threw, unflattened.
+   *
+   * `unknown` rather than a string so the core's error code survives to the
+   * screen: it is what tells a reader whether an agent is missing, a permission
+   * is refused or the forge is unreachable, and each of those wants a different
+   * next move.
+   */
+  error?: unknown;
   /** Entity refs this person removed, as opposed to ones the budget dropped. */
   removed: string[];
   onToggleEntry: (entityRef: string, included: boolean) => void;
@@ -137,16 +146,20 @@ export function RunContextReview({
     );
   }, [pack]);
 
+  if (state === "failed") {
+    return (
+      <FailureBlock
+        error={error}
+        title="The context pack could not be assembled"
+      />
+    );
+  }
   if (state === "loading" || !pack) {
     return (
       <StateBlock
-        state={state === "failed" ? "failed" : "loading"}
-        title={state === "failed" ? "The context pack could not be assembled" : "Assembling context"}
-        description={
-          state === "failed"
-            ? error ?? "Nothing was started. The run cannot begin without a pack you have seen."
-            : "Retrieving what this task needs, then measuring it against the budget."
-        }
+        state="loading"
+        title="Assembling context"
+        description="Retrieving what this task needs, then measuring it against the budget."
       />
     );
   }
@@ -380,7 +393,7 @@ export function RunContextReview({
 
       {error ? (
         <p className="mx-3 mt-2 border border-destructive/40 px-2 py-1 text-[11px] text-destructive">
-          <Mono>{error}</Mono>
+          <Mono>{failureMessage(error)}</Mono>
         </p>
       ) : null}
 

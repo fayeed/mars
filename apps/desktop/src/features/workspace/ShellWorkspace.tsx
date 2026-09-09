@@ -101,6 +101,7 @@ import type {
 } from "@/shell/model";
 import { Mono, StateBlock, StateLabel } from "@/shell/primitives";
 import { anchorPaths, type BlobAnchor } from "@/shell/staleness";
+import { isIndexCold } from "@/shell/failure";
 import { useWorkingTreeShas } from "@/lib/working-tree";
 import { ShellFrame } from "@/shell/ShellFrame";
 import { ShortcutSheet } from "@/shell/ShortcutSheet";
@@ -307,7 +308,15 @@ export function ShellWorkspace({
     branchName: string;
   } | null>(null);
   const [diffState, setDiffState] = useState<ActivityState>("idle");
-  const [diffError, setDiffError] = useState<string | null>(null);
+  /**
+   * The whole failure, not just its sentence.
+   *
+   * `messageFor` used to run at the catch site, which threw away the core's
+   * code before anything could read it — so every failure on screen was an
+   * unclassifiable one, and the reader got `adapter.probe_failed` with no
+   * indication of what it meant or whether their work had survived.
+   */
+  const [diffError, setDiffError] = useState<unknown>(null);
 
   const [review, setReview] = useState<ReviewRecord | null>(null);
   const [reviewState, setReviewState] = useState<ActivityState>("idle");
@@ -387,11 +396,11 @@ export function ShellWorkspace({
 
   const [proposal, setProposal] = useState<WorktreeProposal | null>(null);
   const [planState, setPlanState] = useState<ActivityState>("idle");
-  const [planError, setPlanError] = useState<string | null>(null);
+  const [planError, setPlanError] = useState<unknown>(null);
 
   const [pack, setPack] = useState<RunContextPack | null>(null);
   const [packState, setPackState] = useState<ActivityState>("idle");
-  const [packError, setPackError] = useState<string | null>(null);
+  const [packError, setPackError] = useState<unknown>(null);
   const [removedRefs, setRemovedRefs] = useState<string[]>([]);
 
   useEffect(() => {
@@ -670,6 +679,26 @@ export function ShellWorkspace({
     `${index?.headOid ?? ""}:${index?.lastRun?.runId ?? ""}:${treeRevision}:${reloadToken}`,
   );
 
+  /**
+   * The agents as the composer should present them: named either way, and the
+   * ones this machine does not have marked rather than hidden. Hiding them
+   * would make an empty list look like a product with no agents in it.
+   */
+  const composerAgents = useMemo<ComposerAgent[]>(
+    () =>
+      AGENTS.map((agent) => {
+        const probed = agentProbes.find((candidate) => candidate.id === agent.id);
+        if (!probed || probed.probe) return agent;
+        return {
+          ...agent,
+          unavailable:
+            "is not installed on this machine — nothing can be launched with it. " +
+            "`/ask` still works.",
+        };
+      }),
+    [agentProbes],
+  );
+
   const shellTasks = useMemo<ShellTask[]>(
     () =>
       tasks.map((task) => ({
@@ -758,7 +787,7 @@ export function ShellWorkspace({
           setTreeRevision((revision) => revision + 1);
         })
         .catch((caught: unknown) => {
-          setDiffError(messageFor(caught));
+          setDiffError(caught);
           setDiffState("failed");
         }),
     [],
@@ -808,7 +837,7 @@ export function ShellWorkspace({
         setPack(built);
         setPackState("idle");
       } catch (caught) {
-        setPackError(messageFor(caught));
+        setPackError(caught);
         setPackState("failed");
       }
     },
@@ -852,7 +881,7 @@ export function ShellWorkspace({
       setReloadToken((token) => token + 1);
       await loadRecord(planned.taskId);
     } catch (caught) {
-      setPlanError(messageFor(caught));
+      setPlanError(caught);
       setPlanState("failed");
       note(`The plan could not be built: ${messageFor(caught)}`, "failed");
     }
@@ -892,7 +921,7 @@ export function ShellWorkspace({
       await loadRecord(provisioned.taskId);
       await buildPack(provisioned.taskId, []);
     } catch (caught) {
-      setPlanError(messageFor(caught));
+      setPlanError(caught);
       setPlanState("failed");
     }
   }
@@ -1121,8 +1150,17 @@ export function ShellWorkspace({
     void loadMemories(memoryFilters);
   }, [loadMemories, memoryFilters]);
 
+  /**
+   * Which agents this machine actually has.
+   *
+   * Probed on mount rather than only when Settings is opened. The composer
+   * names the agent that will act before a message is written, and it cannot
+   * name one honestly without knowing whether it is installed — the alternative
+   * was letting somebody compose a whole request and learn at launch that
+   * nothing could run it.
+   */
   useEffect(() => {
-    if (library !== "settings" || agentProbes.length > 0) return;
+    if (agentProbes.length > 0) return;
     setProbeState("loading");
     void Promise.all(
       AGENTS.map((agent) =>
@@ -1139,7 +1177,7 @@ export function ShellWorkspace({
       setAgentProbes(probes);
       setProbeState("idle");
     });
-  }, [agentProbes.length, library]);
+  }, [agentProbes.length]);
 
   const loadGrants = useCallback(() => {
     setGrantsState("loading");
@@ -1988,7 +2026,7 @@ export function ShellWorkspace({
               run={activeRun}
             />
             <Composer
-            agents={AGENTS}
+            agents={composerAgents}
             attachments={attachments}
             mentions={mentions}
             onDropFiles={(dropped) => void attachFiles(dropped)}
@@ -2131,7 +2169,13 @@ export function ShellWorkspace({
         branch: selectedTask?.branchName ?? index?.branch ?? "—",
         index: {
           state: indexActivityState(index),
-          detail: index ? `${index.counts.files.toLocaleString()} files` : undefined,
+          // "0 files" is a number a reader has to interpret. A repository that
+          // has not been read says so.
+          detail: !index
+            ? undefined
+            : isIndexCold(index)
+              ? "not indexed"
+              : `${index.counts.files.toLocaleString()} files`,
         },
         agents: {
           state: activeRun ? runActivityState(activeRun) : "idle",
