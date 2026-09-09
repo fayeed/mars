@@ -1,6 +1,7 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use mars_activity::{
     ActivityEntry, ActivityError, ActivityEvent, ActivityKind, ActivityRecord, Actor,
@@ -99,6 +100,12 @@ struct AppState {
     skills: SkillService,
     tasks: TaskWorktreeService,
     terminals: TerminalService,
+    /// The cancellation token of each repository's in-flight index pass.
+    ///
+    /// Held here rather than in the indexer because it is a fact about this
+    /// process's UI — which run a person can still stop — and not about the
+    /// index itself.
+    index_runs: Arc<Mutex<HashMap<String, tokio_util::sync::CancellationToken>>>,
     why: WhyService,
     storage: Arc<Storage>,
 }
@@ -795,15 +802,78 @@ fn cancel_terminal(session_id: String, state: State<'_, AppState>) -> Result<(),
         .map_err(Into::into)
 }
 
+/// Index a repository without holding up anything else.
+///
+/// A 20,000-file repository is minutes of parsing, hashing and embedding. Run
+/// inline it occupied the command thread for the whole pass, reported nothing
+/// while it did, and could not be stopped once started — so the only signal a
+/// person had was that the app had gone quiet.
+///
+/// The work moves to a blocking worker, progress streams on `index-event`, and
+/// the run's cancellation token is kept so `cancel_index` can reach it. The
+/// summary is still returned to the caller that asked for it; the events are for
+/// everyone else watching.
 #[tauri::command]
-fn index_repository(
+async fn index_repository(
     repository_id: String,
+    app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<IndexSummary, CommandFailure> {
-    state
-        .indexer
-        .index_repository(&repository_id, &tokio_util::sync::CancellationToken::new())
-        .map_err(Into::into)
+    let indexer = state.indexer.clone();
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    let index_runs = state.index_runs.clone();
+    {
+        // Replacing an existing token cancels the run it belonged to: two full
+        // passes over the same repository would fight over the same rows.
+        let mut runs = index_runs.lock().expect("index run registry is poisoned");
+        if let Some(previous) = runs.insert(repository_id.clone(), cancellation.clone()) {
+            previous.cancel();
+        }
+    }
+
+    let key = repository_id.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        indexer.run(
+            &repository_id,
+            &mars_indexer::IndexOptions::default(),
+            &cancellation,
+            |event| {
+                // A dropped listener is not a reason to stop indexing.
+                let _ = app.emit("index-event", event);
+            },
+        )
+    })
+    .await;
+
+    index_runs
+        .lock()
+        .expect("index run registry is poisoned")
+        .remove(&key);
+
+    match outcome {
+        Ok(result) => result.map_err(Into::into),
+        Err(error) => Err(CommandFailure::new(
+            "index.worker",
+            format!("the index worker did not finish: {error}"),
+        )),
+    }
+}
+
+/// Stop an index pass that is still running. Nothing already written is undone;
+/// the run is marked cancelled and the next pass picks up from the cursor.
+#[tauri::command]
+fn cancel_index(repository_id: String, state: State<'_, AppState>) -> Result<bool, CommandFailure> {
+    let mut runs = state
+        .index_runs
+        .lock()
+        .expect("index run registry is poisoned");
+    match runs.remove(&repository_id) {
+        Some(token) => {
+            token.cancel();
+            Ok(true)
+        }
+        None => Ok(false),
+    }
 }
 
 /// The index as the home screen states it: what has been read, whether it still
@@ -3337,6 +3407,7 @@ fn main() {
                 files: FileService::new(storage.clone()),
                 forge,
                 indexer: Indexer::new(storage.clone()),
+                index_runs: Arc::new(Mutex::new(HashMap::new())),
                 knowledge: KnowledgeService::new(storage.clone()),
                 overlaps: TaskOverlapService::new(storage.clone()),
                 planner: WorktreePlanner::new(storage.clone(), data_dir.join("worktrees"))
@@ -3366,6 +3437,7 @@ fn main() {
             resize_terminal,
             cancel_terminal,
             index_repository,
+            cancel_index,
             index_status,
             blob_freshness,
             starting_points,

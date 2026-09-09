@@ -1,3 +1,5 @@
+import type { IndexSummary } from "./brain";
+
 /**
  * The index as the UI states it, and what Mars can suggest doing next.
  *
@@ -104,3 +106,24 @@ export interface PaletteHit {
   taskId: string | null;
   sequence: number | null;
 }
+
+/**
+ * Progress from an index pass, streamed on the `index-event` channel.
+ *
+ * A 20,000-file repository is minutes of work. Without these the app simply
+ * goes quiet for the duration, which is indistinguishable from having hung.
+ */
+export type IndexEvent =
+  | { event: "started"; runId: string; mode: string; totalFiles: number }
+  | {
+      event: "fileIndexed";
+      runId: string;
+      relativePath: string;
+      position: number;
+      totalFiles: number;
+    }
+  | { event: "phase"; runId: string; phase: string }
+  // `IndexSummary` is declared in ./brain, which re-exports through the index.
+  | { event: "completed"; runId: string; summary: IndexSummary }
+  | { event: "failed"; runId: string; error: string }
+  | { event: "cancelled"; runId: string };

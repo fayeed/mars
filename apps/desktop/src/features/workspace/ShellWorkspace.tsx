@@ -14,6 +14,7 @@ import type {
   FilePage,
   GrantView,
   AdapterProbe,
+  IndexEvent,
   IndexStatus,
   InterruptedRun,
   Memory,
@@ -393,6 +394,14 @@ export function ShellWorkspace({
 
   const [index, setIndex] = useState<IndexStatus | null>(null);
   const [indexState, setIndexState] = useState<ActivityState>("loading");
+  /**
+   * What the index pass is doing, while it does it.
+   *
+   * A 20,000-file repository is minutes of parsing and embedding. Without this
+   * the app goes quiet for the duration, which is indistinguishable from having
+   * hung — and there was no way to stop it either.
+   */
+  const [indexProgress, setIndexProgress] = useState<string | null>(null);
   const [startingPoints, setStartingPoints] = useState<StartingPoint[]>([]);
   const [startingPointsState, setStartingPointsState] = useState<ActivityState>("loading");
 
@@ -436,6 +445,36 @@ export function ShellWorkspace({
 
   useEffect(() => {
     void loadIndex();
+  }, [loadIndex]);
+
+  useEffect(() => {
+    const subscription = listen<IndexEvent>("index-event", ({ payload }) => {
+      switch (payload.event) {
+        case "started":
+          setIndexProgress(`reading ${payload.totalFiles.toLocaleString()} files`);
+          break;
+        case "fileIndexed":
+          setIndexProgress(
+            `${payload.position.toLocaleString()} of ${payload.totalFiles.toLocaleString()} files`,
+          );
+          break;
+        case "phase":
+          setIndexProgress(payload.phase);
+          break;
+        case "failed":
+          setIndexProgress(null);
+          void loadIndex();
+          break;
+        default:
+          // Completed or cancelled: the status is authoritative from here.
+          setIndexProgress(null);
+          void loadIndex();
+          break;
+      }
+    });
+    return () => {
+      void subscription.then((unlisten) => unlisten());
+    };
   }, [loadIndex]);
 
   // Re-read when the index moves: what is worth starting depends on what Mars
@@ -1593,7 +1632,14 @@ export function ShellWorkspace({
     </div>
   ));
 
-  const transcript = (
+  /**
+   * The transcript, given the element it scrolls inside.
+   *
+   * A function rather than a value because the log virtualizes against that
+   * scroller — a 2,000-event conversation renders only the rows near the
+   * viewport — and the scroller is the conversation column itself.
+   */
+  const renderTranscript = (scroller: HTMLElement | null) => (
     <>
       {/* What the conversation is not showing, said rather than left out. The
           record is authoritative and unbounded; this column holds a window on
@@ -1626,6 +1672,7 @@ export function ShellWorkspace({
         loadPayload={loadPayload}
         onOpenFile={(path, line) => void openFile(path, false, line)}
         renderEvent={renderEvent}
+        scroller={scroller}
       />
       {pack ? (
         <div className="border-b border-border">
@@ -1775,18 +1822,19 @@ export function ShellWorkspace({
     publish !== null ||
     drift !== null ||
     pullRequest !== null;
-  const conversationBody = hasRecord ? (
-    transcript
-  ) : selectedTask ? (
-    <TaskDetail
-      key={selectedTask.taskId}
-      onOpenWorktree={onOpenProject}
-      onTaskChanged={upsertTask}
-      task={selectedTask}
-    />
-  ) : (
-    home
-  );
+  const conversationBody = (scroller: HTMLElement | null) =>
+    hasRecord ? (
+      renderTranscript(scroller)
+    ) : selectedTask ? (
+      <TaskDetail
+        key={selectedTask.taskId}
+        onOpenWorktree={onOpenProject}
+        onTaskChanged={upsertTask}
+        task={selectedTask}
+      />
+    ) : (
+      home
+    );
 
   if (focus) {
     return (
@@ -2018,7 +2066,7 @@ export function ShellWorkspace({
         title: selectedTask?.title ?? project.name,
         detail: selectedTask?.branchName,
         state: selectedTask ? worktreeActivityState(selectedTask.state) : "idle",
-        children: conversationBody,
+        renderChildren: conversationBody,
         composer: (
           <>
             <RunStatusLine
@@ -2178,14 +2226,17 @@ export function ShellWorkspace({
         worktree: selectedTask?.worktreePath,
         branch: selectedTask?.branchName ?? index?.branch ?? "—",
         index: {
-          state: indexActivityState(index),
+          state: indexProgress ? "loading" : indexActivityState(index),
           // "0 files" is a number a reader has to interpret. A repository that
-          // has not been read says so.
-          detail: !index
-            ? undefined
-            : isIndexCold(index)
-              ? "not indexed"
-              : `${index.counts.files.toLocaleString()} files`,
+          // has not been read says so, and a pass in flight says where it is up
+          // to rather than reporting the stale count as if it were current.
+          detail:
+            indexProgress ??
+            (!index
+              ? undefined
+              : isIndexCold(index)
+                ? "not indexed"
+                : `${index.counts.files.toLocaleString()} files`),
         },
         agents: {
           state: activeRun ? runActivityState(activeRun) : "idle",

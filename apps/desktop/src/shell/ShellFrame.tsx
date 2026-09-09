@@ -122,7 +122,7 @@ export function ShellFrame({
         ) : null}
         {workbenchKey ? <ResizableHandle key="workbench-handle" withHandle /> : null}
 
-        <ResizablePanel id="conversation" minSize="26%">
+        <ResizablePanel key="conversation" id="conversation" minSize="26%">
           <ConversationColumn {...conversation} />
         </ResizablePanel>
 
@@ -152,13 +152,22 @@ export function ShellFrame({
         <TaskRail {...taskRail} />
 
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-          {layout.utilityOpen ? (
-            <ResizablePanelGroup className="min-h-0 flex-1" orientation="vertical">
-              <ResizablePanel id="main" minSize="30%">
-                {mainRow}
-              </ResizablePanel>
-              <ResizableHandle withHandle />
+          {/*
+            One tree, always. Swapping between a panel group and a plain div
+            when the utility panel opened re-parented everything below it, so
+            React unmounted and rebuilt the whole main row — Monaco, xterm, every
+            expanded log row, and the conversation's scroll position with them.
+            The panel is added and removed as a sibling *after* the main row
+            instead, which leaves the main row exactly where it was.
+          */}
+          <ResizablePanelGroup className="min-h-0 flex-1" orientation="vertical">
+            <ResizablePanel key="main" id="main" minSize="30%">
+              {mainRow}
+            </ResizablePanel>
+            {layout.utilityOpen ? <ResizableHandle key="utility-handle" withHandle /> : null}
+            {layout.utilityOpen ? (
               <ResizablePanel
+                key="utility"
                 id="utility"
                 defaultSize="30%"
                 minSize="12%"
@@ -167,10 +176,8 @@ export function ShellFrame({
               >
                 <UtilityBody {...utility} />
               </ResizablePanel>
-            </ResizablePanelGroup>
-          ) : (
-            <div className="flex min-h-0 flex-1">{mainRow}</div>
-          )}
+            ) : null}
+          </ResizablePanelGroup>
 
           <UtilityTabStrip statuses={utility.statuses} />
         </div>

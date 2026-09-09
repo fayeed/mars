@@ -173,6 +173,11 @@ pub enum IndexError {
     Cancelled { run_id: String },
 }
 
+/// Cloneable so a caller can move one onto a worker thread.
+///
+/// Both fields are handles to shared state rather than the state itself, so a
+/// clone is a pointer copy and every clone reads and writes the same database.
+#[derive(Clone)]
 pub struct Indexer {
     storage: Arc<Storage>,
     projects: ProjectRepository,

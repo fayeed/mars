@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 
 import type { ActivityState } from "@/shell/activity-state";
 import { Mono, PanelHeader, StateBlock, StateLabel } from "@/shell/primitives";
@@ -8,6 +8,16 @@ import { useShell } from "@/shell/shell-store";
 
 export interface ConversationColumnProps {
   title?: ReactNode;
+  /**
+   * The children, given the element they scroll inside.
+   *
+   * A long transcript has to know its own scroller to render only the rows near
+   * the viewport, and the scroller is this column — the same element the anchor
+   * compensates on when a panel opens. Giving the transcript one of its own
+   * would put two scrollbars on screen and split the reading position between
+   * them.
+   */
+  renderChildren?: (scroller: HTMLElement | null) => ReactNode;
   /** Machine-authored subtitle: branch, worktree, elapsed time. */
   detail?: string;
   state?: ActivityState;
@@ -26,6 +36,7 @@ export function ConversationColumn({
   children,
   composer,
   detail,
+  renderChildren,
   emptyDescription = "Everything an agent does lands here, in order, with the reason it happened.",
   emptyTitle = "No conversation yet",
   state = "idle",
@@ -43,6 +54,9 @@ export function ConversationColumn({
     layout.utilityTab,
   ].join("|");
   const { capture, ref } = useScrollAnchor<HTMLDivElement>(layoutKey);
+  // The ref is set during commit, which is too late for the first render of the
+  // children that need it; this state re-renders them once it exists.
+  const [scroller, setScroller] = useState<HTMLDivElement | null>(null);
 
   return (
     <Region label="Conversation" region="conversation" className="h-full bg-background">
@@ -56,14 +70,16 @@ export function ConversationColumn({
       </PanelHeader>
 
       <div
-        ref={ref}
+        ref={(element) => {
+          ref.current = element;
+          setScroller((current) => (current === element ? current : element));
+        }}
         onScroll={capture}
         data-slot="conversation-scroll"
         className="min-h-0 flex-1 overflow-y-auto overscroll-contain"
       >
-        {children ?? (
-          <StateBlock state={state} title={emptyTitle} description={emptyDescription} />
-        )}
+        {renderChildren?.(scroller) ??
+          children ?? <StateBlock state={state} title={emptyTitle} description={emptyDescription} />}
       </div>
 
       {composer}

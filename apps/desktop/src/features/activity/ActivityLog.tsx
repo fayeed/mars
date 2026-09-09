@@ -6,6 +6,10 @@ import { cn } from "@/lib/utils";
 import { FailureEvidenceView } from "@/features/activity/FailureEvidence";
 import type { ActivityState } from "@/shell/activity-state";
 import { MetaLabel, Mono, StateDot, StateLabel } from "@/shell/primitives";
+import { useVirtualRows } from "@/shell/useVirtualRows";
+
+/** Reports a row's real height so the spacers above and below stay honest. */
+type MeasureRow = (index: number, element: HTMLElement | null) => void;
 
 export interface ActivityLogProps {
   events: ActivityEvent[];
@@ -27,6 +31,15 @@ export interface ActivityLogProps {
    * obvious move, not a menu of strategies.
    */
   failureAction?: (event: ActivityEvent) => { label: string; onAct: () => void } | null;
+  /**
+   * The element the log scrolls inside.
+   *
+   * Given rather than owned: the transcript scrolls in the conversation column,
+   * which is also where the scroll anchor compensates for layout changes. A
+   * scroller of its own would put two on screen. Without it the log renders
+   * every row, which is correct and simply slower.
+   */
+  scroller?: HTMLElement | null;
 }
 
 /** A duration a person can read, at the precision the number deserves. */
@@ -135,13 +148,17 @@ const KIND_LABEL: Partial<Record<ActivityKind, string>> = {
 function MachineRow({
   event,
   failureAction,
+  index,
   loadPayload,
+  measure,
   onOpenFile,
   startOpen,
 }: {
   event: ActivityEvent;
   failureAction?: (event: ActivityEvent) => { label: string; onAct: () => void } | null;
+  index: number;
   loadPayload?: (digest: string) => Promise<ActivityPayload>;
+  measure: MeasureRow;
   onOpenFile?: (path: string, line: number | null) => void;
   startOpen: boolean;
 }) {
@@ -174,7 +191,10 @@ function MachineRow({
   const failed = state === "failed";
 
   return (
-    <li className="border-b border-border last:border-b-0">
+    // Re-measured on every render, not only on mount: expanding a row to its
+    // evidence changes its height, and every spacer below it would be wrong
+    // until the next scroll.
+    <li className="border-b border-border last:border-b-0" ref={(element) => measure(index, element)}>
       <button
         type="button"
         aria-expanded={expandable ? open : undefined}
@@ -236,9 +256,20 @@ function MachineRow({
 }
 
 /** A human or agent turn: prose, in the reading font, never collapsed. */
-function MessageTurn({ event }: { event: ActivityEvent }) {
+function MessageTurn({
+  event,
+  index,
+  measure,
+}: {
+  event: ActivityEvent;
+  index: number;
+  measure: MeasureRow;
+}) {
   return (
-    <li className="flex flex-col gap-1 border-b border-border px-3 py-2.5">
+    <li
+      className="flex flex-col gap-1 border-b border-border px-3 py-2.5"
+      ref={(element) => measure(index, element)}
+    >
       <MetaLabel>{event.actor === "human" ? "You" : event.actorLabel}</MetaLabel>
       <p className="text-[13px] leading-relaxed whitespace-pre-wrap text-foreground">
         {field(event.payload, "text") ?? event.summary}
@@ -261,31 +292,61 @@ export function ActivityLog({
   loadPayload,
   onOpenFile,
   renderEvent,
+  scroller = null,
 }: ActivityLogProps) {
+  const { measure, window } = useVirtualRows({
+    count: events.length,
+    // A collapsed row is one line; the estimate is only ever used for rows that
+    // have never been on screen, and is replaced by a measurement the moment
+    // one is.
+    estimatedRowHeight: 26,
+    scroller,
+  });
+
+  const start = window?.start ?? 0;
+  const visible = window ? events.slice(window.start, window.end) : events;
+
   return (
     <ul aria-label="Activity" className="flex flex-col">
-      {events.map((event) => {
+      {/* Spacers stand in for the rows that are not rendered, so the scrollbar
+          describes the whole record rather than the part of it on screen. */}
+      {window && window.paddingTop > 0 ? (
+        <li aria-hidden="true" style={{ height: window.paddingTop }} />
+      ) : null}
+
+      {visible.map((event, offset) => {
+        const index = start + offset;
         const custom = renderEvent?.(event);
         if (custom) {
           return (
-            <li className="border-b border-border last:border-b-0" key={event.id}>
+            <li
+              className="border-b border-border last:border-b-0"
+              key={event.id}
+              ref={(element) => measure(index, element)}
+            >
               {custom}
             </li>
           );
         }
         return event.kind === "message" ? (
-          <MessageTurn event={event} key={event.id} />
+          <MessageTurn event={event} key={event.id} measure={measure} index={index} />
         ) : (
           <MachineRow
             event={event}
             failureAction={failureAction}
+            index={index}
             key={event.id}
             loadPayload={loadPayload}
+            measure={measure}
             onOpenFile={onOpenFile}
             startOpen={expandedKinds.includes(event.kind) || eventActivityState(event) === "failed"}
           />
         );
       })}
+
+      {window && window.paddingBottom > 0 ? (
+        <li aria-hidden="true" style={{ height: window.paddingBottom }} />
+      ) : null}
     </ul>
   );
 }

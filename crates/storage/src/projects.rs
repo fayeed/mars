@@ -15,6 +15,9 @@ pub struct ProjectRecord {
     pub git_common_dir: PathBuf,
 }
 
+/// Cloneable: it holds a handle to the database rather than the database, so
+/// every clone reads and writes the same one.
+#[derive(Clone)]
 pub struct ProjectRepository {
     storage: Arc<Storage>,
 }

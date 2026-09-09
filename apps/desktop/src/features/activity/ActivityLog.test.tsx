@@ -240,3 +240,71 @@ describe("ActivityLog failure action", () => {
     expect(screen.queryByRole("button", { name: /fix this/ })).not.toBeInTheDocument();
   });
 });
+
+describe("a long transcript", () => {
+  function manyEvents(count: number): ActivityEvent[] {
+    return Array.from({ length: count }, (_, index) => ({
+      id: `event-${index}`,
+      taskId: "task-1",
+      sequence: index + 1,
+      runId: "run-1",
+      kind: "command" as const,
+      actor: "agent" as const,
+      actorLabel: "claude",
+      summary: `step ${index}`,
+      payload: { command: `step-${index}`, status: "completed" },
+      payloadDigest: null,
+      occurredAt: "2026-09-09T09:00:00Z",
+      durationMs: 10,
+    }));
+  }
+
+  /** jsdom reports no layout, so the scroller's box has to be stated. */
+  function scrollerStub(height: number): HTMLElement {
+    const element = document.createElement("div");
+    Object.defineProperty(element, "clientHeight", { value: height, configurable: true });
+    Object.defineProperty(element, "scrollTop", { value: 0, writable: true });
+    document.body.append(element);
+    return element;
+  }
+
+  it("renders a window rather than the whole record", () => {
+    // 2,000 rows is an ordinary day. Rendering all of them costs a second of
+    // layout on every append.
+    const { container } = render(
+      <ActivityLog events={manyEvents(2_000)} scroller={scrollerStub(600)} />,
+    );
+
+    const rows = container.querySelectorAll("li");
+    expect(rows.length).toBeLessThan(200);
+    expect(rows.length).toBeGreaterThan(0);
+  });
+
+  it("leaves the scrollbar describing the whole record, not the part on screen", () => {
+    const { container } = render(
+      <ActivityLog events={manyEvents(2_000)} scroller={scrollerStub(600)} />,
+    );
+
+    const spacers = Array.from(container.querySelectorAll('li[aria-hidden="true"]'));
+    const reserved = spacers.reduce(
+      (total, node) => total + Number.parseFloat((node as HTMLElement).style.height || "0"),
+      0,
+    );
+    expect(reserved).toBeGreaterThan(0);
+  });
+
+  it("renders a short log whole, so find-in-page and screen readers reach all of it", () => {
+    // Virtualizing has a real price: a row that is not in the document cannot
+    // be found or announced. Forty rows is not worth paying it for.
+    const events = manyEvents(40);
+    const { container } = render(<ActivityLog events={events} scroller={scrollerStub(600)} />);
+
+    expect(container.querySelectorAll("li")).toHaveLength(40);
+    expect(container.querySelectorAll('li[aria-hidden="true"]')).toHaveLength(0);
+  });
+
+  it("renders everything when it has no scroller to measure against", () => {
+    const { container } = render(<ActivityLog events={manyEvents(300)} />);
+    expect(container.querySelectorAll("li")).toHaveLength(300);
+  });
+});
