@@ -3,8 +3,13 @@
   "private": true,
   "packageManager": "pnpm@10.23.0",
   "scripts": {
+    "build": "pnpm --filter @mars/desktop app:build",
+    "build:web": "pnpm --filter @mars/desktop build",
     "check:protocol": "node scripts/check-protocol.mjs",
-    "lint": "eslint ."
+    "dev": "pnpm --filter @mars/desktop app:dev",
+    "lint": "eslint .",
+    "test": "pnpm --filter @mars/desktop test",
+    "typecheck": "pnpm -r typecheck"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
