@@ -1684,7 +1684,7 @@ async fn inspect_skill(
 async fn install_skill(
     skill_id: String,
     repository_id: String,
-    task_id: String,
+    task_id: Option<String>,
     scope: SkillScope,
     allow_claude: bool,
     allow_codex: bool,
@@ -1692,8 +1692,9 @@ async fn install_skill(
 ) -> Result<SkillInstallation, CommandFailure> {
     let scoped_repository =
         (!matches!(scope, SkillScope::Global)).then_some(repository_id.as_str());
-    let scoped_task =
-        matches!(scope, SkillScope::Task | SkillScope::Workflow).then_some(task_id.as_str());
+    let scoped_task = matches!(scope, SkillScope::Task | SkillScope::Workflow)
+        .then_some(task_id.as_deref())
+        .flatten();
     state
         .skills
         .trust_and_install(
@@ -1721,6 +1722,85 @@ fn remove_skill_installation(
     state: State<'_, AppState>,
 ) -> Result<(), CommandFailure> {
     state.skills.remove(&installation_id).map_err(Into::into)
+}
+
+/// Every installation that matters to a repository: global, the
+/// repository's own, and its tasks'.
+#[tauri::command]
+fn repository_skills(
+    repository_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<SkillInstallation>, CommandFailure> {
+    state
+        .skills
+        .list_for_repository(&repository_id)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+fn set_skill_enabled(
+    installation_id: String,
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> Result<SkillInstallation, CommandFailure> {
+    state
+        .skills
+        .set_enabled(&installation_id, enabled)
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+fn set_skill_adapter(
+    installation_id: String,
+    adapter: AdapterKind,
+    allowed: bool,
+    state: State<'_, AppState>,
+) -> Result<SkillInstallation, CommandFailure> {
+    let policy = match adapter {
+        AdapterKind::Claude => mars_skills::AdapterPolicy::Claude,
+        AdapterKind::Codex => mars_skills::AdapterPolicy::Codex,
+    };
+    state
+        .skills
+        .set_adapter_allowed(&installation_id, policy, allowed)
+        .map_err(Into::into)
+}
+
+/// Whether the registry has a newer version than an installation pins.
+/// Reads only; updating is inspecting and installing the new version.
+#[tauri::command]
+async fn check_skill_update(
+    installation_id: String,
+    state: State<'_, AppState>,
+) -> Result<mars_skills::SkillUpdate, CommandFailure> {
+    state
+        .skills
+        .check_update(&installation_id)
+        .map_err(Into::into)
+}
+
+/// Stop trusting a skill everywhere it is installed.
+#[tauri::command]
+fn block_skill(skill_id: String, state: State<'_, AppState>) -> Result<(), CommandFailure> {
+    state.skills.block(&skill_id).map_err(Into::into)
+}
+
+/// Skills already on this machine that the CLIs load themselves: the
+/// repository's committed ones and the person's own.
+#[tauri::command]
+async fn local_skills(
+    repository_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<mars_skills::LocalSkill>, CommandFailure> {
+    let repository = mars_storage::projects::ProjectRepository::new(state.storage.clone())
+        .find_repository(&repository_id)
+        .map_err(|error| CommandFailure::new("repository.not_found", error.to_string()))?
+        .root_path;
+    let home = std::env::var_os("USERPROFILE")
+        .filter(|_| cfg!(windows))
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from);
+    Ok(mars_skills::discover_local(&repository, home.as_deref()))
 }
 
 #[tauri::command]
@@ -2930,7 +3010,7 @@ async fn start_run(
     )?;
     let pack = builder.revalidate(pack_request, &request.digest)?;
     let launched = runs::launch(
-        launch_context(&app, &state, request.adapter),
+        launch_context(&app, &state, request.adapter, &request.task_id)?,
         runs::LaunchPlan {
             agent_id: request.agent_id,
             role: match role {
@@ -3009,7 +3089,7 @@ async fn continue_run(
         .with_payload(json!({ "text": text })),
     )?;
     runs::launch(
-        launch_context(&app, &state, adapter),
+        launch_context(&app, &state, adapter, &request.task_id)?,
         runs::LaunchPlan {
             agent_id: previous.agent_id.clone(),
             role: previous.role,
@@ -3247,7 +3327,7 @@ async fn launch_agent(
         None => None,
     };
     let launched = runs::launch(
-        launch_context(&app, &state, adapter),
+        launch_context(&app, &state, adapter, &task_id)?,
         runs::LaunchPlan {
             agent_id: adapter_name.to_owned(),
             role: RunRole::Implementer,
@@ -3287,12 +3367,27 @@ async fn launch_agent(
 }
 
 /// What a launch reaches, borrowed from the app state.
+///
+/// For Claude this also assembles the run's skills plugin: every skill that
+/// applies to the task, at its pinned version.
 fn launch_context<'a>(
     app: &AppHandle,
     state: &'a AppState,
     adapter: AdapterKind,
-) -> runs::LaunchContext<'a> {
-    runs::LaunchContext {
+    task_id: &str,
+) -> Result<runs::LaunchContext<'a>, CommandFailure> {
+    let plugin_dirs = match adapter {
+        AdapterKind::Claude => {
+            let installations = state
+                .skills
+                .applicable(task_id, mars_skills::AdapterPolicy::Claude)?;
+            runs::skill_plugin(&state.data_dir, &installations)?
+                .into_iter()
+                .collect()
+        }
+        AdapterKind::Codex => Vec::new(),
+    };
+    Ok(runs::LaunchContext {
         app: app.clone(),
         database: state.database.clone(),
         activity: &state.activity,
@@ -3302,8 +3397,8 @@ fn launch_context<'a>(
         live: state.live_runs.clone(),
         executables: &state.executables,
         uses_sign_in: state.sign_in.uses_sign_in(adapter),
-        plugin_dirs: Vec::new(),
-    }
+        plugin_dirs,
+    })
 }
 
 #[tauri::command]
@@ -3499,6 +3594,7 @@ fn main() {
             let database = data_dir.join("mars.sqlite3");
             let storage = Arc::new(Storage::open(&database)?);
             let live_runs = Arc::new(runs::LiveRuns::default());
+            runs::clear_skill_plugins(&data_dir);
             runs::watch_activity(app.handle().clone(), storage.clone(), live_runs.clone());
             let agents = ProcessSupervisor::new(storage.clone());
             let broker = PermissionBroker::new(storage.clone());
@@ -3663,7 +3759,13 @@ fn main() {
             active_runs,
             repository_runs,
             agent_executables,
-            set_agent_executable
+            set_agent_executable,
+            repository_skills,
+            set_skill_enabled,
+            set_skill_adapter,
+            check_skill_update,
+            block_skill,
+            local_skills
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Mars desktop");

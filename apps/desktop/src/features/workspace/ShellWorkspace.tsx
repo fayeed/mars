@@ -76,7 +76,7 @@ import { MemoryBrowser, type MemoryFilterState } from "@/features/memory/MemoryB
 import { CommandPalette } from "@/features/palette/CommandPalette";
 import { PullRequestActivity } from "@/features/forge/PullRequestActivity";
 import { Settings } from "@/features/settings/Settings";
-import { SkillsLibrary } from "@/features/skills/SkillsLibrary";
+import { SkillsMarketplace } from "@/features/skills/SkillsMarketplace";
 import { SourceControl } from "@/features/review/SourceControl";
 import { BaseDriftMessage } from "@/features/tasks/BaseDriftMessage";
 import {
@@ -801,11 +801,18 @@ export function ShellWorkspace({
     return () => {
       active = false;
     };
-  }, [selectedTaskId]);
+  }, [selectedTaskId, reloadToken]);
 
   // Skills belong to the task they were installed for; a stale list is never
-  // offered for a different one.
-  const skills = taskSkills?.taskId === selectedTaskId ? taskSkills.items : [];
+  // offered for a different one. Only those that reach the selected agent are
+  // offered: a switched-off, blocked, or other-agent skill would be a promise
+  // the run does not keep.
+  const skills = (taskSkills?.taskId === selectedTaskId ? taskSkills.items : []).filter(
+    (skill) =>
+      skill.enabled &&
+      !skill.blocked &&
+      (agentId === "codex" ? skill.allowCodex : skill.allowClaude),
+  );
 
   const selectedTask = useMemo(
     () => tasks.find((task) => task.taskId === selectedTaskId) ?? null,
@@ -2380,24 +2387,11 @@ ${text}` : text));
           />
         }
         skills={
-          <SkillsLibrary
-            busyId={null}
-            onRemove={(skill) =>
-              void invoke("remove_skill_installation", { installationId: skill.id })
-                .then(() => setReloadToken((token) => token + 1))
-                .catch((caught: unknown) =>
-                  note(`The skill could not be removed: ${messageFor(caught)}`, "failed"),
-                )
-            }
-            onToggleAdapter={() =>
-              note(
-                "Turning a skill on or off per agent is not wired to a command yet; the skill's " +
-                  "text and scope above are read from what is installed.",
-                "queued",
-              )
-            }
-            skills={skills}
-            state={taskSkills ? "idle" : "loading"}
+          <SkillsMarketplace
+            onChanged={() => setReloadToken((token) => token + 1)}
+            repositoryId={project.repositoryId}
+            taskId={selectedTaskId}
+            taskTitle={selectedTask?.title}
           />
         }
         tab={library ?? "memories"}

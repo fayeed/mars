@@ -279,3 +279,57 @@ fn seed_context(fixture: &support::BrainFixture) {
     fs::remove_dir_all(fixture.root.join(".mars-test-artifacts"))
         .expect("temporary artifacts should clean up");
 }
+
+#[test]
+fn claude_is_told_which_skills_are_loaded_rather_than_sent_their_text() {
+    let fixture = support::indexed_fixture();
+    make_git_history(&fixture.root);
+    let golden: GoldenCase =
+        serde_json::from_str(include_str!("../../../fixtures/retrieval/cases.json"))
+            .expect("golden case should parse");
+    seed_task_knowledge_and_skills(&fixture, &golden.intent);
+    fixture
+        .storage
+        .with_connection(|connection| {
+            connection.execute(
+                "INSERT INTO skill_agent_policies (installation_id, adapter_kind, allowed)
+                 SELECT id, 'claude', 1 FROM skill_installations",
+                [],
+            )
+        })
+        .expect("claude policies should seed");
+
+    let pack = ContextPackService::new(fixture.storage.clone())
+        .build(ContextPackRequest {
+            task_id: "task-context-pack".into(),
+            adapter: "claude".into(),
+            max_bytes: golden.max_bytes,
+            excluded_entity_refs: Vec::new(),
+        })
+        .expect("pack should build");
+    let skills: Vec<_> = pack
+        .items
+        .iter()
+        .filter(|item| item.section == PackSection::Skills)
+        .collect();
+    // Claude Code loads the skill as a plugin and reads its instructions when
+    // it uses it, so the pack carries a line, not the text.
+    assert!(
+        !skills.is_empty(),
+        "the installed skill is named in the pack"
+    );
+    for item in &skills {
+        assert!(
+            item.content
+                .starts_with("Loaded for this run as the Claude Code skill")
+        );
+        assert!(!item.content.contains("Verify calculator keyboard focus"));
+    }
+    // What a person blocked or switched off still never reaches the agent.
+    assert!(
+        pack.exclusions
+            .iter()
+            .any(|exclusion| exclusion.reason == "skill is blocked"
+                || exclusion.reason == "skill is switched off")
+    );
+}

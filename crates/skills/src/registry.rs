@@ -52,9 +52,15 @@ struct SearchResponse {
 
 #[derive(Deserialize)]
 struct SearchRecord {
+    /// `owner/repository/skill`.
     id: String,
+    /// The path segment the download endpoint wants. Usually the name, but
+    /// not necessarily, so it is read rather than assumed.
+    #[serde(rename = "skillId", default)]
+    skill_id: Option<String>,
     name: String,
     source: String,
+    #[serde(default)]
     installs: u64,
 }
 
@@ -73,11 +79,24 @@ impl RegistryClient for SkillsShRegistry {
         Ok(response
             .skills
             .into_iter()
-            .map(|record| SkillCandidate {
-                name: record.name,
-                slug: record.id,
-                source: record.source,
-                installs: record.installs,
+            .map(|record| {
+                let slug = record
+                    .skill_id
+                    .filter(|id| !id.is_empty())
+                    .unwrap_or_else(|| {
+                        record
+                            .id
+                            .rsplit('/')
+                            .next()
+                            .unwrap_or(record.name.as_str())
+                            .to_owned()
+                    });
+                SkillCandidate {
+                    name: record.name,
+                    slug,
+                    source: record.source,
+                    installs: record.installs,
+                }
             })
             .collect())
     }

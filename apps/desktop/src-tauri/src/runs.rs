@@ -138,6 +138,103 @@ pub fn executable_view(executables: &AgentExecutables, kind: AdapterKind) -> Exe
     }
 }
 
+// --- skills, loaded the way the CLI loads its own -----------------------
+
+/// A Claude Code plugin holding the skills one run is given.
+///
+/// Claude Code loads a plugin directory passed with `--plugin-dir` for that
+/// session only, and the skills inside it load exactly as the person's own do:
+/// listed by description, read in full when used, their scripts and
+/// references beside them. The plugin is a copy of each installation's pinned
+/// files, so what the agent reads is the version a person trusted, and it
+/// lives under the app's data folder, never in the worktree, so nothing
+/// appears in the task's diff.
+pub fn skill_plugin(
+    data_dir: &Path,
+    installations: &[mars_skills::SkillInstallation],
+) -> Result<Option<PathBuf>, CommandFailure> {
+    if installations.is_empty() {
+        return Ok(None);
+    }
+    let failure = |error: std::io::Error| CommandFailure::new("skills.plugin", error.to_string());
+    let root = data_dir
+        .join("run-skills")
+        .join(uuid_like())
+        .join("mars-skills");
+    fs::create_dir_all(root.join(".claude-plugin")).map_err(failure)?;
+    fs::write(
+        root.join(".claude-plugin").join("plugin.json"),
+        serde_json::to_string_pretty(&json!({
+            "name": "mars-skills",
+            "description": "Skills a person trusted in Mars for this task",
+            "version": "1.0.0",
+        }))
+        .unwrap_or_default(),
+    )
+    .map_err(failure)?;
+    let mut used = std::collections::HashSet::new();
+    for installation in installations {
+        let mut name = folder_name(&installation.name);
+        // Two installations with the same name keep both, distinctly.
+        while !used.insert(name.clone()) {
+            name.push('-');
+            name.push_str(&installation.pinned_hash[..6.min(installation.pinned_hash.len())]);
+        }
+        copy_tree(&installation.install_path, &root.join("skills").join(name)).map_err(failure)?;
+    }
+    Ok(Some(root))
+}
+
+/// Remove the plugins of runs that no longer exist. Runs do not survive a
+/// restart, so at startup every one of them is stale.
+pub fn clear_skill_plugins(data_dir: &Path) {
+    let _ = fs::remove_dir_all(data_dir.join("run-skills"));
+}
+
+fn folder_name(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                character.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let trimmed = cleaned.trim_matches('-');
+    if trimmed.is_empty() {
+        "skill".to_owned()
+    } else {
+        trimmed.to_owned()
+    }
+}
+
+fn uuid_like() -> String {
+    format!(
+        "{:x}-{:x}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or_default(),
+        std::process::id()
+    )
+}
+
+fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(to)?;
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_tree(&entry.path(), &target)?;
+        } else {
+            fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
+}
+
 // --- the runs this process is driving -----------------------------------
 
 #[derive(Clone, Debug)]

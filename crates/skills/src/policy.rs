@@ -8,7 +8,8 @@ pub enum AdapterPolicy {
 }
 
 impl AdapterPolicy {
-    pub(crate) fn as_str(self) -> &'static str {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Claude => "claude",
             Self::Codex => "codex",

@@ -27,7 +27,17 @@ type SymbolRow = (
     i64,
     String,
 );
-type SkillRow = (String, String, String, String, bool, bool, String, String);
+type SkillRow = (
+    String,
+    String,
+    String,
+    String,
+    bool,
+    bool,
+    String,
+    String,
+    String,
+);
 
 #[derive(Clone, Debug)]
 pub(crate) struct Candidate {
@@ -363,59 +373,104 @@ pub(crate) fn retrieve(
         }
     }
 
+    // An installation reaches agents with the instructions it was installed
+    // with, not whatever version of the skill was inspected since.
     let skill_rows: Vec<SkillRow> = storage.with_connection(|connection| {
         let mut statement = connection.prepare(
-            "SELECT s.id, s.canonical_name, s.skill_markdown, s.trust_state, p.allowed,
-                    i.enabled, i.pinned_hash, i.scope
+            "SELECT s.id, s.canonical_name,
+                    CASE WHEN i.skill_markdown = '' THEN s.skill_markdown ELSE i.skill_markdown END,
+                    s.trust_state, COALESCE(p.allowed, 0), i.enabled, i.pinned_hash, i.scope,
+                    i.install_path
              FROM skill_installations i
              JOIN skills s ON s.id = i.skill_id
-             JOIN skill_agent_policies p ON p.installation_id = i.id AND p.adapter_kind = ?2
+             -- An installation with no policy for this agent is listed as not
+             -- allowed, rather than vanishing from the exclusions.
+             LEFT JOIN skill_agent_policies p ON p.installation_id = i.id AND p.adapter_kind = ?2
              WHERE i.task_id = ?1 OR (i.repository_id = ?3 AND i.scope = 'project') OR i.scope = 'global'
              ORDER BY s.canonical_name, s.id",
         )?;
         statement
-            .query_map(params![task_id, adapter, repository_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?)))?
+            .query_map(params![task_id, adapter, repository_id], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                ))
+            })?
             .collect()
     })?;
-    for (id, name, markdown, trust, allowed, enabled, hash, scope) in skill_rows {
+    // Claude Code loads every applicable skill itself, as a plugin for the run,
+    // and reads a skill's full instructions only when it uses it. So the pack
+    // names each one in a line rather than paying for its text up front.
+    // Codex cannot be given skills per run, so it receives the relevant ones'
+    // instructions here, with where their files are.
+    let native = adapter == "claude";
+    for (id, name, markdown, trust, allowed, enabled, hash, scope, install_path) in skill_rows {
         let entity_ref = format!("skill:{id}");
-        if trust != "trusted" || !allowed || !enabled {
+        if trust == "blocked" || !enabled {
             exclusions.push(Excluded {
                 entity_ref,
-                reason: if trust == "blocked" || !enabled {
+                reason: if trust == "blocked" {
                     "skill is blocked"
                 } else {
-                    "skill is not allowed for selected adapter"
+                    "skill is switched off"
                 }
                 .into(),
             });
             continue;
         }
+        if !allowed {
+            exclusions.push(Excluded {
+                entity_ref,
+                reason: "skill is not allowed for selected adapter".into(),
+            });
+            continue;
+        }
         let relevance = lexical_overlap(&terms, &format!("{name} {markdown}"));
         let explicit = matches!(scope.as_str(), "task" | "workflow");
-        if !explicit && relevance == 0 {
+        if !native && !explicit && relevance == 0 {
             exclusions.push(Excluded {
                 entity_ref,
                 reason: "skill is trusted but not relevant to this task".into(),
             });
             continue;
         }
+        let pinned = &hash[..12.min(hash.len())];
+        let content = if native {
+            let description =
+                skill_description(&markdown).unwrap_or_else(|| "no description".into());
+            format!(
+                "Loaded for this run as the Claude Code skill `{name}`. Use it when this fits: {description}"
+            )
+        } else {
+            format!(
+                "{markdown}\n\nThis skill's files are at {install_path}; read them there when its \
+                 instructions refer to them."
+            )
+        };
         candidates.push(Candidate {
             section: PackSection::Skills,
             entity_ref,
             title: name,
-            content: markdown,
+            content,
             provenance: "IMPORTED".into(),
-            freshness: format!("pinned snapshot {}", &hash[..12.min(hash.len())]),
+            freshness: format!("pinned snapshot {pinned}"),
             source_location: format!("skill:{id}/SKILL.md"),
             reason: format!(
-                "{} skill pinned at {}",
+                "{} skill pinned at {pinned}",
                 if explicit {
                     "explicit task"
+                } else if native {
+                    "installed"
                 } else {
                     "relevant trusted"
-                },
-                &hash[..12.min(hash.len())]
+                }
             ),
             score: if explicit {
                 0.9
@@ -514,4 +569,18 @@ fn terms(intent: &str) -> BTreeSet<String> {
         .map(str::to_lowercase)
         .filter(|term| term.len() >= 3 && !STOP.contains(&term.as_str()))
         .collect()
+}
+
+/// The `description` from a `SKILL.md`'s front matter: a single-line scalar by
+/// convention, so no YAML parser is needed to read it.
+fn skill_description(markdown: &str) -> Option<String> {
+    let mut lines = markdown.lines();
+    if lines.next()?.trim() != "---" {
+        return None;
+    }
+    lines
+        .take_while(|line| line.trim_end() != "---")
+        .find_map(|line| line.strip_prefix("description:"))
+        .map(|value| value.trim().trim_matches(['"', '\'']).to_owned())
+        .filter(|value| !value.is_empty())
 }
