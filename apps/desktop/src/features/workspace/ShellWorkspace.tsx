@@ -204,17 +204,32 @@ const AGENTS: ComposerAgent[] = [
  * The scopes a new task can declare. Narrow is the default: a task that turns
  * out to need more can say so, but a task that was never asked cannot.
  */
-const SCOPES: ComposerScope[] = [
-  {
-    id: "touched",
-    label: "Files I mention",
-    globs: [],
-    detail: "Every write stops and asks.",
-  },
-  { id: "app", label: "apps/**", globs: ["apps/**"] },
-  { id: "crates", label: "crates/**", globs: ["crates/**"] },
-  { id: "repository", label: "Whole repository", globs: ["**"] },
-];
+const ASK_EVERY_WRITE: ComposerScope = {
+  id: "touched",
+  label: "Files I mention",
+  globs: [],
+  detail: "Every write stops and asks.",
+};
+const WHOLE_REPOSITORY: ComposerScope = { id: "repository", label: "Whole repository", globs: ["**"] };
+
+/**
+ * The scopes on offer for this repository: asking before every write, each
+ * of its largest top-level directories, or all of it. The directories come
+ * from the repository itself rather than a fixed list, so the choice names
+ * places that exist.
+ */
+export function composerScopes(directories: { name: string; files: number }[]): ComposerScope[] {
+  return [
+    ASK_EVERY_WRITE,
+    ...directories.slice(0, 5).map((directory) => ({
+      id: `directory:${directory.name}`,
+      label: `${directory.name}/**`,
+      globs: [`${directory.name}/**`],
+      detail: `${directory.files.toLocaleString()} file(s)`,
+    })),
+    WHOLE_REPOSITORY,
+  ];
+}
 
 /**
  * How much of a task's record the conversation holds at once.
@@ -304,7 +319,9 @@ export function ShellWorkspace({
   const [revealLine, setRevealLine] = useState<number | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
   const [agentId, setAgentId] = useState(AGENTS[0].id);
-  const [scopeId, setScopeId] = useState(SCOPES[0].id);
+  const [scopeId, setScopeId] = useState(ASK_EVERY_WRITE.id);
+  const [directories, setDirectories] = useState<{ name: string; files: number }[]>([]);
+  const scopes = useMemo(() => composerScopes(directories), [directories]);
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [notes, setNotes] = useState<Note[]>([]);
@@ -933,6 +950,22 @@ export function ShellWorkspace({
     };
   }, []);
 
+  useEffect(() => {
+    let active = true;
+    invoke<{ name: string; files: number }[]>("top_directories", {
+      repositoryId: project.repositoryId,
+    })
+      .then((found) => {
+        if (active) setDirectories(found);
+      })
+      .catch(() => {
+        if (active) setDirectories([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [project.repositoryId]);
+
   // One page of files is enough to make `@` useful without walking a monorepo.
   useEffect(() => {
     let active = true;
@@ -1426,7 +1459,7 @@ ${text}` : text));
     setAssignment(text);
     setPlanState("loading");
     setPlanError(null);
-    const scope = SCOPES.find((candidate) => candidate.id === scopeId) ?? SCOPES[0];
+    const scope = scopes.find((candidate) => candidate.id === scopeId) ?? ASK_EVERY_WRITE;
     try {
       const planned = await invoke<WorktreeProposal>("plan_task", {
         request: {
@@ -2910,7 +2943,7 @@ ${text}` : text));
               taskTitle: selectedTask?.title,
             }}
             onValueChange={setDraft}
-            scopes={SCOPES}
+            scopes={scopes}
             selectedAgentId={agentId}
             selectedScopeId={scopeId}
             skills={skills.map((skill) => ({

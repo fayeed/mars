@@ -683,6 +683,19 @@ fn list_files(
         .map_err(Into::into)
 }
 
+/// Where in the repository work tends to happen: its top-level directories,
+/// largest first. The composer offers them as places an agent may write.
+#[tauri::command]
+async fn top_directories(
+    repository_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<mars_core::files::DirectorySummary>, CommandFailure> {
+    state
+        .files
+        .top_directories(&repository_id)
+        .map_err(Into::into)
+}
+
 #[tauri::command]
 fn read_file(
     repository_id: String,
@@ -3830,6 +3843,7 @@ fn main() {
             forge_commands::start_task_from_issue,
             forge_commands::open_external_url,
             watch_repository,
+            top_directories,
             knowledge_commands::project_knowledge,
             knowledge_commands::resolve_knowledge
         ])

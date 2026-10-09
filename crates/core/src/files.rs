@@ -22,6 +22,15 @@ pub struct FileEntry {
     pub size: u64,
 }
 
+/// A directory at the top of the repository and how many files under it the
+/// person (and an agent) can see.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectorySummary {
+    pub name: String,
+    pub files: usize,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FilePage {
@@ -109,6 +118,30 @@ impl FileService {
             entries,
             next_cursor,
         })
+    }
+
+    /// The repository's top-level directories, largest first, counting only
+    /// files a listing would show — so a directory that holds nothing but
+    /// ignored output is not offered as somewhere to work.
+    pub fn top_directories(&self, repository_id: &str) -> Result<Vec<DirectorySummary>, FileError> {
+        let repository = self.projects.find_repository(repository_id)?;
+        let mut counts = std::collections::BTreeMap::<String, usize>::new();
+        for entry in walk_files(&repository.root_path)? {
+            if let Some((top, _)) = entry.relative_path.split_once('/') {
+                *counts.entry(top.to_owned()).or_default() += 1;
+            }
+        }
+        let mut directories: Vec<_> = counts
+            .into_iter()
+            .map(|(name, files)| DirectorySummary { name, files })
+            .collect();
+        directories.sort_by(|left, right| {
+            right
+                .files
+                .cmp(&left.files)
+                .then_with(|| left.name.cmp(&right.name))
+        });
+        Ok(directories)
     }
 
     pub fn read_file(

@@ -99,6 +99,35 @@ fn listing_respects_git_product_and_default_ignores_with_pagination() {
 }
 
 #[test]
+fn top_directories_count_only_what_a_listing_shows_largest_first() {
+    let fixture = TestDirectory::new("top-directories");
+    let (storage, repository, repository_id) = trusted_repository(&fixture);
+    for (path, contents) in [
+        ("apps/web/a.ts", "a"),
+        ("apps/web/b.ts", "b"),
+        ("apps/api/c.ts", "c"),
+        ("lib/d.ts", "d"),
+        ("README.md", "readme"),
+        ("node_modules/pkg/index.js", "dependency"),
+        ("out/bundle.js", "built"),
+    ] {
+        let path = repository.join(path);
+        fs::create_dir_all(path.parent().expect("parent")).expect("directory should exist");
+        fs::write(path, contents).expect("file should write");
+    }
+    fs::write(repository.join(".gitignore"), "out/\n").expect("ignore file should write");
+
+    let directories = FileService::new(storage)
+        .top_directories(&repository_id)
+        .expect("directories should list");
+    let named: Vec<_> = directories
+        .iter()
+        .map(|directory| (directory.name.as_str(), directory.files))
+        .collect();
+    assert_eq!(named, [("apps", 3), ("lib", 1)]);
+}
+
+#[test]
 fn reads_reject_binary_oversized_and_escaping_paths() {
     let fixture = TestDirectory::new("read-guards");
     let (storage, repository, repository_id) = trusted_repository(&fixture);
