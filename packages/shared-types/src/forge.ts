@@ -127,3 +127,73 @@ export interface PlannedCheck {
   /** True when the file names `pull_request` among its triggers. */
   onPullRequest: boolean;
 }
+
+/** One remote, and what Mars can do with its forge. */
+export interface RemoteForge {
+  name: string;
+  url: string;
+  host: string | null;
+  owner: string | null;
+  repository: string | null;
+  /** `github` when Mars can read the remote as a GitHub repository. */
+  provider: "github" | "unknown";
+  connected: boolean;
+  account: string | null;
+  connection: ForgeConnection | null;
+}
+
+export type ItemState = "open" | "closed" | "all";
+export type MergeMethod = "merge" | "squash" | "rebase";
+
+export interface ForgeIssue {
+  providerId: string;
+  number: number;
+  title: string;
+  body: string;
+  state: string;
+  url: string;
+  author: string;
+  labels: string[];
+  updatedAt: string;
+}
+
+export interface ForgePullRequest {
+  providerId: string;
+  number: number;
+  title: string;
+  body: string;
+  state: string;
+  url: string;
+  head: string;
+  base: string;
+  draft: boolean;
+  mergeable: boolean | null;
+  headSha: string;
+  updatedAt: string;
+}
+
+export interface IssueComment {
+  providerId: string;
+  author: string;
+  body: string;
+  url: string;
+  createdAt: string;
+}
+
+export interface ForgeIssueDetail {
+  issue: ForgeIssue;
+  comments: IssueComment[];
+}
+
+export interface ForgePullRequestDetail {
+  pull: ForgePullRequest;
+  checks: CheckRun[];
+  reviewComments: ReviewComment[];
+  comments: IssueComment[];
+}
+
+export interface MergeOutcome {
+  merged: boolean;
+  sha: string | null;
+  message: string;
+}

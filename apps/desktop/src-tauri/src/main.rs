@@ -2,6 +2,7 @@
 // and the `mcp` mode an agent CLI starts speaks over the pipes it is given.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod forge_commands;
 mod runs;
 mod scm_commands;
 
@@ -2575,9 +2576,20 @@ async fn connect_github(
     token: String,
     state: State<'_, AppState>,
 ) -> Result<ForgeConnection, CommandFailure> {
-    let remote = state.forge.resolve_remote(&repository_id, &remote_name)?;
+    connect_github_with_token(&state, &repository_id, &remote_name, &token)
+}
+
+/// Verify a token against the account it belongs to, keep it in the OS
+/// keychain, and record only a reference to it (ADR-024).
+fn connect_github_with_token(
+    state: &AppState,
+    repository_id: &str,
+    remote_name: &str,
+    token: &str,
+) -> Result<ForgeConnection, CommandFailure> {
+    let remote = state.forge.resolve_remote(repository_id, remote_name)?;
     let api_base = github_api_base(&remote.repository);
-    let provider = github_provider(remote.repository, &token)?;
+    let provider = github_provider(remote.repository, token)?;
     let user = provider.current_user()?;
     let credential_ref = format!("github:{}:{}", remote.id, user.login);
     state.credentials.set(&credential_ref, token.trim())?;
@@ -3760,7 +3772,17 @@ fn main() {
             scm_commands::worktree_cleanup_plan,
             scm_commands::worktree_cleanup,
             scm_commands::worktree_restore,
-            scm_commands::worktree_last_cleanup
+            scm_commands::worktree_last_cleanup,
+            forge_commands::forge_status,
+            forge_commands::connect_github_cli,
+            forge_commands::github_issues,
+            forge_commands::github_pull_requests,
+            forge_commands::github_issue,
+            forge_commands::github_pull_request,
+            forge_commands::github_comment,
+            forge_commands::github_merge,
+            forge_commands::start_task_from_issue,
+            forge_commands::open_external_url
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Mars desktop");

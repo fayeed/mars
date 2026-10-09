@@ -1,6 +1,6 @@
 use mars_forge::{
     CheckRun, CreatePullRequest, ForgeError, ForgeProvider, ForgeRepository, ForgeUser, Issue,
-    PullRequest, ReviewComment,
+    IssueComment, ItemState, MergeMethod, MergeOutcome, PullRequest, ReviewComment,
 };
 use reqwest::Method;
 use reqwest::blocking::{Client, Response};
@@ -218,6 +218,124 @@ impl ForgeProvider for GitHubProvider {
             "GitHub check pagination exceeded 100 pages".into(),
         ))
     }
+
+    fn list_issues(&self, state: ItemState, page: u32) -> Result<Vec<Issue>, ForgeError> {
+        let raw: Vec<GitHubIssue> = self.request(
+            Method::GET,
+            &format!(
+                "/issues?state={}&sort=updated&direction=desc&per_page=50&page={}",
+                state.as_str(),
+                page.max(1)
+            ),
+            None,
+        )?;
+        // GitHub's issues endpoint returns pull requests too, marked by a
+        // `pull_request` field; they are listed as pull requests instead.
+        Ok(raw
+            .into_iter()
+            .filter(|issue| issue.pull_request.is_none())
+            .map(Into::into)
+            .collect())
+    }
+
+    fn list_pull_requests(
+        &self,
+        state: ItemState,
+        page: u32,
+    ) -> Result<Vec<PullRequest>, ForgeError> {
+        let raw: Vec<GitHubPull> = self.request(
+            Method::GET,
+            &format!(
+                "/pulls?state={}&sort=updated&direction=desc&per_page=50&page={}",
+                state.as_str(),
+                page.max(1)
+            ),
+            None,
+        )?;
+        Ok(raw.into_iter().map(Into::into).collect())
+    }
+
+    fn list_comments(&self, number: u64) -> Result<Vec<IssueComment>, ForgeError> {
+        let mut comments = Vec::new();
+        for page in 1..=100 {
+            let raw: Vec<GitHubIssueComment> = self.request(
+                Method::GET,
+                &format!("/issues/{number}/comments?per_page=100&page={page}"),
+                None,
+            )?;
+            let complete = raw.len() < 100;
+            comments.extend(raw.into_iter().map(Into::into));
+            if complete {
+                return Ok(comments);
+            }
+        }
+        Err(ForgeError::InvalidResponse(
+            "GitHub comment pagination exceeded 100 pages".into(),
+        ))
+    }
+
+    fn comment(&self, number: u64, body: &str) -> Result<IssueComment, ForgeError> {
+        if body.trim().is_empty() {
+            return Err(ForgeError::Request("a comment cannot be empty".into()));
+        }
+        let raw: GitHubIssueComment = self.request(
+            Method::POST,
+            &format!("/issues/{number}/comments"),
+            Some(serde_json::json!({ "body": body })),
+        )?;
+        Ok(raw.into())
+    }
+
+    fn merge_pull_request(
+        &self,
+        number: u64,
+        method: MergeMethod,
+        expected_head: &str,
+    ) -> Result<MergeOutcome, ForgeError> {
+        // `sha` makes GitHub refuse the merge if the head moved after it was
+        // reviewed, so what lands is what the person looked at.
+        let raw: GitHubMerge = self.request(
+            Method::PUT,
+            &format!("/pulls/{number}/merge"),
+            Some(serde_json::json!({ "merge_method": method.as_str(), "sha": expected_head })),
+        )?;
+        Ok(MergeOutcome {
+            merged: raw.merged,
+            sha: raw.sha,
+            message: raw.message,
+        })
+    }
+}
+
+#[derive(Deserialize)]
+struct GitHubIssueComment {
+    id: u64,
+    user: User,
+    #[serde(default)]
+    body: Option<String>,
+    html_url: String,
+    created_at: String,
+}
+
+impl From<GitHubIssueComment> for IssueComment {
+    fn from(value: GitHubIssueComment) -> Self {
+        Self {
+            provider_id: value.id.to_string(),
+            author: value.user.login,
+            body: value.body.unwrap_or_default(),
+            url: value.html_url,
+            created_at: value.created_at,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct GitHubMerge {
+    #[serde(default)]
+    sha: Option<String>,
+    merged: bool,
+    #[serde(default)]
+    message: String,
 }
 
 #[derive(Deserialize)]
@@ -254,6 +372,9 @@ struct GitHubIssue {
     user: User,
     labels: Vec<Label>,
     updated_at: String,
+    /// Present only when the "issue" is a pull request.
+    #[serde(default)]
+    pull_request: Option<Value>,
 }
 
 impl From<GitHubIssue> for Issue {

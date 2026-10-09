@@ -33,6 +33,7 @@ import type {
   PullRequestPlan,
   PullRequestSnapshot,
   OpenRepositoryOutcome,
+  RemoteForge,
   ProjectSnapshot,
   RecoveryAction,
   ReviewFinding,
@@ -78,7 +79,7 @@ import { CommandPalette } from "@/features/palette/CommandPalette";
 import { PullRequestActivity } from "@/features/forge/PullRequestActivity";
 import { Settings } from "@/features/settings/Settings";
 import { SkillsMarketplace } from "@/features/skills/SkillsMarketplace";
-import { SourceControl } from "@/features/review/SourceControl";
+import { SourceControl, type SourceScope } from "@/features/review/SourceControl";
 import { BaseDriftMessage } from "@/features/tasks/BaseDriftMessage";
 import {
   ChecksPanel,
@@ -375,6 +376,12 @@ export function ShellWorkspace({
   const [busyFindingId, setBusyFindingId] = useState<string | null>(null);
 
   const [library, setLibrary] = useState<LibraryTab | null>(null);
+  // Opening a part of Source control from elsewhere (Settings' "Connect
+  // GitHub") remounts it on that part.
+  const [sourceOpening, setSourceOpening] = useState<{ scope: SourceScope; nonce: number } | null>(
+    null,
+  );
+  const [githubRemotes, setGithubRemotes] = useState<RemoteForge[]>([]);
   const [agentProbes, setAgentProbes] = useState<SettingsAgent[]>([]);
   const [probeState, setProbeState] = useState<ActivityState>("idle");
   /** An agent's sign-in, waiting to be typed into whichever terminal opens. */
@@ -554,6 +561,23 @@ export function ShellWorkspace({
    * Everything the conversation shows comes from here, so a live run and a
    * reload are the same code path: both ask the log for what they have not seen.
    */
+  // Settings names the GitHub account in use; it is read when Settings opens
+  // so a connection made in Source control shows there without a restart.
+  useEffect(() => {
+    if (library !== "settings") return;
+    let active = true;
+    invoke<RemoteForge[]>("forge_status", { repositoryId: project.repositoryId })
+      .then((remotes) => {
+        if (active) setGithubRemotes(remotes);
+      })
+      .catch(() => {
+        if (active) setGithubRemotes([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [library, project.repositoryId]);
+
   const loadRecord = useCallback(
     (taskId: string, limit: number = recordLimitRef.current) =>
       Promise.all([
@@ -2438,13 +2462,20 @@ ${text}` : text));
             agents={agentProbes}
             agentsState={probeState}
             busyGrantId={busyGrantId}
-            connection={null}
+            connection={
+              githubRemotes.find((remote) => remote.connected && remote.name === "origin")
+                ?.connection ??
+              githubRemotes.find((remote) => remote.connected)?.connection ??
+              null
+            }
             grants={grants}
             grantsState={grantsState}
             index={index}
-            onConnectGitHub={() =>
-              note("Connecting GitHub needs a token; that flow is not on this screen yet.", "queued")
-            }
+            onConnectGitHub={() => {
+              setLibrary(null);
+              setSourceOpening((current) => ({ scope: "github", nonce: (current?.nonce ?? 0) + 1 }));
+              dispatch({ type: "navigate", destination: "source-control" });
+            }}
             onRecheckAgents={() => void probeAgents()}
             onSignIn={(adapter) => void signInToAgent(adapter)}
             onUseSignIn={(adapter, useSignIn) => void chooseAgentSignIn(adapter, useSignIn)}
@@ -2539,6 +2570,16 @@ ${text}` : text));
         "source-control": {
           content: (
             <SourceControl
+              key={`source-control:${sourceOpening?.nonce ?? 0}`}
+              baseBranch={index?.branch ?? "HEAD"}
+              initialScope={sourceOpening?.scope}
+              onTaskPlanned={(planned) => {
+                setProposal(planned);
+                setSelectedTaskId(planned.taskId);
+                setReloadToken((token) => token + 1);
+                void loadRecord(planned.taskId);
+                dispatch({ type: "navigate", destination: "conversation" });
+              }}
               diff={
                 <DiffReview
                   branchName={diff?.branchName}

@@ -98,6 +98,65 @@ pub struct CheckRun {
     pub completed_at: Option<String>,
 }
 
+/// A comment on an issue or on a pull request's conversation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IssueComment {
+    pub provider_id: String,
+    pub author: String,
+    pub body: String,
+    pub url: String,
+    pub created_at: String,
+}
+
+/// Which items a list asks for.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ItemState {
+    Open,
+    Closed,
+    All,
+}
+
+impl ItemState {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Closed => "closed",
+            Self::All => "all",
+        }
+    }
+}
+
+/// How a pull request is merged on the forge.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MergeMethod {
+    Merge,
+    Squash,
+    Rebase,
+}
+
+impl MergeMethod {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Merge => "merge",
+            Self::Squash => "squash",
+            Self::Rebase => "rebase",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeOutcome {
+    pub merged: bool,
+    pub sha: Option<String>,
+    pub message: String,
+}
+
 #[derive(Debug, Error)]
 pub enum ForgeError {
     #[error(transparent)]
@@ -146,6 +205,52 @@ pub trait ForgeProvider: Send + Sync {
         number: u64,
         reviewers: &[String],
     ) -> Result<Vec<String>, ForgeError>;
+
+    /// One page of issues, newest activity first. Pull requests are not
+    /// issues here, even on forges whose API lists them together.
+    fn list_issues(&self, _state: ItemState, _page: u32) -> Result<Vec<Issue>, ForgeError> {
+        Err(ForgeError::Request(
+            "this forge cannot list issues yet".into(),
+        ))
+    }
+
+    /// One page of pull requests, newest activity first.
+    fn list_pull_requests(
+        &self,
+        _state: ItemState,
+        _page: u32,
+    ) -> Result<Vec<PullRequest>, ForgeError> {
+        Err(ForgeError::Request(
+            "this forge cannot list pull requests yet".into(),
+        ))
+    }
+
+    /// The conversation on an issue or a pull request, oldest first.
+    fn list_comments(&self, _number: u64) -> Result<Vec<IssueComment>, ForgeError> {
+        Err(ForgeError::Request(
+            "this forge cannot list comments yet".into(),
+        ))
+    }
+
+    /// Post a comment as the connected account.
+    fn comment(&self, _number: u64, _body: &str) -> Result<IssueComment, ForgeError> {
+        Err(ForgeError::Request(
+            "this forge cannot post comments yet".into(),
+        ))
+    }
+
+    /// Merge a pull request on the forge. `expected_head` guards against
+    /// merging a head that moved after the person looked at it.
+    fn merge_pull_request(
+        &self,
+        _number: u64,
+        _method: MergeMethod,
+        _expected_head: &str,
+    ) -> Result<MergeOutcome, ForgeError> {
+        Err(ForgeError::Request(
+            "this forge cannot merge pull requests yet".into(),
+        ))
+    }
 }
 
 pub fn detect_repository(remote: &str) -> Result<ForgeRepository, ForgeError> {

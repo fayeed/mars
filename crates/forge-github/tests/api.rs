@@ -169,3 +169,104 @@ fn pull_json() -> Value {
         "draft": false, "mergeable": true, "updated_at": "2026-08-30T00:05:00Z"
     })
 }
+
+fn provider_with(transport: Arc<FakeTransport>) -> GitHubProvider {
+    GitHubProvider::with_transport(
+        ForgeRepository {
+            host: "github.test".into(),
+            owner: "acme".into(),
+            name: "mars".into(),
+        },
+        "https://api.github.test",
+        transport,
+    )
+}
+
+#[test]
+fn issues_lists_leave_pull_requests_out_and_ask_for_recent_activity_first() {
+    let issue = json!({
+        "id": 1, "number": 7, "title": "Sync drops events", "body": null, "state": "open",
+        "html_url": "https://github.test/acme/mars/issues/7", "user": { "login": "faye" },
+        "labels": [{ "name": "bug" }], "updated_at": "2026-10-01T00:00:00Z"
+    });
+    let pull_as_issue = json!({
+        "id": 2, "number": 9, "title": "Fix sync", "body": "", "state": "open",
+        "html_url": "https://github.test/acme/mars/pull/9", "user": { "login": "claude" },
+        "labels": [], "updated_at": "2026-10-02T00:00:00Z",
+        "pull_request": { "url": "https://api.github.test/repos/acme/mars/pulls/9" }
+    });
+    let transport = Arc::new(FakeTransport::with_responses(vec![
+        json!([issue, pull_as_issue]),
+        json!([pull_json()]),
+    ]));
+    let provider = provider_with(transport.clone());
+
+    let issues = provider
+        .list_issues(mars_forge::ItemState::Open, 1)
+        .expect("issues list");
+    assert_eq!(issues.len(), 1);
+    assert_eq!(issues[0].number, 7);
+    assert_eq!(issues[0].labels, vec!["bug".to_owned()]);
+
+    let pulls = provider
+        .list_pull_requests(mars_forge::ItemState::Open, 2)
+        .expect("pulls list");
+    assert_eq!(pulls[0].number, 9);
+
+    let requests = transport.requests.lock().expect("requests");
+    assert!(requests[0].1.ends_with(
+        "/repos/acme/mars/issues?state=open&sort=updated&direction=desc&per_page=50&page=1"
+    ));
+    assert!(
+        requests[1]
+            .1
+            .contains("/pulls?state=open&sort=updated&direction=desc&per_page=50&page=2")
+    );
+}
+
+#[test]
+fn comments_are_read_and_posted_on_the_conversation() {
+    let comment = json!({
+        "id": 30, "user": { "login": "faye" }, "body": "Looks good",
+        "html_url": "https://github.test/acme/mars/pull/9#issuecomment-30",
+        "created_at": "2026-10-03T00:00:00Z"
+    });
+    let transport = Arc::new(FakeTransport::with_responses(vec![
+        json!([comment.clone()]),
+        comment,
+    ]));
+    let provider = provider_with(transport.clone());
+    let comments = provider.list_comments(9).expect("comments");
+    assert_eq!(comments[0].body, "Looks good");
+    let posted = provider.comment(9, "Looks good").expect("posted");
+    assert_eq!(posted.author, "faye");
+    assert!(matches!(
+        provider.comment(9, "   "),
+        Err(ForgeError::Request(_))
+    ));
+
+    let requests = transport.requests.lock().expect("requests");
+    assert_eq!(requests[1].0, Method::POST);
+    assert!(requests[1].1.ends_with("/issues/9/comments"));
+    assert_eq!(requests[1].2, Some(json!({ "body": "Looks good" })));
+}
+
+#[test]
+fn a_merge_is_pinned_to_the_head_that_was_reviewed() {
+    let transport = Arc::new(FakeTransport::with_responses(vec![json!({
+        "sha": "merged123", "merged": true, "message": "Pull Request successfully merged"
+    })]));
+    let provider = provider_with(transport.clone());
+    let outcome = provider
+        .merge_pull_request(9, mars_forge::MergeMethod::Squash, "abc123")
+        .expect("merge");
+    assert!(outcome.merged);
+    assert_eq!(outcome.sha.as_deref(), Some("merged123"));
+    let requests = transport.requests.lock().expect("requests");
+    assert_eq!(requests[0].0, Method::PUT);
+    assert!(requests[0].1.ends_with("/pulls/9/merge"));
+    assert_eq!(
+        requests[0].2,
+        Some(json!({ "merge_method": "squash", "sha": "abc123" }))
+    );
+}

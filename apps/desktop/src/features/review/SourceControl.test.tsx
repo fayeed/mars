@@ -46,6 +46,7 @@ const clean: RepoStatus = {
 function renderSourceControl(props: Partial<Parameters<typeof SourceControl>[0]> = {}) {
   return render(
     <SourceControl
+      baseBranch="main"
       diff={<p>the diff</p>}
       repositoryId="repository-1"
       repositoryName="mars"
@@ -120,6 +121,28 @@ describe("SourceControl", () => {
 
     await user.click(screen.getByRole("button", { name: /Split the broker/ }));
     expect(onSelectTask).toHaveBeenCalledWith("task-2");
+  });
+
+  it("opens GitHub beside the repository and its worktrees", async () => {
+    const user = userEvent.setup();
+    renderSourceControl();
+    await user.click(screen.getByRole("button", { name: /Issues and pull requests/ }));
+
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("forge_status", { repositoryId: "repository-1" }),
+    );
+  });
+
+  it("can open on GitHub when another screen asks for it", async () => {
+    renderSourceControl({ initialScope: "github" });
+
+    expect(screen.getByRole("button", { name: /Issues and pull requests/ })).toHaveAttribute(
+      "aria-current",
+      "true",
+    );
+    await waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("forge_status", { repositoryId: "repository-1" }),
+    );
   });
 
   it("explains an empty list rather than showing an empty rail", () => {

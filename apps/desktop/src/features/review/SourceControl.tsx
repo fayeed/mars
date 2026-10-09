@@ -1,9 +1,11 @@
-import type { WorktreePlan } from "@mars/shared-types";
+import type { WorktreePlan, WorktreeProposal } from "@mars/shared-types";
 import { useState, type ReactNode } from "react";
 
 import { cn } from "@/lib/utils";
 import type { ActivityState } from "@/shell/activity-state";
 import { MetaLabel, Mono, StateBlock, StateDot } from "@/shell/primitives";
+
+import { GitHubPanel } from "../forge/GitHubPanel";
 
 import { GitPanel } from "./GitPanel";
 import { IntegratePanel } from "./IntegratePanel";
@@ -20,7 +22,14 @@ export interface SourceControlProps {
   /** Called after anything changes a working directory or its history. */
   onChanged?: () => void;
   onOpenFile?: (path: string, line: number | null) => void;
+  /** The branch a task planned from an issue starts from. */
+  baseBranch: string;
+  /** Which part is open first; the screen remounts this to open another. */
+  initialScope?: SourceScope;
+  onTaskPlanned?: (proposal: WorktreeProposal) => void;
 }
+
+export type SourceScope = "repository" | "task" | "github";
 
 type TaskView = "review" | "git" | "merge";
 
@@ -33,17 +42,22 @@ type TaskView = "review" | "git" | "merge";
  * against where it started and merged home when it is done.
  */
 export function SourceControl({
+  baseBranch,
   diff,
+  initialScope,
   onChanged,
   onOpenFile,
   onSelectTask,
+  onTaskPlanned,
   repositoryId,
   repositoryName,
   selectedTaskId,
   tasks,
   worktreeState,
 }: SourceControlProps) {
-  const [scope, setScope] = useState<"repository" | "task">(selectedTaskId ? "task" : "repository");
+  const [scope, setScope] = useState<SourceScope>(
+    initialScope ?? (selectedTaskId ? "task" : "repository"),
+  );
   const [view, setView] = useState<TaskView>("review");
   const task = scope === "task" ? tasks.find((candidate) => candidate.taskId === selectedTaskId) : undefined;
 
@@ -66,6 +80,20 @@ export function SourceControl({
         >
           <MetaLabel>Repository</MetaLabel>
           <span className="truncate text-[12px] text-foreground">{repositoryName}</span>
+        </button>
+        <button
+          type="button"
+          aria-current={scope === "github" ? "true" : undefined}
+          onClick={() => setScope("github")}
+          className={cn(
+            "relative flex w-full flex-col gap-0.5 border-b border-border px-2 py-1.5 text-left outline-none",
+            "before:absolute before:inset-y-0 before:left-0 before:w-0.5 before:bg-transparent",
+            "hover:bg-surface-raised focus-visible:shadow-[inset_0_0_0_1px_var(--ring)]",
+            scope === "github" && "bg-surface-raised before:bg-primary",
+          )}
+        >
+          <MetaLabel>GitHub</MetaLabel>
+          <span className="truncate text-[12px] text-foreground">Issues and pull requests</span>
         </button>
         <div className="flex items-baseline gap-2 border-b border-border px-2 py-1.5">
           <MetaLabel>Worktrees</MetaLabel>
@@ -116,7 +144,13 @@ export function SourceControl({
       </aside>
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        {scope === "repository" ? (
+        {scope === "github" ? (
+          <GitHubPanel
+            baseBranch={baseBranch}
+            onTaskPlanned={onTaskPlanned}
+            repositoryId={repositoryId}
+          />
+        ) : scope === "repository" ? (
           <GitPanel
             key={`repository:${repositoryId}`}
             onChanged={onChanged}
