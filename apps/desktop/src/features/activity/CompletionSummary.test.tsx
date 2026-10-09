@@ -145,4 +145,45 @@ describe("CompletionSummary", () => {
 
     expect(screen.queryByText(/awaiting your approval/i)).not.toBeInTheDocument();
   });
+
+  it("offers the decisions the agent made for review", async () => {
+    const user = userEvent.setup();
+    const onReviewDecisions = vi.fn();
+    renderSummary({
+      decisions: [
+        {
+          record: {
+            id: "k1",
+            projectId: "p1",
+            repositoryId: "r1",
+            kind: "decision",
+            title: "Use a token bucket",
+            body: "Because bursts.",
+            status: "candidate",
+            confidence: 0.8,
+            provenanceId: "pv1",
+            provenanceKind: "agent_inferred",
+            resolutionProvenanceId: null,
+            supersedesId: null,
+            pinned: false,
+            createdAt: "",
+            updatedAt: "",
+          },
+          taskId: "task-1",
+          taskTitle: "Rate limit",
+          agent: "claude",
+          runId: "run-1",
+          via: "agent",
+          alternatives: [],
+          files: [],
+        },
+      ],
+      onReviewDecisions,
+    });
+
+    const section = screen.getByRole("region", { name: "Decisions awaiting your review" });
+    expect(section).toHaveTextContent("Use a token bucket");
+    await user.click(screen.getByRole("button", { name: "Review decisions" }));
+    expect(onReviewDecisions).toHaveBeenCalled();
+  });
 });

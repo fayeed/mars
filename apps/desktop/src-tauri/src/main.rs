@@ -3,6 +3,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod forge_commands;
+mod knowledge_commands;
 mod runs;
 mod scm_commands;
 
@@ -3782,7 +3783,9 @@ fn main() {
             forge_commands::github_comment,
             forge_commands::github_merge,
             forge_commands::start_task_from_issue,
-            forge_commands::open_external_url
+            forge_commands::open_external_url,
+            knowledge_commands::project_knowledge,
+            knowledge_commands::resolve_knowledge
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Mars desktop");

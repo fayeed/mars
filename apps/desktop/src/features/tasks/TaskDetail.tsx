@@ -51,6 +51,8 @@ import { classifyFailure } from "@/shell/failure";
 interface TaskDetailProps {
   /** Told whenever this view learns something newer about an agent's account. */
   onAccountChanged?: (account: AgentAccount) => void;
+  /** Told after this view adds to or settles the project's knowledge. */
+  onKnowledgeChanged?: () => void;
   onOpenWorktree: (project: ProjectSnapshot) => void;
   /** Opens a terminal running the agent's own sign-in command. */
   onSignIn?: (adapter: AdapterKind) => void;
@@ -67,6 +69,7 @@ function messageFor(error: unknown) {
 
 export function TaskDetail({
   onAccountChanged,
+  onKnowledgeChanged,
   onOpenWorktree,
   onSignIn,
   onTaskChanged,
@@ -314,7 +317,7 @@ export function TaskDetail({
         <ContextTray repositoryId={task.repositoryId} taskId={task.taskId} />
         <OverlapWarnings taskId={task.taskId} />
         <SkillBrowser repositoryId={task.repositoryId} taskId={task.taskId} />
-        <MemoryReview adapter={adapter} taskId={task.taskId} />
+        <MemoryReview adapter={adapter} onChanged={onKnowledgeChanged} taskId={task.taskId} />
         <CrossAgentReview
           disabled={busy || running}
           implementationAdapter={adapter}

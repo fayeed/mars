@@ -214,6 +214,31 @@ describe("ActivityLog", () => {
   });
 });
 
+describe("ActivityLog focus", () => {
+  it("brings a turn into view, marks it, and says when it has", () => {
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    const onFocused = vi.fn();
+    const events = [
+      event("message", { payload: { text: "first" } }),
+      event("message", { payload: { text: "the origin" } }),
+    ];
+    render(<ActivityLog events={events} focusSequence={events[1].sequence} onFocused={onFocused} />);
+
+    const rows = within(screen.getByRole("list", { name: "Activity" })).getAllByRole("listitem");
+    expect(rows[1]).toHaveAttribute("data-focused", "true");
+    expect(rows[0]).not.toHaveAttribute("data-focused");
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: "center" });
+    expect(onFocused).toHaveBeenCalledTimes(1);
+  });
+
+  it("waits for a turn that has not loaded yet", () => {
+    const onFocused = vi.fn();
+    render(<ActivityLog events={[event("message")]} focusSequence={9999} onFocused={onFocused} />);
+    expect(onFocused).not.toHaveBeenCalled();
+  });
+});
+
 describe("ActivityLog failure action", () => {
   const failing = event("test_run", {
     summary: "cargo test -p mars-ingest",

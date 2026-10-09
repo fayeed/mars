@@ -2,7 +2,7 @@ mod support;
 
 use mars_brain::{
     EntityKind, EntityRef, KnowledgeError, KnowledgeKind, KnowledgeService, KnowledgeStatus,
-    NewKnowledge, NewProvenance, ProvenanceKind,
+    KnowledgeVia, NewKnowledge, NewProvenance, ProvenanceKind,
 };
 use serde_json::json;
 
@@ -206,6 +206,90 @@ fn generic_links_validate_targets_and_authority_order_is_stable() {
         ),
         Err(KnowledgeError::EntityNotFound(_))
     ));
+}
+
+#[test]
+fn a_record_says_which_task_and_agent_it_came_from_and_keeps_that_through_a_correction() {
+    let fixture = support::indexed_fixture();
+    let (project_id, task_id) = seed_task(&fixture);
+    let service = KnowledgeService::new(fixture.storage.clone());
+
+    // Recorded by an agent over MCP, while it worked.
+    let recorded = service
+        .create_provenance(NewProvenance {
+            project_id: project_id.clone(),
+            kind: ProvenanceKind::AgentInferred,
+            source: EntityRef::new(EntityKind::Task, &task_id),
+            evidence: json!({
+                "via": "mcp",
+                "agent": "claude",
+                "runId": "run-1",
+                "alternatives": ["fixed window", "leaky bucket"],
+                "files": ["src/not-indexed.ts"],
+            }),
+            observed_at: "2026-08-29T00:00:00Z".into(),
+        })
+        .expect("provenance");
+    let decision = service
+        .create_candidate(candidate(
+            &project_id,
+            &recorded.id,
+            0.8,
+            "Use a token bucket",
+        ))
+        .expect("candidate");
+    let origin = service.origin(&decision).expect("origin");
+    assert_eq!(origin.via, KnowledgeVia::Agent);
+    assert_eq!(origin.task_id.as_deref(), Some(task_id.as_str()));
+    assert_eq!(origin.agent.as_deref(), Some("claude"));
+    assert_eq!(origin.run_id.as_deref(), Some("run-1"));
+    assert_eq!(origin.alternatives, ["fixed window", "leaky bucket"]);
+    assert_eq!(origin.files, ["src/not-indexed.ts"]);
+
+    // Read out of a finished session: the session names the task and agent.
+    fixture
+        .storage
+        .with_connection(|connection| {
+            connection.execute(
+                "INSERT INTO agent_sessions (id, task_id, adapter_kind, status, command_json, created_at, started_at)
+                 VALUES ('session-1', ?1, 'codex', 'completed', '{}', '2026-08-29T00:00:00Z', '2026-08-29T00:00:00Z')",
+                [&task_id],
+            )
+        })
+        .expect("session");
+    let extracted = service
+        .create_provenance(NewProvenance {
+            project_id: project_id.clone(),
+            kind: ProvenanceKind::AgentInferred,
+            source: EntityRef::new(EntityKind::AgentSession, "session-1"),
+            evidence: json!({ "evidenceIds": [], "category": "decision" }),
+            observed_at: "2026-08-29T00:00:00Z".into(),
+        })
+        .expect("provenance");
+    let found = service
+        .create_candidate(candidate(&project_id, &extracted.id, 0.6, "Keep SQLite"))
+        .expect("candidate");
+    let origin = service.origin(&found).expect("origin");
+    assert_eq!(origin.via, KnowledgeVia::Extraction);
+    assert_eq!(origin.task_id.as_deref(), Some(task_id.as_str()));
+    assert_eq!(origin.agent.as_deref(), Some("codex"));
+
+    // Corrected by a person: theirs now, but still from that task and agent.
+    let human = provenance(&service, &project_id, &task_id, ProvenanceKind::Human);
+    service.approve(&decision.id, &human.id).expect("approve");
+    let corrected = service
+        .correct(
+            &decision.id,
+            "Use a token bucket per tenant",
+            "Per tenant.",
+            &human.id,
+        )
+        .expect("correct");
+    let origin = service.origin(&corrected).expect("origin");
+    assert_eq!(origin.via, KnowledgeVia::Person);
+    assert_eq!(origin.task_id.as_deref(), Some(task_id.as_str()));
+    assert_eq!(origin.agent.as_deref(), Some("claude"));
+    assert_eq!(origin.alternatives, ["fixed window", "leaky bucket"]);
 }
 
 fn provenance(

@@ -47,6 +47,7 @@ export const SHELL_BINDINGS: readonly ShellBinding[] = [
   binding("go.editor", { key: "2", mod: true }, "Go to editor"),
   binding("go.source-control", { key: "3", mod: true }, "Go to source control"),
   binding("go.agents", { key: "4", mod: true }, "Go to agents"),
+  binding("go.knowledge", { key: "5", mod: true }, "Go to knowledge"),
   binding("toggle.taskRail", { key: "b", mod: true }, "Toggle task rail"),
   binding("toggle.inspector", { key: "i", mod: true, shift: true }, "Toggle inspector"),
   binding("toggle.utility", { key: "j", mod: true }, "Toggle utility panel"),

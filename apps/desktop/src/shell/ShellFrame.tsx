@@ -30,6 +30,8 @@ export type WorkbenchSurfaces = Partial<
 
 export interface ShellFrameProps {
   accountLabel?: string;
+  /** Counts of what is waiting on the person, per destination. */
+  badges?: Partial<Record<Destination, number>>;
   onAccount?: () => void;
   /**
    * The shell's own chords that need a screen to act on.
@@ -51,6 +53,7 @@ const WORKBENCH_TITLE: Record<Exclude<Destination, "conversation">, string> = {
   editor: "Editor",
   "source-control": "Source control",
   agents: "Agents",
+  knowledge: "Knowledge",
 };
 
 const WORKBENCH_EMPTY: Record<
@@ -70,6 +73,11 @@ const WORKBENCH_EMPTY: Record<
     title: "No agents yet",
     description: "Every agent run in this repository appears here, working or finished.",
   },
+  knowledge: {
+    title: "Nothing recorded yet",
+    description:
+      "Decisions agents make, memories they propose, and the project's code graph appear here.",
+  },
 };
 
 /**
@@ -82,6 +90,7 @@ const WORKBENCH_EMPTY: Record<
  */
 export function ShellFrame({
   accountLabel,
+  badges,
   onAccount,
   keys,
   conversation = {},
@@ -162,7 +171,7 @@ export function ShellFrame({
   return (
     <div className="flex h-screen min-w-[820px] flex-col overflow-hidden bg-sunken text-foreground">
       <div className="flex min-h-0 flex-1">
-        <AppRail accountLabel={accountLabel} onAccount={onAccount} />
+        <AppRail accountLabel={accountLabel} badges={badges} onAccount={onAccount} />
         <TaskRail {...taskRail} />
 
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">

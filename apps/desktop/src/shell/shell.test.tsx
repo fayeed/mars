@@ -47,14 +47,23 @@ function renderShell(overrides: Parameters<typeof ShellFrame>[0] = {}) {
 }
 
 describe("ShellFrame regions", () => {
-  it("shows the four destinations plus theme and account", () => {
+  it("shows the five destinations plus theme and account", () => {
     renderShell();
     const rail = screen.getByRole("navigation", { name: "Destinations" });
-    expect(within(rail).getAllByRole("button")).toHaveLength(6);
+    expect(within(rail).getAllByRole("button")).toHaveLength(7);
     expect(within(rail).getByRole("button", { name: "Conversation" })).toBeVisible();
     expect(within(rail).getByRole("button", { name: "Editor" })).toBeVisible();
     expect(within(rail).getByRole("button", { name: "Source control" })).toBeVisible();
     expect(within(rail).getByRole("button", { name: "Agents" })).toBeVisible();
+    expect(within(rail).getByRole("button", { name: "Knowledge" })).toBeVisible();
+  });
+
+  it("counts what is waiting on the person at a destination", () => {
+    renderShell({ badges: { knowledge: 3 } });
+    const rail = screen.getByRole("navigation", { name: "Destinations" });
+    expect(
+      within(rail).getByRole("button", { name: "Knowledge, 3 waiting on you" }),
+    ).toBeVisible();
   });
 
   it("keeps the conversation and its composer present on every destination", async () => {

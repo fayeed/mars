@@ -48,8 +48,9 @@ pub use extraction::{
     ExtractionService, ManualMemoryDraft, MemoryCategory, render_extraction_prompt,
 };
 pub use knowledge::{
-    EntityKind, EntityLink, EntityRef, KnowledgeError, KnowledgeKind, KnowledgeRecord,
-    KnowledgeService, KnowledgeStatus, NewKnowledge, NewProvenance, Provenance, ProvenanceKind,
+    EntityKind, EntityLink, EntityRef, KnowledgeError, KnowledgeKind, KnowledgeOrigin,
+    KnowledgeRecord, KnowledgeService, KnowledgeStatus, KnowledgeVia, NewKnowledge, NewProvenance,
+    Provenance, ProvenanceKind,
 };
 pub use query::{BrainError, BrainService};
 pub use review::{

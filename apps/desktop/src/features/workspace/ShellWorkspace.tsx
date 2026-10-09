@@ -23,6 +23,12 @@ import type {
   IndexEvent,
   IndexStatus,
   InterruptedRun,
+  ApprovalOutcome,
+  ConflictChoice,
+  ConflictResolution,
+  DetectedConflict,
+  KnowledgeAction,
+  KnowledgeItem,
   Memory,
   MemoryFilters,
   MemoryProposal,
@@ -75,6 +81,13 @@ import { BrainAnswerMessage } from "@/features/brain/BrainAnswerMessage";
 import { BrainExplorer } from "@/features/brain/BrainExplorer";
 import { LibraryOverlay, type LibraryTab } from "@/features/library/LibraryOverlay";
 import { MemoryBrowser, type MemoryFilterState } from "@/features/memory/MemoryBrowser";
+import {
+  AgentKnowledgeEvent,
+  KNOWLEDGE_TOOLS,
+  isKnowledgeEvent,
+} from "@/features/knowledge/AgentKnowledgeEvent";
+import { DecisionLog, REVIEWED_KINDS } from "@/features/knowledge/DecisionLog";
+import { KnowledgeView, type KnowledgeTab } from "@/features/knowledge/KnowledgeView";
 import { CommandPalette } from "@/features/palette/CommandPalette";
 import { PullRequestActivity } from "@/features/forge/PullRequestActivity";
 import { Settings } from "@/features/settings/Settings";
@@ -349,7 +362,12 @@ export function ShellWorkspace({
   const [permissionError, setPermissionError] = useState<string | null>(null);
   const [interrupted, setInterrupted] = useState<InterruptedRun[]>([]);
   const [recoveryBusy, setRecoveryBusy] = useState(false);
-  const [proposals, setProposals] = useState<MemoryProposal[]>([]);
+  const [projectProposals, setProjectProposals] = useState<MemoryProposal[]>([]);
+  const proposals = useMemo(
+    () => projectProposals.filter((proposal) => proposal.taskId === selectedTaskId),
+    [projectProposals, selectedTaskId],
+  );
+  const waitingMemories = projectProposals.filter((proposal) => proposal.status === "pending").length;
   const [interrupting, setInterrupting] = useState(false);
 
   const [diff, setDiff] = useState<{
@@ -402,6 +420,23 @@ export function ShellWorkspace({
     contains: "",
   });
   const [busyMemoryId, setBusyMemoryId] = useState<string | null>(null);
+  const [memoryConflicts, setMemoryConflicts] = useState<Record<string, DetectedConflict[]>>({});
+  const [knowledge, setKnowledge] = useState<KnowledgeItem[]>([]);
+  const waitingDecisions = knowledge.filter(
+    (item) => item.record.status === "candidate" && REVIEWED_KINDS.includes(item.record.kind),
+  ).length;
+  const [knowledgeState, setKnowledgeState] = useState<ActivityState>("idle");
+  const [knowledgeError, setKnowledgeError] = useState<string | null>(null);
+  const [includeResolved, setIncludeResolved] = useState(false);
+  // The turn a jump to a memory's origin should bring into view.
+  const [focusSequence, setFocusSequence] = useState<number | null>(null);
+  const [busyKnowledgeId, setBusyKnowledgeId] = useState<string | null>(null);
+  // Opening a Knowledge tab from elsewhere (a transcript card, the end of a
+  // run) remounts the view on it.
+  const [knowledgeOpening, setKnowledgeOpening] = useState<{
+    tab: KnowledgeTab;
+    nonce: number;
+  } | null>(null);
 
   const [grants, setGrants] = useState<GrantView[]>([]);
   const [grantsState, setGrantsState] = useState<ActivityState>("idle");
@@ -788,22 +823,68 @@ export function ShellWorkspace({
     };
   }, [project.repositoryId]);
 
+  const loadProposals = useCallback(
+    () =>
+      invoke<MemoryProposal[]>("memory_pending", { filters: { projectId: project.projectId } })
+        .then(setProjectProposals)
+        .catch(() => setProjectProposals([])),
+    [project.projectId],
+  );
+
   useEffect(() => {
-    if (!selectedTaskId) return;
-    let active = true;
-    invoke<MemoryProposal[]>("memory_pending", {
-      filters: { projectId: project.projectId, taskId: selectedTaskId },
+    void loadProposals();
+  }, [loadProposals]);
+
+  // What agents decided, across every task. Candidates are what the
+  // Knowledge destination's badge counts.
+  const loadKnowledge = useCallback(() => {
+    setKnowledgeState("loading");
+    return invoke<KnowledgeItem[]>("project_knowledge", {
+      projectId: project.projectId,
+      includeResolved,
     })
       .then((items) => {
-        if (active) setProposals(items);
+        setKnowledge(items);
+        setKnowledgeError(null);
+        setKnowledgeState("idle");
       })
-      .catch(() => {
-        if (active) setProposals([]);
+      .catch((caught: unknown) => {
+        setKnowledgeError(messageFor(caught));
+        setKnowledgeState("failed");
       });
+  }, [includeResolved, project.projectId]);
+
+  useEffect(() => {
+    void loadKnowledge();
+  }, [loadKnowledge]);
+
+  // An agent writing a decision or a memory proposal, in any task, shows up
+  // without a reload: the call is noted when it starts and the lists are
+  // re-read when its result comes back, which is after the write.
+  const knowledgeCalls = useRef(new Set<string>());
+  const knowledgeLoaders = useRef({ loadKnowledge, loadProposals });
+  knowledgeLoaders.current = { loadKnowledge, loadProposals };
+  useEffect(() => {
+    const subscription = listen<AgentTimelinePayload>("agent-event", ({ payload }) => {
+      const event = payload.event;
+      if (
+        event.type === "tool" &&
+        event.callId &&
+        (KNOWLEDGE_TOOLS as readonly string[]).includes(event.name)
+      ) {
+        knowledgeCalls.current.add(event.callId);
+      } else if (event.type === "tool_result" && knowledgeCalls.current.delete(event.callId)) {
+        void knowledgeLoaders.current.loadKnowledge();
+        void knowledgeLoaders.current.loadProposals();
+      } else if (event.type === "end") {
+        void knowledgeLoaders.current.loadKnowledge();
+        void knowledgeLoaders.current.loadProposals();
+      }
+    });
     return () => {
-      active = false;
+      void subscription.then((unlisten) => unlisten());
     };
-  }, [project.projectId, selectedTaskId]);
+  }, []);
 
   // One page of files is enough to make `@` useful without walking a monorepo.
   useEffect(() => {
@@ -1776,15 +1857,121 @@ ${text}` : text));
     try {
       await run();
       await loadMemories(memoryFilters);
-      const items = await invoke<MemoryProposal[]>("memory_pending", {
-        filters: { projectId: project.projectId },
-      }).catch(() => [] as MemoryProposal[]);
-      setProposals(items);
+      await loadProposals();
     } catch (caught) {
       note(`That memory could not be updated: ${messageFor(caught)}`, "failed");
     } finally {
       setBusyMemoryId(null);
     }
+  }
+
+  /**
+   * Approval stops, writing nothing, when the proposal contradicts or repeats
+   * a memory already kept. The pairs are shown with the proposal, and the
+   * person's answers are sent with the next attempt.
+   */
+  function approveMemory(
+    proposal: MemoryProposal,
+    editedText: string | null,
+    resolutions: ConflictResolution[] = [],
+  ) {
+    void memoryAction(proposal.id, async () => {
+      const outcome = await invoke<ApprovalOutcome>("memory_approve", {
+        request: { proposalId: proposal.id, editedText, resolutions },
+      });
+      setMemoryConflicts((current) => {
+        const next = { ...current };
+        if (outcome.outcome === "conflictsRequireChoice") next[proposal.id] = outcome.conflicts;
+        else delete next[proposal.id];
+        return next;
+      });
+      if (outcome.outcome === "keptExisting") {
+        note("Kept the existing memory; the proposal was not added.", "done");
+      }
+    });
+  }
+
+  function resolveMemoryConflict(
+    proposal: MemoryProposal,
+    editedText: string | null,
+    otherMemoryId: string,
+    choice: ConflictChoice,
+  ) {
+    // Every flagged pair needs an answer; the ones not chosen here are kept.
+    const resolutions = (memoryConflicts[proposal.id] ?? []).map((conflict) => ({
+      otherMemoryId: conflict.other.id,
+      choice: conflict.other.id === otherMemoryId ? choice : ("keep_both" as const),
+    }));
+    approveMemory(proposal, editedText, resolutions);
+  }
+
+  async function resolveKnowledge(
+    item: KnowledgeItem,
+    action: KnowledgeAction,
+    edit?: { title: string; body: string },
+  ) {
+    setBusyKnowledgeId(item.record.id);
+    try {
+      await invoke<KnowledgeItem>("resolve_knowledge", {
+        request: {
+          recordId: item.record.id,
+          action,
+          title: edit?.title ?? null,
+          body: edit?.body ?? null,
+        },
+      });
+      await loadKnowledge();
+    } catch (caught) {
+      note(`That decision could not be updated: ${messageFor(caught)}`, "failed");
+    } finally {
+      setBusyKnowledgeId(null);
+    }
+  }
+
+  function openKnowledge(tab: KnowledgeTab) {
+    setKnowledgeOpening((current) => ({ tab, nonce: (current?.nonce ?? 0) + 1 }));
+    dispatch({ type: "navigate", destination: "knowledge" });
+  }
+
+  /** The memory a proposal or memory came from: its task, at that turn. */
+  function jumpToOrigin(conversationId: string, messageId: string) {
+    setSelectedTaskId(conversationId);
+    setLibrary(null);
+    const sequence = Number(messageId);
+    setFocusSequence(Number.isFinite(sequence) ? sequence : null);
+    dispatch({ type: "navigate", destination: "conversation" });
+  }
+
+  function memoryBrowser() {
+    return (
+      <MemoryBrowser
+        busyId={busyMemoryId}
+        conflicts={memoryConflicts}
+        filters={memoryFilters}
+        memories={memories}
+        onApprove={(proposal, editedText) => approveMemory(proposal, editedText)}
+        onFilters={setMemoryFilters}
+        onJumpToOrigin={jumpToOrigin}
+        onReject={(proposal, reason) =>
+          void memoryAction(proposal.id, () =>
+            invoke("memory_reject", { request: { proposalId: proposal.id, reason } }),
+          )
+        }
+        onResolveConflict={resolveMemoryConflict}
+        onRevise={(memory, text) =>
+          void memoryAction(memory.id, () =>
+            invoke("memory_revise", { request: { memoryId: memory.id, text } }),
+          )
+        }
+        onRevoke={(memory, reason) =>
+          void memoryAction(memory.id, () =>
+            invoke("memory_revoke", { request: { memoryId: memory.id, reason } }),
+          )
+        }
+        proposals={projectProposals}
+        state={memoryState}
+      />
+    );
   }
 
   async function resolveDrift(choice: DriftChoice) {
@@ -2043,6 +2230,10 @@ ${text}` : text));
       }
     }
 
+    if (isKnowledgeEvent(event)) {
+      return <AgentKnowledgeEvent event={event} onReview={openKnowledge} />;
+    }
+
     if (event.kind === "done" && projection) {
       return (
         <CompletionSummary
@@ -2051,7 +2242,14 @@ ${text}` : text));
             if (selectedTaskId) void planPublish(selectedTaskId);
           }}
           onReviewDiff={() => dispatch({ type: "navigate", destination: "source-control" })}
-          onReviewMemory={() => dispatch({ type: "openInspector", tab: "brain" })}
+          decisions={knowledge.filter(
+            (item) =>
+              item.taskId === selectedTaskId &&
+              item.record.status === "candidate" &&
+              REVIEWED_KINDS.includes(item.record.kind),
+          )}
+          onReviewDecisions={() => openKnowledge("decisions")}
+          onReviewMemory={() => openKnowledge("memory")}
           onRunChecks={() => dispatch({ type: "openUtility", tab: "checks" })}
           projection={projection}
           proposals={proposals}
@@ -2167,6 +2365,8 @@ ${text}` : text));
       {recovery}
       <ActivityLog
         events={events}
+        focusSequence={focusSequence}
+        onFocused={() => setFocusSequence(null)}
         failureAction={(event) => ({
           // Prepared, not sent. The composer is where a request becomes a
           // request, and the reader may want to change it first.
@@ -2335,6 +2535,7 @@ ${text}` : text));
       <TaskDetail
         key={selectedTask.taskId}
         onAccountChanged={learnAgentAccount}
+        onKnowledgeChanged={() => void loadKnowledge()}
         onOpenWorktree={onOpenProject}
         onSignIn={(adapter) => void signInToAgent(adapter)}
         onTaskChanged={upsertTask}
@@ -2416,44 +2617,7 @@ ${text}` : text));
         state={paletteState}
       />
       <LibraryOverlay
-        memories={
-          <MemoryBrowser
-            busyId={busyMemoryId}
-            filters={memoryFilters}
-            memories={memories}
-            onApprove={(proposal, editedText) =>
-              void memoryAction(proposal.id, () =>
-                invoke("memory_approve", {
-                  request: { proposalId: proposal.id, editedText },
-                }),
-              )
-            }
-            onFilters={setMemoryFilters}
-            onJumpToOrigin={(conversationId) => {
-              // The conversation a memory came from is a task's log.
-              setSelectedTaskId(conversationId);
-              setLibrary(null);
-              dispatch({ type: "navigate", destination: "conversation" });
-            }}
-            onReject={(proposal, reason) =>
-              void memoryAction(proposal.id, () =>
-                invoke("memory_reject", { request: { proposalId: proposal.id, reason } }),
-              )
-            }
-            onRevise={(memory, text) =>
-              void memoryAction(memory.id, () =>
-                invoke("memory_revise", { request: { memoryId: memory.id, text } }),
-              )
-            }
-            onRevoke={(memory, reason) =>
-              void memoryAction(memory.id, () =>
-                invoke("memory_revoke", { request: { memoryId: memory.id, reason } }),
-              )
-            }
-            proposals={proposals}
-            state={memoryState}
-          />
-        }
+        memories={memoryBrowser()}
         onClose={() => setLibrary(null)}
         onTab={setLibrary}
         open={library !== null}
@@ -2509,6 +2673,7 @@ ${text}` : text));
       />
       <ShellFrame
       accountLabel="Local profile"
+      badges={{ knowledge: waitingDecisions + waitingMemories }}
       onAccount={() => setLibrary("memories")}
       keys={{
         onPalette: () => setPaletteOpen((open) => !open),
@@ -2538,6 +2703,37 @@ ${text}` : text));
         ),
       }}
       workbench={{
+        knowledge: {
+          content: (
+            <KnowledgeView
+              key={`knowledge:${knowledgeOpening?.nonce ?? 0}`}
+              decisions={
+                <DecisionLog
+                  busyId={busyKnowledgeId}
+                  error={knowledgeError}
+                  includeResolved={includeResolved}
+                  items={knowledge}
+                  onIncludeResolved={setIncludeResolved}
+                  onOpenFile={(path) => void openFile(path, false, null)}
+                  onOpenTask={(taskId) => {
+                    setSelectedTaskId(taskId);
+                    dispatch({ type: "navigate", destination: "conversation" });
+                  }}
+                  onResolve={(item, action, edit) => void resolveKnowledge(item, action, edit)}
+                  state={knowledgeState}
+                />
+              }
+              initialTab={knowledgeOpening?.tab}
+              memory={memoryBrowser()}
+              waiting={{ decisions: waitingDecisions, memory: waitingMemories }}
+            />
+          ),
+          state: waitingDecisions + waitingMemories > 0 ? "blocked" : knowledgeState,
+          detail:
+            waitingDecisions + waitingMemories > 0
+              ? `${waitingDecisions + waitingMemories} waiting on you`
+              : undefined,
+        },
         agents: {
           content: (
             <AgentsBoard

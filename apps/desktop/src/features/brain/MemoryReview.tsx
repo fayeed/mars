@@ -28,9 +28,11 @@ import { Textarea } from "@/components/ui/textarea";
 interface MemoryReviewProps {
   adapter: AdapterKind;
   taskId: string;
+  /** Told after extraction adds candidates or a record is settled. */
+  onChanged?: () => void;
 }
 
-export function MemoryReview({ adapter, taskId }: MemoryReviewProps) {
+export function MemoryReview({ adapter, onChanged, taskId }: MemoryReviewProps) {
   const [open, setOpen] = useState(false);
   const [records, setRecords] = useState<KnowledgeRecord[]>([]);
   const [busy, setBusy] = useState(false);
@@ -63,6 +65,7 @@ export function MemoryReview({ adapter, taskId }: MemoryReviewProps) {
         adapter,
         modelPermission: true,
       });
+      onChanged?.();
       await refresh();
     } catch (caught) {
       setError(messageFor(caught));
@@ -87,6 +90,7 @@ export function MemoryReview({ adapter, taskId }: MemoryReviewProps) {
         },
       });
       setEditing(null);
+      onChanged?.();
       await refresh();
     } catch (caught) {
       setError(messageFor(caught));

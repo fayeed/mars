@@ -55,6 +55,26 @@ export interface KnowledgeRecord {
   updatedAt: string;
 }
 
+/** A record with where it came from: the task, the agent, the files. */
+export interface KnowledgeItem {
+  record: KnowledgeRecord;
+  taskId: string | null;
+  taskTitle: string | null;
+  /** The agent that recorded it, when an agent did. */
+  agent: string | null;
+  runId: string | null;
+  /**
+   * `agent`: recorded by an agent while it worked. `extraction`: read out of
+   * a finished session. `person`: written or corrected by someone.
+   */
+  via: "agent" | "extraction" | "person";
+  alternatives: string[];
+  /** Repository-relative paths it says it affects. */
+  files: string[];
+}
+
+export type KnowledgeAction = "approve" | "reject" | "correct" | "mark_stale" | "pin" | "unpin";
+
 export type WhyStatus = "answered" | "answered_with_conflicts" | "insufficient_evidence";
 
 export interface WhyFact {

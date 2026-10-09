@@ -1,4 +1,4 @@
-import type { MemoryProposal, TaskProjection } from "@mars/shared-types";
+import type { KnowledgeItem, MemoryProposal, TaskProjection } from "@mars/shared-types";
 import { GitPullRequestIcon, PlayIcon, SplitIcon } from "lucide-react";
 
 import { formatDuration } from "@/features/activity/ActivityLog";
@@ -9,6 +9,9 @@ export interface CompletionSummaryProps {
   branchName?: string | null;
   /** Memory the agent proposed. None of it is in effect until approved. */
   proposals?: MemoryProposal[];
+  /** Decisions recorded in this task that are still waiting on a person. */
+  decisions?: KnowledgeItem[];
+  onReviewDecisions?: () => void;
   onReviewDiff: () => void;
   onRunChecks: () => void;
   onPublish: () => void;
@@ -35,7 +38,9 @@ function passed(status: string) {
 export function CompletionSummary({
   branchName,
   busy = false,
+  decisions = [],
   onPublish,
+  onReviewDecisions,
   onReviewDiff,
   onReviewMemory,
   onRunChecks,
@@ -149,6 +154,40 @@ export function CompletionSummary({
           </ul>
         )}
       </section>
+
+      {decisions.length > 0 ? (
+        <section
+          aria-label="Decisions awaiting your review"
+          className="flex flex-col gap-1.5 border border-border px-2 py-1.5"
+        >
+          <div className="flex items-baseline gap-2">
+            <MetaLabel>Decisions awaiting your review</MetaLabel>
+            <Mono className="text-faint">{decisions.length}</Mono>
+          </div>
+          <ul className="flex flex-col gap-0.5">
+            {decisions.slice(0, 3).map((item) => (
+              <li key={item.record.id} className="flex items-baseline gap-2">
+                <Mono className="shrink-0 text-faint">{item.record.kind}</Mono>
+                <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
+                  {item.record.title}
+                </span>
+              </li>
+            ))}
+          </ul>
+          <p className="text-[11px] text-faint">
+            The agent chose these on its own. Approved, they are what later agents are told.
+          </p>
+          {onReviewDecisions ? (
+            <button
+              type="button"
+              onClick={onReviewDecisions}
+              className="self-start border border-border px-2 py-0.5 text-[11px] outline-none hover:border-border-strong"
+            >
+              Review decisions
+            </button>
+          ) : null}
+        </section>
+      ) : null}
 
       {pendingProposals.length > 0 ? (
         <section className="flex flex-col gap-1.5 border border-border px-2 py-1.5">

@@ -302,6 +302,54 @@ pub enum KnowledgeError {
     Timestamp(#[from] time::error::Format),
 }
 
+/// How a record reached the knowledge store.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KnowledgeVia {
+    /// An agent recorded it while it worked, through the Mars MCP server.
+    Agent,
+    /// Extraction read it out of a finished session.
+    Extraction,
+    /// A person wrote it, or corrected what an agent wrote.
+    Person,
+}
+
+/// Where a record came from — what a person reviewing it needs in order to
+/// check it: the task and agent, what else was weighed, what it touches.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnowledgeOrigin {
+    pub task_id: Option<String>,
+    pub agent: Option<String>,
+    pub run_id: Option<String>,
+    pub via: KnowledgeVia,
+    pub alternatives: Vec<String>,
+    /// Repository-relative paths, linked through the index or named by the
+    /// agent.
+    pub files: Vec<String>,
+}
+
+fn evidence_strings(evidence: &Value, name: &str) -> Vec<String> {
+    evidence
+        .get(name)
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn evidence_string(evidence: &Value, name: &str) -> Option<String> {
+    evidence
+        .get(name)
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+}
+
 #[derive(Clone)]
 pub struct KnowledgeService {
     storage: Arc<Storage>,
@@ -684,6 +732,94 @@ impl KnowledgeService {
             Ok(())
         })?;
         self.get(record_id)
+    }
+
+    /// Where a record came from. A correction is the person's, but it keeps
+    /// the task, agent and alternatives of the record it superseded.
+    pub fn origin(&self, record: &KnowledgeRecord) -> Result<KnowledgeOrigin, KnowledgeError> {
+        let provenance = self.provenance(&record.provenance_id)?;
+        if provenance.kind == ProvenanceKind::Human
+            && let Some(superseded) = &record.supersedes_id
+        {
+            let original = self.get(superseded)?;
+            let mut origin = self.origin(&original)?;
+            origin.via = KnowledgeVia::Person;
+            for path in self.linked_files(&record.id)? {
+                if !origin.files.contains(&path) {
+                    origin.files.push(path);
+                }
+            }
+            return Ok(origin);
+        }
+        let evidence = &provenance.evidence;
+        let via = match provenance.kind {
+            ProvenanceKind::Human => KnowledgeVia::Person,
+            _ if evidence_string(evidence, "via").as_deref() == Some("mcp") => KnowledgeVia::Agent,
+            _ => KnowledgeVia::Extraction,
+        };
+        let (session_task, session_agent): (Option<String>, Option<String>) =
+            if provenance.source.kind == EntityKind::AgentSession {
+                self.storage
+                    .with_connection(|connection| {
+                        connection
+                            .query_row(
+                                "SELECT task_id, adapter_kind FROM agent_sessions WHERE id = ?1",
+                                [&provenance.source.id],
+                                |row| Ok((row.get(0)?, row.get(1)?)),
+                            )
+                            .optional()
+                    })?
+                    .unwrap_or((None, None))
+            } else {
+                (None, None)
+            };
+        let task_id = match provenance.source.kind {
+            EntityKind::Task => Some(provenance.source.id.clone()),
+            EntityKind::AgentSession => session_task,
+            _ => None,
+        };
+        let task_id = match task_id {
+            Some(task_id) => Some(task_id),
+            None => self.storage.with_connection(|connection| {
+                connection
+                    .query_row(
+                        "SELECT target_id FROM entity_links
+                         WHERE source_type = 'knowledge' AND source_id = ?1 AND target_type = 'task'
+                         ORDER BY created_at LIMIT 1",
+                        [&record.id],
+                        |row| row.get(0),
+                    )
+                    .optional()
+            })?,
+        };
+        let mut files = self.linked_files(&record.id)?;
+        // A path the agent named that the index does not know still matters
+        // to whoever reads the decision.
+        for path in evidence_strings(evidence, "files") {
+            if !files.contains(&path) {
+                files.push(path);
+            }
+        }
+        Ok(KnowledgeOrigin {
+            task_id,
+            agent: evidence_string(evidence, "agent").or(session_agent),
+            run_id: evidence_string(evidence, "runId"),
+            via,
+            alternatives: evidence_strings(evidence, "alternatives"),
+            files,
+        })
+    }
+
+    fn linked_files(&self, record_id: &str) -> Result<Vec<String>, KnowledgeError> {
+        Ok(self.storage.with_connection(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT DISTINCT f.relative_path FROM entity_links l JOIN files f ON f.id = l.target_id
+                 WHERE l.source_type = 'knowledge' AND l.source_id = ?1 AND l.target_type = 'file'
+                   AND l.relation = 'AFFECTS'
+                 ORDER BY f.relative_path",
+            )?;
+            statement.query_map([record_id], |row| row.get(0))?.collect()
+        })?)
     }
 
     pub fn get_provenance(&self, id: &str) -> Result<Provenance, KnowledgeError> {

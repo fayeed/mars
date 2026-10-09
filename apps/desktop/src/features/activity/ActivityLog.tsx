@@ -1,6 +1,6 @@
 import type { ActivityEvent, ActivityKind, ActivityPayload } from "@mars/shared-types";
 import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
-import { useCallback, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
 import { cn } from "@/lib/utils";
 import { FailureEvidenceView } from "@/features/activity/FailureEvidence";
@@ -40,7 +40,16 @@ export interface ActivityLogProps {
    * every row, which is correct and simply slower.
    */
   scroller?: HTMLElement | null;
+  /**
+   * A turn to bring into view and mark — where a memory or a decision came
+   * from. Reported back through `onFocused` once it is on screen.
+   */
+  focusSequence?: number | null;
+  onFocused?: () => void;
 }
+
+/** The row a jump landed on, marked until the next jump. */
+const FOCUSED_ROW = "data-[focused=true]:bg-surface-raised data-[focused=true]:shadow-[inset_2px_0_0_var(--primary)]";
 
 /** A duration a person can read, at the precision the number deserves. */
 export function formatDuration(ms: number | null): string | null {
@@ -194,7 +203,11 @@ function MachineRow({
     // Re-measured on every render, not only on mount: expanding a row to its
     // evidence changes its height, and every spacer below it would be wrong
     // until the next scroll.
-    <li className="border-b border-border last:border-b-0" ref={(element) => measure(index, element)}>
+    <li
+      className={cn("border-b border-border last:border-b-0", FOCUSED_ROW)}
+      data-sequence={event.sequence}
+      ref={(element) => measure(index, element)}
+    >
       <button
         type="button"
         aria-expanded={expandable ? open : undefined}
@@ -267,7 +280,8 @@ function MessageTurn({
 }) {
   return (
     <li
-      className="flex flex-col gap-1 border-b border-border px-3 py-2.5"
+      className={cn("flex flex-col gap-1 border-b border-border px-3 py-2.5", FOCUSED_ROW)}
+      data-sequence={event.sequence}
       ref={(element) => measure(index, element)}
     >
       <MetaLabel>{event.actor === "human" ? "You" : event.actorLabel}</MetaLabel>
@@ -289,7 +303,9 @@ export function ActivityLog({
   events,
   expandedKinds = ["error"],
   failureAction,
+  focusSequence = null,
   loadPayload,
+  onFocused,
   onOpenFile,
   renderEvent,
   scroller = null,
@@ -306,8 +322,42 @@ export function ActivityLog({
   const start = window?.start ?? 0;
   const visible = window ? events.slice(window.start, window.end) : events;
 
+  // Bring a turn into view. A virtualized row that is not rendered yet is
+  // reached by scrolling to where it would be and looking again next frame.
+  const list = useRef<HTMLUListElement>(null);
+  const focusedRef = useRef(onFocused);
+  useEffect(() => {
+    focusedRef.current = onFocused;
+  }, [onFocused]);
+  useEffect(() => {
+    if (focusSequence === null) return;
+    const index = events.findIndex((event) => event.sequence === focusSequence);
+    if (index < 0) return;
+    let frame = 0;
+    let attempts = 0;
+    const look = () => {
+      const row = list.current?.querySelector<HTMLElement>(`[data-sequence="${focusSequence}"]`);
+      if (row) {
+        for (const marked of list.current?.querySelectorAll("[data-focused]") ?? []) {
+          marked.removeAttribute("data-focused");
+        }
+        row.dataset.focused = "true";
+        row.scrollIntoView?.({ block: "center" });
+        focusedRef.current?.();
+        return;
+      }
+      if (scroller && attempts < 8) {
+        attempts += 1;
+        scroller.scrollTop = (index / Math.max(events.length, 1)) * scroller.scrollHeight;
+        frame = requestAnimationFrame(look);
+      }
+    };
+    look();
+    return () => cancelAnimationFrame(frame);
+  }, [events, focusSequence, scroller]);
+
   return (
-    <ul aria-label="Activity" className="flex flex-col">
+    <ul aria-label="Activity" className="flex flex-col" ref={list}>
       {/* Spacers stand in for the rows that are not rendered, so the scrollbar
           describes the whole record rather than the part of it on screen. */}
       {window && window.paddingTop > 0 ? (
@@ -320,7 +370,8 @@ export function ActivityLog({
         if (custom) {
           return (
             <li
-              className="border-b border-border last:border-b-0"
+              className={cn("border-b border-border last:border-b-0", FOCUSED_ROW)}
+              data-sequence={event.sequence}
               key={event.id}
               ref={(element) => measure(index, element)}
             >

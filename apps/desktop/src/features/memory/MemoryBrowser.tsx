@@ -1,4 +1,6 @@
 import type {
+  ConflictChoice,
+  DetectedConflict,
   Memory,
   MemoryKind,
   MemoryProposal,
@@ -25,8 +27,26 @@ export interface MemoryBrowserProps {
   onRevoke: (memory: Memory, reason: string) => void;
   onApprove: (proposal: MemoryProposal, editedText: string | null) => void;
   onReject: (proposal: MemoryProposal, reason: string) => void;
+  /**
+   * Memories a proposal contradicts or repeats, found when approval was
+   * asked for. Nothing was written; each pair needs an answer first.
+   */
+  conflicts?: Record<string, DetectedConflict[]>;
+  onResolveConflict?: (
+    proposal: MemoryProposal,
+    editedText: string | null,
+    otherMemoryId: string,
+    choice: ConflictChoice,
+  ) => void;
   busyId?: string | null;
 }
+
+const CHOICE_LABELS: Record<ConflictChoice, string> = {
+  keep_both: "Keep both",
+  supersede_other: "Replace the old one",
+  revoke_other: "Withdraw the old one",
+  keep_existing: "Keep the old one instead",
+};
 
 export interface MemoryFilterState {
   scopes: MemoryScope[];
@@ -238,15 +258,19 @@ function MemoryRow({
 
 function ProposalRow({
   busy,
+  conflicts = [],
   onApprove,
   onJumpToOrigin,
   onReject,
+  onResolveConflict,
   proposal,
 }: {
   busy: boolean;
+  conflicts?: DetectedConflict[];
   onApprove: (proposal: MemoryProposal, editedText: string | null) => void;
   onJumpToOrigin: (conversationId: string, messageId: string) => void;
   onReject: (proposal: MemoryProposal, reason: string) => void;
+  onResolveConflict?: MemoryBrowserProps["onResolveConflict"];
   proposal: MemoryProposal;
 }) {
   const [draft, setDraft] = useState(proposal.text);
@@ -272,10 +296,51 @@ function ProposalRow({
         origin={proposal.origin}
       />
 
+      {conflicts.length > 0 ? (
+        <div
+          aria-label="Conflicts"
+          className="flex flex-col gap-1.5 border border-primary/50 px-2 py-1.5"
+          role="group"
+        >
+          <p className="text-[11px] text-foreground">
+            Approving this would sit next to what is already remembered. Decide each before
+            anything is kept.
+          </p>
+          {conflicts.map((conflict) => (
+            <div key={conflict.other.id} className="flex flex-col gap-1">
+              <Mono className="text-faint">{conflict.explanation}</Mono>
+              <p className="border-l-2 border-border pl-2 text-[12px] text-foreground">
+                {conflict.other.text}
+              </p>
+              <div className="flex flex-wrap gap-1">
+                {(Object.keys(CHOICE_LABELS) as ConflictChoice[]).map((choice) => (
+                  <button
+                    key={choice}
+                    type="button"
+                    disabled={busy}
+                    onClick={() =>
+                      onResolveConflict?.(
+                        proposal,
+                        draft.trim() === proposal.text ? null : draft.trim(),
+                        conflict.other.id,
+                        choice,
+                      )
+                    }
+                    className="border border-border px-1.5 py-0.5 text-[11px] outline-none hover:border-border-strong disabled:cursor-not-allowed disabled:text-faint"
+                  >
+                    {CHOICE_LABELS[choice]}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
       <div className="flex flex-wrap items-center gap-1">
         <button
           type="button"
-          disabled={busy}
+          disabled={busy || conflicts.length > 0}
           onClick={() => onApprove(proposal, draft.trim() === proposal.text ? null : draft.trim())}
           className="flex items-center gap-1 border border-border bg-primary px-2 py-0.5 text-[11px] font-medium text-primary-foreground outline-none disabled:cursor-not-allowed disabled:border-border disabled:bg-transparent disabled:text-faint"
         >
@@ -313,6 +378,7 @@ function ProposalRow({
  */
 export function MemoryBrowser({
   busyId,
+  conflicts = {},
   error,
   filters,
   memories,
@@ -320,6 +386,7 @@ export function MemoryBrowser({
   onFilters,
   onJumpToOrigin,
   onReject,
+  onResolveConflict,
   onRevise,
   onRevoke,
   proposals,
@@ -382,10 +449,12 @@ export function MemoryBrowser({
               {pending.map((proposal) => (
                 <ProposalRow
                   busy={busyId === proposal.id}
+                  conflicts={conflicts[proposal.id]}
                   key={proposal.id}
                   onApprove={onApprove}
                   onJumpToOrigin={onJumpToOrigin}
                   onReject={onReject}
+                  onResolveConflict={onResolveConflict}
                   proposal={proposal}
                 />
               ))}

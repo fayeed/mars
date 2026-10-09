@@ -16,13 +16,14 @@ import {
  * conversation is never replaced (ADR-050). Everything else is a panel
  * inside one of them.
  */
-export type Destination = "conversation" | "editor" | "source-control" | "agents";
+export type Destination = "conversation" | "editor" | "source-control" | "agents" | "knowledge";
 
 export const DESTINATIONS: readonly Destination[] = [
   "conversation",
   "editor",
   "source-control",
   "agents",
+  "knowledge",
 ];
 
 export type InspectorTab = "context" | "plan" | "diff" | "brain";

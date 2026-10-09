@@ -179,6 +179,31 @@ describe("MemoryBrowser proposals", () => {
     );
   });
 
+  it("asks how to settle a conflict before anything is kept", async () => {
+    const user = userEvent.setup();
+    const onApprove = vi.fn();
+    const onResolveConflict = vi.fn();
+    renderBrowser({
+      conflicts: {
+        [proposal.id]: [
+          { other: memory, similarity: 0.82, signal: "opposing_polarity", explanation: "Says the opposite" },
+        ],
+      },
+      onApprove,
+      onResolveConflict,
+      proposals: [proposal],
+    });
+
+    const conflicts = screen.getByRole("group", { name: "Conflicts" });
+    expect(conflicts).toHaveTextContent("Says the opposite");
+    expect(conflicts).toHaveTextContent(memory.text);
+    expect(screen.getByRole("button", { name: "Approve" })).toBeDisabled();
+    await user.click(within(conflicts).getByRole("button", { name: "Replace the old one" }));
+
+    expect(onResolveConflict).toHaveBeenCalledWith(proposal, null, memory.id, "supersede_other");
+    expect(onApprove).not.toHaveBeenCalled();
+  });
+
   it("requires a reason before rejecting", async () => {
     const user = userEvent.setup();
     const onReject = vi.fn();

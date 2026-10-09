@@ -1,5 +1,6 @@
 import {
   BotIcon,
+  BrainIcon,
   CircleUserIcon,
   FileCode2Icon,
   GitCompareIcon,
@@ -23,6 +24,7 @@ const destinationMeta: Record<
   editor: { icon: FileCode2Icon, label: "Editor", binding: "go.editor" },
   "source-control": { icon: GitCompareIcon, label: "Source control", binding: "go.source-control" },
   agents: { icon: BotIcon, label: "Agents", binding: "go.agents" },
+  knowledge: { icon: BrainIcon, label: "Knowledge", binding: "go.knowledge" },
 };
 
 const themeMeta: Record<ThemeMode, { icon: ComponentType<{ className?: string }>; label: string }> =
@@ -38,9 +40,16 @@ const themeMeta: Record<ThemeMode, { icon: ComponentType<{ className?: string }>
  */
 export function AppRail({
   accountLabel = "Account",
+  badges = {},
   onAccount,
 }: {
   accountLabel?: string;
+  /**
+   * How many things at a destination are waiting on the person — a decision
+   * to review, a memory to approve. A count, not a feature: it says where
+   * attention is owed.
+   */
+  badges?: Partial<Record<Destination, number>>;
   /** Opens the management surfaces, which are not destinations. */
   onAccount?: () => void;
 }) {
@@ -57,18 +66,29 @@ export function AppRail({
         const meta = destinationMeta[destination];
         const Icon = meta.icon;
         const current = layout.destination === destination;
+        const waiting = badges[destination] ?? 0;
+        const label = waiting > 0 ? `${meta.label}, ${waiting} waiting on you` : meta.label;
         return (
           <RailButton
             key={destination}
             aria-current={current ? "page" : undefined}
-            title={`${meta.label} · ${bindingHint(meta.binding)}`}
+            title={`${label} · ${bindingHint(meta.binding)}`}
             onClick={() => {
               dispatch({ type: "navigate", destination });
               focusRegion(destination === "conversation" ? "conversation" : "workbench");
             }}
           >
             <Icon />
-            <span className="sr-only">{meta.label}</span>
+            {waiting > 0 ? (
+              <span
+                aria-hidden="true"
+                data-slot="rail-badge"
+                className="absolute top-1.5 right-1.5 min-w-3.5 rounded-[2px] bg-primary px-0.5 text-center font-mono text-[9px] leading-3.5 text-primary-foreground"
+              >
+                {waiting > 99 ? "99+" : waiting}
+              </span>
+            ) : null}
+            <span className="sr-only">{label}</span>
           </RailButton>
         );
       })}
