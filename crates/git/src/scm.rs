@@ -220,7 +220,7 @@ pub fn diff(root: &Path, path: Option<&str>, staged: bool) -> Result<String, Scm
             && root.join(path).is_file();
         if untracked {
             // `--no-index` exits 1 when the files differ, which they always do.
-            let output = std::process::Command::new("git")
+            let output = mars_core::process::command("git")
                 .arg("-C")
                 .arg(root)
                 .args([
@@ -810,7 +810,7 @@ fn rev(root: &Path, name: &str) -> Result<String, ScmError> {
 /// Files a merge of `head` into `base` would conflict on, worked out in
 /// Git's object store without touching any working tree.
 fn merge_tree_conflicts(root: &Path, base: &str, head: &str) -> Result<Vec<String>, ScmError> {
-    let output = std::process::Command::new("git")
+    let output = mars_core::process::command("git")
         .arg("-C")
         .arg(root)
         .args([

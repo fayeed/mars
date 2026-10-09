@@ -7,6 +7,7 @@ use crate::protocol::{Command, CommandRequest, CommandResponse, ProtocolError, R
 
 pub mod files;
 pub mod jobs;
+pub mod process;
 pub mod projects;
 pub mod protocol;
 pub mod terminal;

@@ -233,7 +233,7 @@ impl ProcessSupervisor {
 
     pub fn launch(&self, spec: ProcessSpec) -> Result<LaunchedProcess, ProcessError> {
         let session_id = Uuid::now_v7().to_string();
-        let mut command = Command::new(&spec.program);
+        let mut command = Command::from(mars_core::process::command(&spec.program));
         command
             .args(&spec.arguments)
             .current_dir(&spec.cwd)

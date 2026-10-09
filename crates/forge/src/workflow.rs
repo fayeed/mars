@@ -1,5 +1,4 @@
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Arc;
 
 use mars_storage::Storage;
@@ -390,7 +389,7 @@ struct TaskContext {
 }
 
 fn git(root: &Path, arguments: &[&str]) -> Result<String, ForgeError> {
-    let output = Command::new("git")
+    let output = mars_core::process::command("git")
         .arg("-C")
         .arg(root)
         .args(arguments)

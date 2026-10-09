@@ -1336,7 +1336,7 @@ fn run_shell(cwd: &Path, command: &str) -> Result<String, GitCommandError> {
     } else {
         ("sh", "-c")
     };
-    let output = std::process::Command::new(program)
+    let output = mars_core::process::command(program)
         .arg(flag)
         .arg(command)
         .current_dir(cwd)

@@ -13,7 +13,6 @@ use std::ffi::OsString;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
@@ -136,7 +135,7 @@ pub fn read_account(
     });
     let sign_in = match adapter.sign_in_status_arguments() {
         Some(arguments) => {
-            let mut command = Command::new(executable);
+            let mut command = mars_core::process::command(executable);
             command.args(arguments);
             for variable in &overrides {
                 command.env_remove(variable);

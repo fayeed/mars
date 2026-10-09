@@ -1,6 +1,5 @@
 use std::collections::{BTreeSet, HashSet};
 use std::path::Path;
-use std::process::Command;
 use std::sync::Arc;
 
 use mars_storage::Storage;
@@ -546,7 +545,7 @@ fn lexical_overlap(terms: &BTreeSet<String>, text: &str) -> usize {
 }
 
 fn git_recency(root: &Path, relative_path: &str) -> Option<String> {
-    let output = Command::new("git")
+    let output = mars_core::process::command("git")
         .arg("-C")
         .arg(root)
         .args(["log", "-1", "--format=%cI", "--", relative_path])

@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+mars-core.workspace = true
 libc.workspace = true
 mars-activity.workspace = true
 mars-security.workspace = true
@@ -19,5 +20,4 @@ tokio-util.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
-mars-core.workspace = true
 mars-git.workspace = true

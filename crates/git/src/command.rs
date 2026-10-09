@@ -1,6 +1,5 @@
 use std::ffi::{OsStr, OsString};
 use std::path::Path;
-use std::process::Command;
 
 use thiserror::Error;
 
@@ -41,7 +40,7 @@ where
         .into_iter()
         .map(|argument| argument.as_ref().to_owned())
         .collect();
-    let output = Command::new("git")
+    let output = mars_core::process::command("git")
         .arg("-C")
         .arg(cwd)
         .args(&arguments)

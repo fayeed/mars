@@ -1,6 +1,5 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -105,7 +104,7 @@ impl AdapterCommand {
         use std::io::Write;
         use std::process::Stdio;
 
-        let mut process = Command::new(&self.program);
+        let mut process = mars_core::process::command(&self.program);
         process
             .args(&self.arguments)
             .current_dir(&self.cwd)
@@ -269,7 +268,7 @@ pub trait AgentAdapter: Send + Sync {
     fn parse_value(&self, value: Value) -> Vec<NormalizedAgentEvent>;
 
     fn probe(&self, executable: &Path) -> Result<AdapterProbe, AdapterError> {
-        let output = Command::new(executable)
+        let output = mars_core::process::command(executable)
             .arg("--version")
             .output()
             .map_err(|source| AdapterError::ProbeLaunch {

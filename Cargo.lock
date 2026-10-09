@@ -2397,6 +2397,7 @@ name = "mars-forge"
 version = "0.1.0"
 dependencies = [
  "keyring",
+ "mars-core",
  "mars-security",
  "mars-storage",
  "rusqlite",
