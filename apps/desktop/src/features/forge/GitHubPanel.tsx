@@ -114,14 +114,20 @@ export function GitHubPanel({ baseBranch, onTaskPlanned, repositoryId }: GitHubP
     const args = { repositoryId, remoteName: remote.name, itemState, page: 1 };
     if (view === "issues") {
       invoke<ForgeIssue[]>("github_issues", args)
-        .then(setIssues)
+        .then((items) => {
+          setIssues(items);
+          setError(null);
+        })
         .catch((caught: unknown) => {
           setIssues([]);
           setError(messageFor(caught));
         });
     } else {
       invoke<ForgePullRequest[]>("github_pull_requests", args)
-        .then(setPulls)
+        .then((items) => {
+          setPulls(items);
+          setError(null);
+        })
         .catch((caught: unknown) => {
           setPulls([]);
           setError(messageFor(caught));

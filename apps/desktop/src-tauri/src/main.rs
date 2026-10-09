@@ -862,8 +862,11 @@ async fn index_repository(
 /// re-read on its own, a branch switch re-reads the tree. Started once the
 /// repository has an index; watching another repository stops this one.
 /// What the watcher does is reported on `index-watch`.
+///
+/// Async so it never runs on the main thread: stopping the previous watch
+/// waits for any re-index it is in the middle of.
 #[tauri::command]
-fn watch_repository(
+async fn watch_repository(
     repository_id: String,
     app: AppHandle,
     state: State<'_, AppState>,
