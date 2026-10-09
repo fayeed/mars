@@ -2,6 +2,7 @@ use std::ffi::OsString;
 
 use serde_json::{Value, json};
 
+use crate::account::Billing;
 use crate::adapter::{
     AdapterCommand, AdapterError, AdapterKind, AgentAdapter, AgentLaunchRequest,
     NormalizedAgentEvent, event_type, is_test_command, validate_request,
@@ -80,6 +81,60 @@ impl AgentAdapter for ClaudeAdapter {
                 raw: value,
             }],
         }
+    }
+
+    fn sign_in_status_arguments(&self) -> Option<&'static [&'static str]> {
+        Some(&["auth", "status", "--json"])
+    }
+
+    /// Reads `claude auth status --json`, which answers in JSON whether or not
+    /// anyone is signed in; only the exit status differs.
+    fn parse_sign_in(&self, _success: bool, stdout: &[u8], _stderr: &[u8]) -> Billing {
+        let Ok(status) = serde_json::from_slice::<Value>(stdout) else {
+            return Billing::Unknown {
+                detail: "this Claude Code does not report its sign-in; updating it lets Mars check"
+                    .into(),
+            };
+        };
+        let text = |key: &str| status.get(key).and_then(Value::as_str);
+        if status.get("loggedIn").and_then(Value::as_bool) != Some(true) {
+            return Billing::SignedOut;
+        }
+        if let Some(provider) = text("apiProvider").filter(|provider| *provider != "firstParty") {
+            return Billing::CloudProvider {
+                provider: provider.to_owned(),
+            };
+        }
+        // An `apiKeyHelper` or a key saved by a Console login outranks a
+        // claude.ai sign-in, and the CLI says so here rather than in
+        // `authMethod`, which keeps naming the sign-in.
+        if let Some(source) = text("apiKeySource") {
+            return Billing::ApiKey {
+                source: source.to_owned(),
+            };
+        }
+        match text("authMethod") {
+            Some("claude.ai" | "oauth_token") => Billing::Plan {
+                plan: text("subscriptionType").map(str::to_owned),
+            },
+            Some("api_key") => Billing::ApiKey {
+                source: "Claude Console".into(),
+            },
+            Some("none") | None => Billing::SignedOut,
+            Some(other) => Billing::Unknown {
+                detail: format!("signed in with {other}"),
+            },
+        }
+    }
+
+    /// `claude -p` uses these over a claude.ai sign-in whenever they are set:
+    /// the bearer token first, then the API key.
+    fn overriding_variables(&self) -> &'static [&'static str] {
+        &["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"]
+    }
+
+    fn sign_in_command(&self) -> Option<&'static str> {
+        Some("claude auth login")
     }
 }
 

@@ -18,6 +18,7 @@ describe("classifyFailure", () => {
     // The four the reader is expected to meet, each from a real core code.
     ["adapter.not_installed", "agentUnavailable"],
     ["agent.not_running", "agentUnavailable"],
+    ["agent.signed_out", "agentSignedOut"],
     ["index.walk", "indexCold"],
     ["permission.state", "permissionDenied"],
     ["skill.blocked", "permissionDenied"],
@@ -67,6 +68,7 @@ describe("failureCopy", () => {
     // work survived it.
     for (const cause of [
       "agentUnavailable",
+      "agentSignedOut",
       "indexCold",
       "permissionDenied",
       "networkOffline",
@@ -83,6 +85,11 @@ describe("failureCopy", () => {
   it("does not draw a refused permission as a crash", () => {
     // Nothing broke: the broker did its job. `blocked` says a person has to act.
     expect(failureCopy("permissionDenied").state).toBe("blocked");
+  });
+
+  it("draws a signed-out agent as something a person can fix, not a crash", () => {
+    expect(failureCopy("agentSignedOut").state).toBe("blocked");
+    expect(failureCopy("agentSignedOut").remedy).toBe("Sign in");
   });
 
   it("does not draw an unread index as a failure", () => {

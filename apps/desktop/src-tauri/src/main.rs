@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -8,6 +9,7 @@ use mars_activity::{
     Attachment, InterruptedRun, NewRun, RecoveryAction, RecoveryService, RunRecord, RunRole,
     RunStatus, RunStore, TaskProjection, replay,
 };
+use mars_agents::account::{AgentAccount, Billing, SignInPreferences, read_account};
 use mars_agents::adapter::{
     AdapterError, AdapterKind, AdapterProbe, AgentAdapter, AgentLaunchRequest, JsonLineDecoder,
     NormalizedAgentEvent,
@@ -97,6 +99,9 @@ struct AppState {
     reviews: ReviewService,
     runs: RunStore,
     permissions: PermissionAudit,
+    /// Which agents run on their CLI's own sign-in even where an API key
+    /// variable in Mars's environment would outrank it.
+    sign_in: SignInPreferences,
     skills: SkillService,
     tasks: TaskWorktreeService,
     terminals: TerminalService,
@@ -447,11 +452,13 @@ struct MemoryResolutionInput {
 struct CliExtractionProvider {
     adapter: AdapterKind,
     cwd: std::path::PathBuf,
+    removed_environment: Vec<OsString>,
 }
 
 struct CliReviewProvider {
     adapter: AdapterKind,
     cwd: std::path::PathBuf,
+    removed_environment: Vec<OsString>,
 }
 
 impl ReviewProvider for CliReviewProvider {
@@ -467,11 +474,12 @@ impl ReviewProvider for CliReviewProvider {
                 allow_write: false,
             })
             .map_err(|error| error.to_string())?;
-        let output = std::process::Command::new(command.program)
-            .args(command.arguments)
-            .current_dir(command.cwd)
-            .output()
-            .map_err(|error| error.to_string())?;
+        let mut process = std::process::Command::new(command.program);
+        process.args(command.arguments).current_dir(command.cwd);
+        for variable in &self.removed_environment {
+            process.env_remove(variable);
+        }
+        let output = process.output().map_err(|error| error.to_string())?;
         if !output.status.success() {
             return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
         }
@@ -503,11 +511,12 @@ impl ExtractionProvider for CliExtractionProvider {
                 allow_write: false,
             })
             .map_err(|error| error.to_string())?;
-        let output = std::process::Command::new(command.program)
-            .args(command.arguments)
-            .current_dir(command.cwd)
-            .output()
-            .map_err(|error| error.to_string())?;
+        let mut process = std::process::Command::new(command.program);
+        process.args(command.arguments).current_dir(command.cwd);
+        for variable in &self.removed_environment {
+            process.env_remove(variable);
+        }
+        let output = process.output().map_err(|error| error.to_string())?;
         if !output.status.success() {
             return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
         }
@@ -1767,6 +1776,7 @@ fn extract_task_memory(
     let provider = Arc::new(CliExtractionProvider {
         adapter,
         cwd: task.worktree_path.clone(),
+        removed_environment: sign_in_environment(&state, adapter),
     });
     let extracted =
         ExtractionService::new(state.storage.clone(), provider).extract(ExtractionRequest {
@@ -1976,6 +1986,7 @@ fn run_cross_agent_review(
             &CliReviewProvider {
                 adapter: reviewer_adapter,
                 cwd: task.worktree_path,
+                removed_environment: sign_in_environment(&state, reviewer_adapter),
             },
         )
         .map_err(Into::into)
@@ -2895,6 +2906,48 @@ fn probe_agent(adapter: AdapterKind) -> Result<AdapterProbe, CommandFailure> {
         .map_err(Into::into)
 }
 
+/// What the agent's CLI is signed in with, and what a run would bill.
+#[tauri::command]
+async fn agent_account(
+    adapter: AdapterKind,
+    state: State<'_, AppState>,
+) -> Result<AgentAccount, CommandFailure> {
+    account_off_thread(adapter, state.sign_in.uses_sign_in(adapter)).await
+}
+
+/// Records whether runs of `adapter` should use the CLI's own sign-in rather
+/// than an API key variable that outranks it, and answers with the result.
+#[tauri::command]
+async fn set_agent_sign_in_preference(
+    adapter: AdapterKind,
+    use_sign_in: bool,
+    state: State<'_, AppState>,
+) -> Result<AgentAccount, CommandFailure> {
+    state
+        .sign_in
+        .set(adapter, use_sign_in)
+        .map_err(|error| CommandFailure::new("agent.preference", error.to_string()))?;
+    account_off_thread(adapter, use_sign_in).await
+}
+
+/// Asks the CLI on a blocking thread. `claude auth status` takes a noticeable
+/// fraction of a second, and the shell asks every agent when it opens.
+async fn account_off_thread(
+    adapter: AdapterKind,
+    use_sign_in: bool,
+) -> Result<AgentAccount, CommandFailure> {
+    tauri::async_runtime::spawn_blocking(move || {
+        read_account(
+            adapter_for(adapter).as_ref(),
+            Path::new(executable_name(adapter)),
+            use_sign_in,
+        )
+    })
+    .await
+    .map_err(|error| CommandFailure::new("agent.account", error.to_string()))?
+    .map_err(Into::into)
+}
+
 #[tauri::command]
 async fn launch_agent(
     request: AgentLaunchInput,
@@ -2950,6 +3003,16 @@ async fn launch_agent(
             "task context changed after preview; review the refreshed pack before launch",
         ));
     }
+    let adapter_impl = adapter_for(adapter);
+    let executable = Path::new(executable_name(adapter));
+    let probe = adapter_impl.probe(executable)?;
+    // Asked before anything is recorded: a CLI nobody is signed in to would
+    // start, fail on its first request, and leave a run behind that never did
+    // anything.
+    let account = account_for(&state, adapter)?;
+    if account.billing == Billing::SignedOut {
+        return Err(signed_out(adapter, &account));
+    }
     // The pack is now the one the agent will actually receive, so this is the
     // moment its memories count as used -- not when it was previewed, and not
     // when it was rebuilt for the comparison above, either of which would
@@ -2964,9 +3027,6 @@ async fn launch_agent(
     )?;
     let prompt = render_context_pack(&verified_pack, &prompt);
 
-    let adapter_impl = adapter_for(adapter);
-    let executable = Path::new(executable_name(adapter));
-    let probe = adapter_impl.probe(executable)?;
     let allowed_tools =
         authorize_agent(&state.permissions, &task, adapter, permissions, executable)?;
     let command = adapter_impl.command(&AgentLaunchRequest {
@@ -2987,6 +3047,7 @@ async fn launch_agent(
         command.cwd,
     );
     spec.task_id = Some(task_id);
+    spec.removed_environment = account.removed_environment();
     // A run row exists before the process does, so an agent that dies on its
     // first line is still a run the log knows about and recovery can find.
     let run = state.runs.start(NewRun {
@@ -3018,7 +3079,7 @@ async fn launch_agent(
             format!("Started {adapter_name} as {}", run.role.as_str()),
         )
         .in_run(&run.id)
-        .with_payload(json!({ "adapter": adapter_name })),
+        .with_payload(json!({ "adapter": adapter_name, "billing": account.billing })),
     );
     stream_agent_events(
         app,
@@ -3057,6 +3118,44 @@ fn adapter_for(kind: AdapterKind) -> Box<dyn AgentAdapter> {
         AdapterKind::Claude => Box::new(ClaudeAdapter),
         AdapterKind::Codex => Box::new(CodexAdapter),
     }
+}
+
+fn account_for(state: &AppState, adapter: AdapterKind) -> Result<AgentAccount, CommandFailure> {
+    read_account(
+        adapter_for(adapter).as_ref(),
+        Path::new(executable_name(adapter)),
+        state.sign_in.uses_sign_in(adapter),
+    )
+    .map_err(Into::into)
+}
+
+/// The variables a review or extraction run should not inherit.
+///
+/// Only asks the CLI when the person chose their sign-in over a key, so the
+/// common case costs nothing. Any failure here leaves the environment alone:
+/// the run that follows reports a missing or signed-out CLI in its own words.
+fn sign_in_environment(state: &AppState, adapter: AdapterKind) -> Vec<OsString> {
+    if !state.sign_in.uses_sign_in(adapter) {
+        return Vec::new();
+    }
+    account_for(state, adapter)
+        .map(|account| account.removed_environment())
+        .unwrap_or_default()
+}
+
+fn signed_out(adapter: AdapterKind, account: &AgentAccount) -> CommandFailure {
+    let name = match adapter {
+        AdapterKind::Claude => "Claude Code",
+        AdapterKind::Codex => "Codex CLI",
+    };
+    let how = account.sign_in_command.as_deref().map_or_else(
+        || " Sign in to it from a terminal.".to_owned(),
+        |command| format!(" Run `{command}` in a terminal to sign in with your own account."),
+    );
+    CommandFailure::new(
+        "agent.signed_out",
+        format!("{name} is installed but not signed in.{how}"),
+    )
 }
 
 fn executable_name(kind: AdapterKind) -> &'static str {
@@ -3417,6 +3516,7 @@ fn main() {
                 reviews: ReviewService::new(storage.clone()),
                 runs: RunStore::new(storage.clone()),
                 permissions: PermissionAudit::new(storage.clone()),
+                sign_in: SignInPreferences::load(data_dir.join("agent-sign-in.json")),
                 skills: SkillService::new(storage.clone(), skill_registry, data_dir.join("skills")),
                 tasks: TaskWorktreeService::new(storage.clone(), data_dir.join("worktrees")),
                 terminals: TerminalService::new(storage.clone()),
@@ -3526,6 +3626,8 @@ fn main() {
             remove_task_worktree,
             open_task_worktree,
             probe_agent,
+            agent_account,
+            set_agent_sign_in_preference,
             launch_agent,
             cancel_agent,
             agent_session

@@ -2,6 +2,7 @@ use std::ffi::OsString;
 
 use serde_json::{Value, json};
 
+use crate::account::Billing;
 use crate::adapter::{
     AdapterCommand, AdapterError, AdapterKind, AgentAdapter, AgentLaunchRequest,
     NormalizedAgentEvent, event_type, is_test_command, validate_request,
@@ -87,6 +88,54 @@ impl AgentAdapter for CodexAdapter {
                 raw: value,
             }],
         }
+    }
+
+    fn sign_in_status_arguments(&self) -> Option<&'static [&'static str]> {
+        Some(&["login", "status"])
+    }
+
+    /// Reads `codex login status`, which writes one sentence to stderr and
+    /// exits non-zero when nobody is signed in.
+    fn parse_sign_in(&self, success: bool, stdout: &[u8], stderr: &[u8]) -> Billing {
+        let output = format!(
+            "{}\n{}",
+            String::from_utf8_lossy(stderr),
+            String::from_utf8_lossy(stdout)
+        );
+        if output.contains("Logged in using ChatGPT") {
+            return Billing::Plan { plan: None };
+        }
+        if output.contains("Logged in using an API key") {
+            return Billing::ApiKey {
+                source: "saved API key".into(),
+            };
+        }
+        if output.contains("Not logged in") {
+            return Billing::SignedOut;
+        }
+        // Codex prints warnings ahead of the answer, so the last line is the
+        // one most likely to be it.
+        let last = output
+            .lines()
+            .map(str::trim)
+            .rfind(|line| !line.is_empty())
+            .unwrap_or_default();
+        Billing::Unknown {
+            detail: if success || last.is_empty() {
+                "Codex did not say what it is signed in with".into()
+            } else {
+                last.to_owned()
+            },
+        }
+    }
+
+    /// `codex exec` uses this over a saved ChatGPT sign-in for the run.
+    fn overriding_variables(&self) -> &'static [&'static str] {
+        &["CODEX_API_KEY"]
+    }
+
+    fn sign_in_command(&self) -> Option<&'static str> {
+        Some("codex login")
     }
 }
 

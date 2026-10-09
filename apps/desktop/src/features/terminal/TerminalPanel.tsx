@@ -4,15 +4,31 @@ import { listen } from "@tauri-apps/api/event";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import { AlertCircleIcon, PlayIcon, SquareIcon, TerminalSquareIcon } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 
 import "@xterm/xterm/css/xterm.css";
 
+/**
+ * A command to type into the shell for the person, such as an agent's own
+ * sign-in. Typed rather than run behind their back, so what happens is on the
+ * screen and theirs to interrupt. A new `id` types it again.
+ */
+export interface TerminalCommand {
+  id: number;
+  text: string;
+}
+
 interface TerminalPanelProps {
   project: ProjectSnapshot;
+  command?: TerminalCommand | null;
+  /**
+   * Called once `command` has been typed, so the owner can let go of it. A
+   * terminal mounted later, in another layout, must not type it a second time.
+   */
+  onCommandSent?: (id: number) => void;
 }
 
 function messageFor(error: unknown) {
@@ -22,12 +38,39 @@ function messageFor(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function TerminalPanel({ project }: TerminalPanelProps) {
+export function TerminalPanel({ command = null, onCommandSent, project }: TerminalPanelProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [started, setStarted] = useState(false);
   const [session, setSession] = useState<TerminalSessionInfo | null>(null);
   const sessionIdRef = useRef<string | null>(null);
+  const pendingCommandRef = useRef<TerminalCommand | null>(null);
+  const onCommandSentRef = useRef(onCommandSent);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    onCommandSentRef.current = onCommandSent;
+  }, [onCommandSent]);
+
+  /** Types the waiting command once there is a shell to type it into. */
+  const flushCommand = useCallback(() => {
+    const sessionId = sessionIdRef.current;
+    const pending = pendingCommandRef.current;
+    if (!sessionId || pending === null) return;
+    pendingCommandRef.current = null;
+    onCommandSentRef.current?.(pending.id);
+    void invoke("write_terminal", { sessionId, data: `${pending.text}\r` }).catch((caught: unknown) =>
+      setError(messageFor(caught)),
+    );
+  }, []);
+
+  // Each request is a new object, so the same text asked for twice is typed
+  // twice; a re-render that keeps the same request types nothing.
+  useEffect(() => {
+    if (!command) return;
+    pendingCommandRef.current = command;
+    if (sessionIdRef.current) flushCommand();
+    else setStarted(true);
+  }, [command, flushCommand]);
 
   useEffect(() => {
     if (!started || !containerRef.current) return;
@@ -100,6 +143,7 @@ export function TerminalPanel({ project }: TerminalPanelProps) {
         }
         setSession(opened);
         terminal.focus();
+        flushCommand();
       } catch (caught) {
         if (!disposed) {
           setError(messageFor(caught));
@@ -118,7 +162,7 @@ export function TerminalPanel({ project }: TerminalPanelProps) {
       if (sessionId) void invoke("cancel_terminal", { sessionId });
       terminal.dispose();
     };
-  }, [project.repositoryId, started]);
+  }, [flushCommand, project.repositoryId, started]);
 
   async function stop() {
     if (!session) {

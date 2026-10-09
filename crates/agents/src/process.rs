@@ -35,6 +35,9 @@ pub struct ProcessSpec {
     pub arguments: Vec<OsString>,
     pub cwd: PathBuf,
     pub environment: Vec<(OsString, OsString)>,
+    /// Variables the child must not inherit from Mars, such as an API key the
+    /// person chose not to bill. Recorded by name only.
+    pub removed_environment: Vec<OsString>,
 }
 
 impl ProcessSpec {
@@ -53,6 +56,7 @@ impl ProcessSpec {
             arguments: arguments.into_iter().map(Into::into).collect(),
             cwd: cwd.as_ref().to_owned(),
             environment: Vec::new(),
+            removed_environment: Vec::new(),
         }
     }
 }
@@ -218,6 +222,9 @@ impl ProcessSupervisor {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        for variable in &spec.removed_environment {
+            command.env_remove(variable);
+        }
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
@@ -542,6 +549,7 @@ fn insert_session(
         "program": spec.program.to_string_lossy(),
         "arguments": spec.arguments.iter().map(|value| redactor(&value.to_string_lossy())).collect::<Vec<_>>(),
         "cwd": spec.cwd.to_string_lossy(),
+        "removedEnvironment": spec.removed_environment.iter().map(|name| name.to_string_lossy()).collect::<Vec<_>>(),
     });
     storage.with_connection(|connection| {
         connection.execute(

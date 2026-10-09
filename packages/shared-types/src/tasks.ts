@@ -45,6 +45,31 @@ export interface AdapterProbe {
   supportsResume: boolean;
 }
 
+/** Who pays for a run, as the agent's own CLI reports it. */
+export type AgentBilling =
+  /** The person's own subscription. `plan` is the tier when the CLI names one. */
+  | { type: "plan"; plan: string | null }
+  /** An API key, named by where it came from, never by its value. */
+  | { type: "apiKey"; source: string }
+  | { type: "cloudProvider"; provider: string }
+  | { type: "signedOut" }
+  /** The CLI did not answer in a form Mars reads. Not a refusal to launch. */
+  | { type: "unknown"; detail: string };
+
+export interface AgentAccount {
+  kind: AdapterKind;
+  /** What a run started now would bill. */
+  billing: AgentBilling;
+  /** What the CLI is signed in with once `overrides` are set aside. */
+  signIn: AgentBilling;
+  /** Variables in Mars's environment that outrank `signIn`, highest first. */
+  overrides: string[];
+  /** Whether the person chose `signIn` over `overrides` for this agent. */
+  useSignIn: boolean;
+  /** What a person runs in a terminal to sign in, e.g. `claude auth login`. */
+  signInCommand: string | null;
+}
+
 export interface AgentPermissions {
   writeFiles: boolean;
   runCommands: boolean;

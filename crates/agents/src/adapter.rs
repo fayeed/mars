@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
+use crate::account::Billing;
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AdapterKind {
@@ -121,6 +123,31 @@ pub trait AgentAdapter: Send + Sync {
             version: String::from_utf8_lossy(&output.stdout).trim().to_owned(),
             supports_resume: true,
         })
+    }
+
+    /// The arguments that make this CLI say what it is signed in with, or
+    /// `None` for a backend that has no way to.
+    fn sign_in_status_arguments(&self) -> Option<&'static [&'static str]> {
+        None
+    }
+
+    /// Reads that answer. Both streams and the exit status are passed because
+    /// the CLIs disagree about where they write it and what failure means.
+    fn parse_sign_in(&self, _success: bool, _stdout: &[u8], _stderr: &[u8]) -> Billing {
+        Billing::Unknown {
+            detail: "this agent does not report what it is signed in with".into(),
+        }
+    }
+
+    /// Variables that outrank the sign-in in a non-interactive run, highest
+    /// precedence first.
+    fn overriding_variables(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    /// What a person runs in a terminal to sign in.
+    fn sign_in_command(&self) -> Option<&'static str> {
+        None
     }
 
     fn on_exit(&self, exit_code: Option<i32>) -> NormalizedAgentEvent {

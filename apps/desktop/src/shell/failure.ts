@@ -17,6 +17,7 @@ import type { ActivityState } from "@/shell/activity-state";
  */
 export type FailureCause =
   | "agentUnavailable"
+  | "agentSignedOut"
   | "indexCold"
   | "permissionDenied"
   | "networkOffline"
@@ -62,6 +63,7 @@ const CAUSES: { cause: FailureCause; codes: string[] }[] = [
     cause: "agentUnavailable",
     codes: ["adapter.", "agent.not_running", "agent.process", "agent.missing_stream"],
   },
+  { cause: "agentSignedOut", codes: ["agent.signed_out"] },
   { cause: "indexCold", codes: ["index.", "brain.symbol_not_found"] },
   {
     cause: "conflict",
@@ -144,6 +146,14 @@ const COPY: Record<FailureCause, Omit<FailureCopy, "state"> & { state: ActivityS
       "Mars runs the agent CLIs that are installed on this machine; it does not bundle them. " +
       "Nothing was started, and nothing in the worktree changed.",
     remedy: "Check installed agents",
+  },
+  agentSignedOut: {
+    state: "blocked",
+    title: "The agent is not signed in",
+    description:
+      "Mars runs the agent CLI with your own account and never sees how you sign in to it. " +
+      "Nothing was started, and nothing in the worktree changed.",
+    remedy: "Sign in",
   },
   indexCold: {
     state: "stale",

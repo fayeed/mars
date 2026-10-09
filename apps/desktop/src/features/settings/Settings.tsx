@@ -1,18 +1,30 @@
 import type {
+  AdapterKind,
   AdapterProbe,
+  AgentAccount,
   ForgeConnection,
   GrantView,
   IndexStatus,
   StoragePaths,
 } from "@mars/shared-types";
-import { RefreshCwIcon, ShieldOffIcon } from "lucide-react";
+import { LogInIcon, RefreshCwIcon, ShieldOffIcon } from "lucide-react";
 
+import { billingPhrase, hasOverride } from "@/features/agents/billing";
 import { cn } from "@/lib/utils";
 import type { ActivityState } from "@/shell/activity-state";
 import { MetaLabel, Mono, StateLabel } from "@/shell/primitives";
 
+export interface SettingsAgent {
+  id: string;
+  name: string;
+  probe: AdapterProbe | null;
+  error: string | null;
+  /** What the installed CLI is signed in with. Absent until it has been asked. */
+  account?: AgentAccount | null;
+}
+
 export interface SettingsProps {
-  agents: { id: string; name: string; probe: AdapterProbe | null; error: string | null }[];
+  agents: SettingsAgent[];
   agentsState: ActivityState;
   connection: ForgeConnection | null;
   grants: GrantView[];
@@ -23,6 +35,12 @@ export interface SettingsProps {
   onRevokeGrant: (grant: GrantView) => void;
   onReindex: () => void;
   onConnectGitHub: () => void;
+  /** Opens a terminal running the agent's own sign-in command. */
+  onSignIn?: (adapter: AdapterKind) => void;
+  /** Chooses between the CLI's sign-in and an API key variable outranking it. */
+  onUseSignIn?: (adapter: AdapterKind, useSignIn: boolean) => void;
+  /** Asks every agent again, for after a sign-in finishes. */
+  onRecheckAgents?: () => void;
   busyGrantId?: string | null;
 }
 
@@ -75,6 +93,71 @@ function scopeSummary(grant: GrantView): string {
 }
 
 /**
+ * Who a run of this agent bills, and the two things a person can do about it.
+ *
+ * Mars never signs anyone in and never holds a provider credential: signing in
+ * runs the CLI's own command in a terminal, and the only lever Mars has over
+ * billing is whether it passes an API key variable through to the agent.
+ */
+function AgentAccountRow({
+  account,
+  onSignIn,
+  onUseSignIn,
+}: {
+  account: AgentAccount;
+  onSignIn?: (adapter: AdapterKind) => void;
+  onUseSignIn?: (adapter: AdapterKind, useSignIn: boolean) => void;
+}) {
+  const override = account.overrides[0];
+  return (
+    <div className="flex flex-col gap-0.5">
+      {account.billing.type === "signedOut" ? (
+        <div className="flex flex-wrap items-baseline gap-2">
+          <StateLabel state="blocked" detail="not signed in" />
+          {account.signInCommand ? (
+            <Mono className="text-faint">{account.signInCommand}</Mono>
+          ) : null}
+          {onSignIn && account.signInCommand ? (
+            <button
+              type="button"
+              onClick={() => onSignIn(account.kind)}
+              className="ml-auto flex items-center gap-1 border border-border px-1.5 py-0.5 text-[11px] outline-none hover:border-border-strong"
+            >
+              <LogInIcon className="size-3" />
+              Sign in
+            </button>
+          ) : null}
+        </div>
+      ) : (
+        <span className="text-[11px] text-muted-foreground">
+          Runs bill {billingPhrase(account.kind, account.billing)}.
+        </span>
+      )}
+      {hasOverride(account) && override ? (
+        <div className="flex flex-wrap items-baseline gap-2">
+          <span className="text-[11px] text-muted-foreground">
+            {account.useSignIn
+              ? `Mars leaves ${account.overrides.join(" and ")} out of the agent's environment.`
+              : `${override} is set where Mars was started, and outranks your sign-in for the runs Mars starts.`}
+          </span>
+          {onUseSignIn ? (
+            <button
+              type="button"
+              onClick={() => onUseSignIn(account.kind, !account.useSignIn)}
+              className="ml-auto border border-border px-1.5 py-0.5 text-[11px] outline-none hover:border-border-strong"
+            >
+              {account.useSignIn
+                ? `Use ${override} instead`
+                : `Use ${billingPhrase(account.kind, account.signIn)} instead`}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/**
  * What Mars is configured with, and the place every grant can be taken back.
  *
  * The trust screen promises this surface before it asks for anything, so it has
@@ -92,8 +175,11 @@ export function Settings({
   grantsState,
   index,
   onConnectGitHub,
+  onRecheckAgents,
   onReindex,
   onRevokeGrant,
+  onSignIn,
+  onUseSignIn,
   repositoryName,
   storage,
 }: SettingsProps) {
@@ -131,10 +217,27 @@ export function Settings({
                     {agent.error ?? "Mars could not run this agent."}
                   </span>
                 )}
+                {agent.probe && agent.account ? (
+                  <AgentAccountRow
+                    account={agent.account}
+                    onSignIn={onSignIn}
+                    onUseSignIn={onUseSignIn}
+                  />
+                ) : null}
               </li>
             ))}
           </ul>
         )}
+        {onRecheckAgents && agentsState !== "loading" ? (
+          <button
+            type="button"
+            onClick={onRecheckAgents}
+            className="flex items-center gap-1 self-start border border-border px-2 py-0.5 text-[11px] outline-none hover:border-border-strong"
+          >
+            <RefreshCwIcon className="size-3" />
+            Check agents again
+          </button>
+        ) : null}
         <p className="text-[11px] text-faint">
           Default role: implementer. A reviewer runs under a read-only ceiling that no decision
           during the run can widen.

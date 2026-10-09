@@ -13,7 +13,9 @@ import type {
   FileDocument,
   FilePage,
   GrantView,
+  AdapterKind,
   AdapterProbe,
+  AgentAccount,
   IndexEvent,
   IndexStatus,
   InterruptedRun,
@@ -91,7 +93,8 @@ import { RepositoryHome, indexActivityState } from "@/features/home/RepositoryHo
 import { CreateTaskDialog } from "@/features/tasks/CreateTaskDialog";
 import { TaskDetail } from "@/features/tasks/TaskDetail";
 import { WorktreePlanMessage, type PlanEdits } from "@/features/tasks/WorktreePlanMessage";
-import { TerminalPanel } from "@/features/terminal/TerminalPanel";
+import { TerminalPanel, type TerminalCommand } from "@/features/terminal/TerminalPanel";
+import type { SettingsAgent } from "@/features/settings/Settings";
 import type { ActivityState } from "@/shell/activity-state";
 import { Composer } from "@/shell/Composer";
 import type {
@@ -325,10 +328,10 @@ export function ShellWorkspace({
   const [busyFindingId, setBusyFindingId] = useState<string | null>(null);
 
   const [library, setLibrary] = useState<LibraryTab | null>(null);
-  const [agentProbes, setAgentProbes] = useState<
-    { id: string; name: string; probe: AdapterProbe | null; error: string | null }[]
-  >([]);
+  const [agentProbes, setAgentProbes] = useState<SettingsAgent[]>([]);
   const [probeState, setProbeState] = useState<ActivityState>("idle");
+  /** An agent's sign-in, waiting to be typed into whichever terminal opens. */
+  const [terminalCommand, setTerminalCommand] = useState<TerminalCommand | null>(null);
 
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
@@ -729,13 +732,25 @@ export function ShellWorkspace({
     () =>
       AGENTS.map((agent) => {
         const probed = agentProbes.find((candidate) => candidate.id === agent.id);
-        if (!probed || probed.probe) return agent;
-        return {
-          ...agent,
-          unavailable:
-            "is not installed on this machine — nothing can be launched with it. " +
-            "`/ask` still works.",
-        };
+        if (!probed) return agent;
+        if (!probed.probe) {
+          return {
+            ...agent,
+            unavailable:
+              "is not installed on this machine — nothing can be launched with it. " +
+              "`/ask` still works.",
+          };
+        }
+        if (probed.account?.billing.type === "signedOut") {
+          return {
+            ...agent,
+            unavailable:
+              "is installed but not signed in — sign in from Settings → Agents" +
+              (probed.account.signInCommand ? ` or with \`${probed.account.signInCommand}\`` : "") +
+              ". `/ask` still works.",
+          };
+        }
+        return agent;
       }),
     [agentProbes],
   );
@@ -1200,25 +1215,79 @@ export function ShellWorkspace({
    * was letting somebody compose a whole request and learn at launch that
    * nothing could run it.
    */
-  useEffect(() => {
-    if (agentProbes.length > 0) return;
+  const probeAgents = useCallback(() => {
     setProbeState("loading");
-    void Promise.all(
-      AGENTS.map((agent) =>
-        invoke<AdapterProbe>("probe_agent", { adapter: agent.id })
-          .then((probe) => ({ id: agent.id, name: agent.name, probe, error: null }))
-          .catch((caught: unknown) => ({
-            id: agent.id,
-            name: agent.name,
-            probe: null,
-            error: messageFor(caught),
-          })),
-      ),
+    return Promise.all(
+      AGENTS.map(async (agent): Promise<SettingsAgent> => {
+        try {
+          const probe = await invoke<AdapterProbe>("probe_agent", { adapter: agent.id });
+          // Asked separately so an installed agent that cannot say who it is
+          // signed in as still reads as installed.
+          const account = await invoke<AgentAccount>("agent_account", { adapter: agent.id }).catch(
+            () => null,
+          );
+          return { id: agent.id, name: agent.name, probe, account, error: null };
+        } catch (caught) {
+          return { id: agent.id, name: agent.name, probe: null, account: null, error: messageFor(caught) };
+        }
+      }),
     ).then((probes) => {
       setAgentProbes(probes);
       setProbeState("idle");
     });
-  }, [agentProbes.length]);
+  }, []);
+
+  useEffect(() => {
+    if (agentProbes.length > 0) return;
+    void probeAgents();
+  }, [agentProbes.length, probeAgents]);
+
+  /**
+   * Sign in to an agent: its own command, typed into Mars's terminal.
+   *
+   * Mars does not sign anyone in. The CLI runs its own sign-in, in the open,
+   * and the account it ends up with is never seen here — which is both what the
+   * providers require of a tool like this and the only arrangement in which a
+   * person's subscription stays theirs.
+   */
+  async function signInToAgent(adapter: AdapterKind) {
+    const known = agentProbes.find((agent) => agent.id === adapter)?.account;
+    const account =
+      known ?? (await invoke<AgentAccount>("agent_account", { adapter }).catch(() => null));
+    if (!account?.signInCommand) {
+      note(`Mars could not find how to sign in to ${adapter}. Sign in from your own terminal.`, "failed");
+      return;
+    }
+    setTerminalCommand({ id: Date.now(), text: account.signInCommand });
+    if (focus) setFocusTerminal(true);
+    else dispatch({ type: "openUtility", tab: "terminal" });
+    note(
+      `Signing in with \`${account.signInCommand}\` in the terminal. When it finishes, check the agents again in Settings.`,
+      "queued",
+    );
+  }
+
+  /** Keeps Settings and the composer in step with the newest word on an account. */
+  const learnAgentAccount = useCallback((account: AgentAccount) => {
+    setAgentProbes((current) =>
+      current.map((agent) => (agent.id === account.kind ? { ...agent, account } : agent)),
+    );
+  }, []);
+
+  async function chooseAgentSignIn(adapter: AdapterKind, useSignIn: boolean) {
+    try {
+      learnAgentAccount(
+        await invoke<AgentAccount>("set_agent_sign_in_preference", { adapter, useSignIn }),
+      );
+    } catch (caught) {
+      note(messageFor(caught), "failed");
+    }
+  }
+
+  const releaseTerminalCommand = useCallback(
+    (id: number) => setTerminalCommand((current) => (current?.id === id ? null : current)),
+    [],
+  );
 
   const loadGrants = useCallback(() => {
     setGrantsState("loading");
@@ -1828,7 +1897,9 @@ export function ShellWorkspace({
     ) : selectedTask ? (
       <TaskDetail
         key={selectedTask.taskId}
+        onAccountChanged={learnAgentAccount}
         onOpenWorktree={onOpenProject}
+        onSignIn={(adapter) => void signInToAgent(adapter)}
         onTaskChanged={upsertTask}
         task={selectedTask}
       />
@@ -1884,7 +1955,13 @@ export function ShellWorkspace({
         onToggleTerminal={() => setFocusTerminal((open) => !open)}
         openPath={activePath}
         returnLabel={selectedTask?.title ?? "the conversation"}
-        terminal={<TerminalPanel project={project} />}
+        terminal={
+          <TerminalPanel
+            command={terminalCommand}
+            onCommandSent={releaseTerminalCommand}
+            project={project}
+          />
+        }
         terminalOpen={focusTerminal}
         unread={Math.max(0, events.length - focusFrom)}
       />
@@ -1955,6 +2032,9 @@ export function ShellWorkspace({
             onConnectGitHub={() =>
               note("Connecting GitHub needs a token; that flow is not on this screen yet.", "queued")
             }
+            onRecheckAgents={() => void probeAgents()}
+            onSignIn={(adapter) => void signInToAgent(adapter)}
+            onUseSignIn={(adapter, useSignIn) => void chooseAgentSignIn(adapter, useSignIn)}
             onReindex={() => {
               setIndexState("loading");
               invoke("index_repository", { repositoryId: project.repositoryId })
@@ -2178,7 +2258,13 @@ export function ShellWorkspace({
       }}
       utility={{
         content: {
-          terminal: <TerminalPanel project={project} />,
+          terminal: (
+            <TerminalPanel
+              command={terminalCommand}
+              onCommandSent={releaseTerminalCommand}
+              project={project}
+            />
+          ),
           problems: (
             <ProblemsPanel
               onOpen={(path, line) => void openFile(path, false, line)}

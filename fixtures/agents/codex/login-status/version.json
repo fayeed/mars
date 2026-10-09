@@ -1,0 +1,7 @@
+{
+  "provider": "codex",
+  "capturedFrom": "codex login status, stderr; the warning line is the CLI's own when CODEX_HOME is under a temp directory",
+  "testedCliVersion": "0.162.0-alpha.17.2",
+  "format": "one sentence on stderr; exit 1 when not logged in",
+  "capturedAt": "2026-10-09"
+}

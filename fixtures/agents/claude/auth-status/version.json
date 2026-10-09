@@ -1,0 +1,7 @@
+{
+  "provider": "claude",
+  "capturedFrom": "claude auth status --json, account fields replaced",
+  "testedCliVersion": "2.1.292",
+  "format": "JSON on stdout; exit 1 when loggedIn is false",
+  "capturedAt": "2026-10-09"
+}

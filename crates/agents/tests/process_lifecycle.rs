@@ -69,6 +69,34 @@ fn streams_redacted_stdout_and_stderr_in_order_and_captures_nonzero_exit() {
 }
 
 #[test]
+fn removed_variables_are_not_inherited_and_are_recorded_by_name() {
+    runtime().block_on(async {
+        let fixture = ProcessFixture::new();
+        let supervisor = ProcessSupervisor::new(fixture.storage.clone());
+        // HOME stands in for an API key: something every test process inherits.
+        let mut spec = shell(fixture.path(), "printf 'home=%s\\n' \"${HOME-unset}\"");
+        spec.removed_environment = vec!["HOME".into()];
+        let mut launched = supervisor.launch(spec).expect("process should launch");
+        let delivered = collect_until_exit(&mut launched.events).await;
+        assert!(delivered.iter().any(|event| matches!(
+            &event.kind,
+            ProcessEventKind::Stdout { text } if text.contains("home=unset")
+        )));
+        let stored_command: String = fixture
+            .storage
+            .with_connection(|connection| {
+                connection.query_row(
+                    "SELECT command_json FROM agent_sessions WHERE id = ?1",
+                    [&launched.session_id],
+                    |row| row.get(0),
+                )
+            })
+            .expect("command should load");
+        assert!(stored_command.contains(r#""removedEnvironment":["HOME"]"#));
+    });
+}
+
+#[test]
 fn production_supervisor_redacts_secrets_without_custom_configuration() {
     runtime().block_on(async {
         let fixture = ProcessFixture::new();

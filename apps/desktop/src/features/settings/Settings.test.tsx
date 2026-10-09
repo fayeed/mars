@@ -1,4 +1,4 @@
-import type { GrantView, IndexStatus } from "@mars/shared-types";
+import type { AgentAccount, GrantView, IndexStatus } from "@mars/shared-types";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
@@ -80,7 +80,83 @@ describe("Settings agents", () => {
     expect(screen.getByText("not found on PATH")).toBeVisible();
     expect(screen.getByText("codex is not on PATH")).toBeVisible();
   });
+
+  it("says who a run bills", () => {
+    renderSettings({ agents: [claudeWith(account())] });
+
+    expect(screen.getByText("Runs bill your Claude Team plan.")).toBeVisible();
+  });
+
+  it("offers the agent's own sign-in when it is not signed in", async () => {
+    const user = userEvent.setup();
+    const onSignIn = vi.fn();
+    renderSettings({
+      agents: [claudeWith(account({ billing: { type: "signedOut" }, signIn: { type: "signedOut" } }))],
+      onSignIn,
+    });
+
+    expect(screen.getByText("not signed in")).toBeVisible();
+    expect(screen.getByText("claude auth login")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Sign in" }));
+    expect(onSignIn).toHaveBeenCalledWith("claude");
+  });
+
+  it("names a key that outranks the sign-in, and offers the sign-in instead", async () => {
+    const user = userEvent.setup();
+    const onUseSignIn = vi.fn();
+    renderSettings({
+      agents: [
+        claudeWith(
+          account({
+            billing: { type: "apiKey", source: "ANTHROPIC_API_KEY" },
+            overrides: ["ANTHROPIC_API_KEY"],
+          }),
+        ),
+      ],
+      onUseSignIn,
+    });
+
+    expect(screen.getByText("Runs bill the API key in ANTHROPIC_API_KEY.")).toBeVisible();
+    expect(screen.getByText(/outranks your sign-in/)).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Use your Claude Team plan instead" }));
+    expect(onUseSignIn).toHaveBeenCalledWith("claude", true);
+  });
+
+  it("lets a person go back to the key once the sign-in was chosen", async () => {
+    const user = userEvent.setup();
+    const onUseSignIn = vi.fn();
+    renderSettings({
+      agents: [claudeWith(account({ overrides: ["ANTHROPIC_API_KEY"], useSignIn: true }))],
+      onUseSignIn,
+    });
+
+    expect(screen.getByText(/leaves ANTHROPIC_API_KEY out/)).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Use ANTHROPIC_API_KEY instead" }));
+    expect(onUseSignIn).toHaveBeenCalledWith("claude", false);
+  });
 });
+
+function account(overrides: Partial<AgentAccount> = {}): AgentAccount {
+  return {
+    kind: "claude",
+    billing: { type: "plan", plan: "team" },
+    signIn: { type: "plan", plan: "team" },
+    overrides: [],
+    useSignIn: false,
+    signInCommand: "claude auth login",
+    ...overrides,
+  };
+}
+
+function claudeWith(agentAccount: AgentAccount) {
+  return {
+    id: "claude",
+    name: "Claude",
+    probe: { kind: "claude" as const, executable: "claude", version: "2.1.292", supportsResume: true },
+    account: agentAccount,
+    error: null,
+  };
+}
 
 describe("Settings: the revocation surface screen 01 promised", () => {
   it("lists a standing grant with who gave it and what it covers", () => {

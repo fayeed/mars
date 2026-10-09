@@ -1,6 +1,7 @@
 import type {
   AdapterKind,
   AdapterProbe,
+  AgentAccount,
   AgentLaunchOutcome,
   AgentPermissions,
   AgentTimelinePayload,
@@ -16,6 +17,7 @@ import {
   ExternalLinkIcon,
   GitBranchIcon,
   LoaderCircleIcon,
+  LogInIcon,
   PlayIcon,
   SendIcon,
   SquareIcon,
@@ -44,9 +46,14 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { classifyFailure } from "@/shell/failure";
 
 interface TaskDetailProps {
+  /** Told whenever this view learns something newer about an agent's account. */
+  onAccountChanged?: (account: AgentAccount) => void;
   onOpenWorktree: (project: ProjectSnapshot) => void;
+  /** Opens a terminal running the agent's own sign-in command. */
+  onSignIn?: (adapter: AdapterKind) => void;
   onTaskChanged: (task: WorktreePlan) => void;
   task: WorktreePlan;
 }
@@ -58,10 +65,17 @@ function messageFor(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function TaskDetail({ onOpenWorktree, onTaskChanged, task }: TaskDetailProps) {
+export function TaskDetail({
+  onAccountChanged,
+  onOpenWorktree,
+  onSignIn,
+  onTaskChanged,
+  task,
+}: TaskDetailProps) {
   const [adapter, setAdapter] = useState<AdapterKind>("claude");
   const [prompt, setPrompt] = useState(task.intent);
   const [probe, setProbe] = useState<AdapterProbe | null>(null);
+  const [account, setAccount] = useState<AgentAccount | null>(null);
   const [permissionOpen, setPermissionOpen] = useState(false);
   const [packOpen, setPackOpen] = useState(false);
   const [contextPack, setContextPack] = useState<ContextPack | null>(null);
@@ -71,7 +85,8 @@ export function TaskDetail({ onOpenWorktree, onTaskChanged, task }: TaskDetailPr
   const [providerSessionId, setProviderSessionId] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  /** Kept whole rather than as its message, so a signed-out refusal can offer a sign-in. */
+  const [error, setError] = useState<unknown>(null);
   const sessionRef = useRef<string | null>(null);
   const launchPendingRef = useRef(false);
 
@@ -108,7 +123,7 @@ export function TaskDetail({ onOpenWorktree, onTaskChanged, task }: TaskDetailPr
     try {
       onTaskChanged(await invoke<WorktreePlan>("provision_task", { taskId: task.taskId }));
     } catch (caught) {
-      setError(messageFor(caught));
+      setError(caught);
     } finally {
       setBusy(false);
     }
@@ -123,7 +138,7 @@ export function TaskDetail({ onOpenWorktree, onTaskChanged, task }: TaskDetailPr
       setContextPack(pack);
       setPackOpen(true);
     } catch (caught) {
-      setError(messageFor(caught));
+      setError(caught);
     } finally {
       setBusy(false);
     }
@@ -134,12 +149,41 @@ export function TaskDetail({ onOpenWorktree, onTaskChanged, task }: TaskDetailPr
     setError(null);
     try {
       setProbe(await invoke<AdapterProbe>("probe_agent", { adapter }));
+      learnAccount(await readAccount());
       setPackOpen(false);
       setPermissionOpen(true);
     } catch (caught) {
-      setError(messageFor(caught));
+      setError(caught);
     } finally {
       setBusy(false);
+    }
+  }
+
+  /**
+   * Who the run would bill. A CLI that cannot say is no reason to stop here:
+   * the launch asks again and refuses only when it is certainly signed out.
+   */
+  function readAccount() {
+    return invoke<AgentAccount>("agent_account", { adapter }).catch(() => null);
+  }
+
+  function learnAccount(next: AgentAccount | null) {
+    setAccount(next);
+    if (next) onAccountChanged?.(next);
+  }
+
+  async function recheckAccount() {
+    learnAccount(await readAccount());
+  }
+
+  async function chooseSignIn(useSignIn: boolean) {
+    setError(null);
+    try {
+      learnAccount(
+        await invoke<AgentAccount>("set_agent_sign_in_preference", { adapter, useSignIn }),
+      );
+    } catch (caught) {
+      setError(caught);
     }
   }
 
@@ -153,7 +197,7 @@ export function TaskDetail({ onOpenWorktree, onTaskChanged, task }: TaskDetailPr
       setContextPack(await buildPack(next));
       setPackExclusions(next);
     } catch (caught) {
-      setError(messageFor(caught));
+      setError(caught);
     } finally {
       setBusy(false);
     }
@@ -199,7 +243,7 @@ export function TaskDetail({ onOpenWorktree, onTaskChanged, task }: TaskDetailPr
     } catch (caught) {
       launchPendingRef.current = false;
       setRunning(false);
-      setError(messageFor(caught));
+      setError(caught);
     } finally {
       setBusy(false);
     }
@@ -212,7 +256,7 @@ export function TaskDetail({ onOpenWorktree, onTaskChanged, task }: TaskDetailPr
     try {
       await invoke("cancel_agent", { sessionId });
     } catch (caught) {
-      setError(messageFor(caught));
+      setError(caught);
     } finally {
       setBusy(false);
     }
@@ -227,7 +271,7 @@ export function TaskDetail({ onOpenWorktree, onTaskChanged, task }: TaskDetailPr
       });
       if (result.status === "opened") onOpenWorktree(result.repository);
     } catch (caught) {
-      setError(messageFor(caught));
+      setError(caught);
     } finally {
       setBusy(false);
     }
@@ -260,6 +304,8 @@ export function TaskDetail({ onOpenWorktree, onTaskChanged, task }: TaskDetailPr
       </section>
     );
   }
+
+  const signIn = onSignIn ? () => onSignIn(adapter) : undefined;
 
   return (
     <ScrollArea className="min-h-0 flex-1">
@@ -334,12 +380,16 @@ export function TaskDetail({ onOpenWorktree, onTaskChanged, task }: TaskDetailPr
         </div>
 
         <AgentTimeline events={events} />
-        <TaskError error={error} />
+        <TaskError error={error} onSignIn={signIn} />
       </section>
       <PermissionPrompt
+        account={account}
         adapter={adapter}
         onApprove={(permissions) => void launch(permissions)}
         onOpenChange={setPermissionOpen}
+        onRecheckAccount={() => void recheckAccount()}
+        onSignIn={signIn}
+        onUseSignIn={(value) => void chooseSignIn(value)}
         open={permissionOpen}
         probe={probe}
       />
@@ -376,12 +426,20 @@ function PlanRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-function TaskError({ error }: { error: string | null }) {
-  if (!error) return null;
+function TaskError({ error, onSignIn }: { error: unknown; onSignIn?: () => void }) {
+  if (error === null || error === undefined || error === "") return null;
+  const signedOut = classifyFailure(error).cause === "agentSignedOut";
   return (
     <Alert variant="destructive">
-      <AlertTitle>Task operation failed</AlertTitle>
-      <AlertDescription>{error}</AlertDescription>
+      <AlertTitle>{signedOut ? "The agent is not signed in" : "Task operation failed"}</AlertTitle>
+      <AlertDescription>
+        <p>{messageFor(error)}</p>
+        {signedOut && onSignIn ? (
+          <Button className="mt-2" onClick={onSignIn} size="sm" type="button" variant="outline">
+            <LogInIcon data-icon="inline-start" /> Sign in
+          </Button>
+        ) : null}
+      </AlertDescription>
     </Alert>
   );
 }
