@@ -609,3 +609,52 @@ fn the_pump_recovers_what_live_delivery_dropped() {
         1
     );
 }
+
+/// What `codex` makes of the exact `-c` overrides the adapter builds, read
+/// back with `codex mcp get`. Free to run — it reads configuration and calls
+/// no model — but needs an installed Codex, named by `MARS_CODEX_EXECUTABLE`.
+#[test]
+#[ignore = "needs an installed Codex CLI named by MARS_CODEX_EXECUTABLE"]
+fn real_codex_parses_the_mcp_overrides_mars_builds() {
+    let executable = std::env::var("MARS_CODEX_EXECUTABLE").expect("MARS_CODEX_EXECUTABLE");
+    let command = CodexAdapter.command(&request()).expect("command builds");
+    // Keep only the configuration overrides and ask Codex to show what it read.
+    let mut arguments: Vec<std::ffi::OsString> = Vec::new();
+    let mut iter = command.arguments.iter();
+    while let Some(argument) = iter.next() {
+        if argument == "-c"
+            && let Some(value) = iter.next()
+            && value.to_string_lossy().starts_with("mcp_servers.")
+        {
+            arguments.push(argument.clone());
+            arguments.push(value.clone());
+        }
+    }
+    arguments.extend(["mcp", "get", "mars", "--json"].map(std::ffi::OsString::from));
+    let output = std::process::Command::new(executable)
+        .args(&arguments)
+        .output()
+        .expect("codex runs");
+    assert!(
+        output.status.success(),
+        "codex refused the overrides: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let parsed: Value = serde_json::from_slice(&output.stdout).expect("codex answers in JSON");
+    let transport = &parsed["transport"];
+    assert_eq!(
+        transport["command"].as_str(),
+        Some(r"C:\Program Files\Mars\mars-desktop.exe"),
+        "{parsed}"
+    );
+    assert_eq!(
+        transport["args"][2].as_str(),
+        Some(r"C:\Users\me\AppData\Roaming\dev.mars.desktop\mars.sqlite3"),
+        "{parsed}"
+    );
+    assert_eq!(
+        transport["env"]["MARS_RUN"].as_str(),
+        Some("run-1"),
+        "{parsed}"
+    );
+}
