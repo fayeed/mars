@@ -1509,6 +1509,18 @@ async fn brain_dependency_graph(
         .map_err(Into::into)
 }
 
+/// Run blocking network work — the GitHub and skills.sh clients — from an
+/// async command.
+///
+/// Both clients are reqwest's blocking client, which refuses to run on a Tokio
+/// worker (in a debug build it panics), and every async command runs on one.
+/// `block_in_place` hands this worker's other tasks to another thread and
+/// leaves the runtime for the duration, so the call blocks only itself. Tauri's
+/// runtime is multi-threaded, which `block_in_place` requires.
+fn blocking_io<T>(work: impl FnOnce() -> T) -> T {
+    tokio::task::block_in_place(work)
+}
+
 /// The person at this machine.
 ///
 /// An approval is the entire authority behind a memory, so who gave it is not
@@ -1732,7 +1744,7 @@ async fn search_skills(
     query: String,
     state: State<'_, AppState>,
 ) -> Result<Vec<SkillCandidate>, CommandFailure> {
-    state.skills.search(&query).map_err(Into::into)
+    blocking_io(|| state.skills.search(&query).map_err(Into::into))
 }
 
 #[tauri::command]
@@ -1740,7 +1752,7 @@ async fn inspect_skill(
     candidate: SkillCandidate,
     state: State<'_, AppState>,
 ) -> Result<InspectedSkill, CommandFailure> {
-    state.skills.inspect(&candidate).map_err(Into::into)
+    blocking_io(|| state.skills.inspect(&candidate).map_err(Into::into))
 }
 
 #[tauri::command]
@@ -1753,22 +1765,24 @@ async fn install_skill(
     allow_codex: bool,
     state: State<'_, AppState>,
 ) -> Result<SkillInstallation, CommandFailure> {
-    let scoped_repository =
-        (!matches!(scope, SkillScope::Global)).then_some(repository_id.as_str());
-    let scoped_task = matches!(scope, SkillScope::Task | SkillScope::Workflow)
-        .then_some(task_id.as_deref())
-        .flatten();
-    state
-        .skills
-        .trust_and_install(
-            &skill_id,
-            scoped_repository,
-            scoped_task,
-            scope,
-            allow_claude,
-            allow_codex,
-        )
-        .map_err(Into::into)
+    blocking_io(|| {
+        let scoped_repository =
+            (!matches!(scope, SkillScope::Global)).then_some(repository_id.as_str());
+        let scoped_task = matches!(scope, SkillScope::Task | SkillScope::Workflow)
+            .then_some(task_id.as_deref())
+            .flatten();
+        state
+            .skills
+            .trust_and_install(
+                &skill_id,
+                scoped_repository,
+                scoped_task,
+                scope,
+                allow_claude,
+                allow_codex,
+            )
+            .map_err(Into::into)
+    })
 }
 
 #[tauri::command]
@@ -1836,10 +1850,12 @@ async fn check_skill_update(
     installation_id: String,
     state: State<'_, AppState>,
 ) -> Result<mars_skills::SkillUpdate, CommandFailure> {
-    state
-        .skills
-        .check_update(&installation_id)
-        .map_err(Into::into)
+    blocking_io(|| {
+        state
+            .skills
+            .check_update(&installation_id)
+            .map_err(Into::into)
+    })
 }
 
 /// Stop trusting a skill everywhere it is installed.
@@ -2311,7 +2327,11 @@ fn pending_permissions(
 
 /// What the broker did with an answer.
 #[derive(Serialize)]
-#[serde(rename_all = "camelCase", tag = "outcome")]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "outcome"
+)]
 enum PermissionOutcomeView {
     Allowed {
         grant_id: String,
@@ -2516,12 +2536,14 @@ async fn import_github_issue(
     issue_number: u64,
     state: State<'_, AppState>,
 ) -> Result<StoredIssue, CommandFailure> {
-    let remote = state.forge.resolve_remote(&repository_id, &remote_name)?;
-    let provider = connected_github_provider(&state, &remote.id)?;
-    state
-        .forge
-        .import_issue(&repository_id, &remote_name, issue_number, &provider)
-        .map_err(Into::into)
+    blocking_io(|| {
+        let remote = state.forge.resolve_remote(&repository_id, &remote_name)?;
+        let provider = connected_github_provider(&state, &remote.id)?;
+        state
+            .forge
+            .import_issue(&repository_id, &remote_name, issue_number, &provider)
+            .map_err(Into::into)
+    })
 }
 
 /// One commit the push would carry.
@@ -2635,20 +2657,44 @@ async fn connect_github(
     repository_id: String,
     remote_name: String,
     token: String,
+    enterprise_confirmed: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<ForgeConnection, CommandFailure> {
-    connect_github_with_token(&state, &repository_id, &remote_name, &token)
+    blocking_io(|| {
+        connect_github_with_token(
+            &state,
+            &repository_id,
+            &remote_name,
+            &token,
+            enterprise_confirmed.unwrap_or(false),
+        )
+    })
 }
 
 /// Verify a token against the account it belongs to, keep it in the OS
 /// keychain, and record only a reference to it (ADR-024).
+///
+/// A token is sent only to github.com, or to a host the person has said is a
+/// GitHub Enterprise server. A remote's URL comes from the repository, which
+/// may have been cloned from anywhere; without this, a GitHub token pasted
+/// for a GitLab remote would be handed to GitLab.
 fn connect_github_with_token(
     state: &AppState,
     repository_id: &str,
     remote_name: &str,
     token: &str,
+    enterprise_confirmed: bool,
 ) -> Result<ForgeConnection, CommandFailure> {
     let remote = state.forge.resolve_remote(repository_id, remote_name)?;
+    if remote.provider != "github" && !enterprise_confirmed {
+        return Err(CommandFailure::new(
+            "forge.unconfirmed_host",
+            format!(
+                "{} is not github.com. Confirm it is a GitHub Enterprise server before a token is sent to it.",
+                remote.repository.host
+            ),
+        ));
+    }
     let api_base = github_api_base(&remote.repository);
     let provider = github_provider(remote.repository, token)?;
     let user = provider.current_user()?;
@@ -2731,11 +2777,13 @@ async fn create_github_pull_request(
     forge_approved: bool,
     state: State<'_, AppState>,
 ) -> Result<PullRequestSnapshot, CommandFailure> {
-    let provider = connected_github_provider(&state, &plan.remote_id)?;
-    state
-        .forge
-        .apply_pull_request(&plan, push_approved, forge_approved, &provider)
-        .map_err(Into::into)
+    blocking_io(|| {
+        let provider = connected_github_provider(&state, &plan.remote_id)?;
+        state
+            .forge
+            .apply_pull_request(&plan, push_approved, forge_approved, &provider)
+            .map_err(Into::into)
+    })
 }
 
 #[tauri::command]
@@ -2743,15 +2791,17 @@ async fn refresh_github_pull_request(
     task_id: String,
     state: State<'_, AppState>,
 ) -> Result<PullRequestSnapshot, CommandFailure> {
-    let stored = state
-        .forge
-        .get_task_pull_request(&task_id)?
-        .ok_or_else(|| CommandFailure::new("forge.pr_not_found", "Task has no pull request"))?;
-    let provider = connected_github_provider(&state, &stored.remote_id)?;
-    state
-        .forge
-        .refresh_pull_request(&task_id, &provider)
-        .map_err(Into::into)
+    blocking_io(|| {
+        let stored = state
+            .forge
+            .get_task_pull_request(&task_id)?
+            .ok_or_else(|| CommandFailure::new("forge.pr_not_found", "Task has no pull request"))?;
+        let provider = connected_github_provider(&state, &stored.remote_id)?;
+        state
+            .forge
+            .refresh_pull_request(&task_id, &provider)
+            .map_err(Into::into)
+    })
 }
 
 fn github_provider(
@@ -3852,4 +3902,17 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Mars desktop");
+}
+
+#[cfg(test)]
+mod tests {
+    /// An async command runs on Tauri's runtime; a blocking HTTP client built,
+    /// used and dropped there must not take the command down with it.
+    #[test]
+    fn blocking_clients_run_from_an_async_command() {
+        let built = tauri::async_runtime::block_on(tauri::async_runtime::spawn(async {
+            super::blocking_io(|| mars_skills::SkillsShRegistry::new().map(drop).is_ok())
+        }));
+        assert!(built.expect("the command task should finish"));
+    }
 }

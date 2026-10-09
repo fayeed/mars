@@ -105,6 +105,12 @@ impl GitHubTransport for ReqwestTransport {
     }
 }
 
+/// Issues shown per page of the issue list.
+const ISSUES_PER_PAGE: usize = 50;
+/// How many pages of mixed issues and pull requests are read to fill one
+/// page of issues before giving up.
+const ISSUE_SCAN_PAGES: u32 = 10;
+
 impl ForgeProvider for GitHubProvider {
     fn repository(&self) -> &ForgeRepository {
         &self.repository
@@ -220,21 +226,36 @@ impl ForgeProvider for GitHubProvider {
     }
 
     fn list_issues(&self, state: ItemState, page: u32) -> Result<Vec<Issue>, ForgeError> {
-        let raw: Vec<GitHubIssue> = self.request(
-            Method::GET,
-            &format!(
-                "/issues?state={}&sort=updated&direction=desc&per_page=50&page={}",
-                state.as_str(),
-                page.max(1)
-            ),
-            None,
-        )?;
         // GitHub's issues endpoint returns pull requests too, marked by a
-        // `pull_request` field; they are listed as pull requests instead.
-        Ok(raw
+        // `pull_request` field, and they are listed as pull requests instead.
+        // In a repository where most recent activity is pull requests, one
+        // page can hold no issues at all, so pages are read until this page
+        // of issues is full or the repository runs out.
+        let wanted = ISSUES_PER_PAGE * page.max(1) as usize;
+        let mut issues = Vec::new();
+        for source_page in 1..=ISSUE_SCAN_PAGES {
+            let raw: Vec<GitHubIssue> = self.request(
+                Method::GET,
+                &format!(
+                    "/issues?state={}&sort=updated&direction=desc&per_page=100&page={source_page}",
+                    state.as_str(),
+                ),
+                None,
+            )?;
+            let exhausted = raw.len() < 100;
+            issues.extend(
+                raw.into_iter()
+                    .filter(|issue| issue.pull_request.is_none())
+                    .map(Issue::from),
+            );
+            if exhausted || issues.len() >= wanted {
+                break;
+            }
+        }
+        Ok(issues
             .into_iter()
-            .filter(|issue| issue.pull_request.is_none())
-            .map(Into::into)
+            .skip(wanted - ISSUES_PER_PAGE)
+            .take(ISSUES_PER_PAGE)
             .collect())
     }
 

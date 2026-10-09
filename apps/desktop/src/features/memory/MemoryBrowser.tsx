@@ -340,12 +340,18 @@ function ProposalRow({
       <div className="flex flex-wrap items-center gap-1">
         <button
           type="button"
-          disabled={busy || conflicts.length > 0}
+          disabled={busy}
           onClick={() => onApprove(proposal, draft.trim() === proposal.text ? null : draft.trim())}
           className="flex items-center gap-1 border border-border bg-primary px-2 py-0.5 text-[11px] font-medium text-primary-foreground outline-none disabled:cursor-not-allowed disabled:border-border disabled:bg-transparent disabled:text-faint"
         >
           <CheckIcon className="size-3" />
-          {draft.trim() === proposal.text ? "Approve" : "Edit and approve"}
+          {/* With conflicts on screen this asks again about the text as it
+              is now, which is the way out after editing the contradiction away. */}
+          {conflicts.length > 0
+            ? "Check again"
+            : draft.trim() === proposal.text
+              ? "Approve"
+              : "Edit and approve"}
         </button>
         <input
           aria-label={`Why reject proposal ${proposal.id}`}

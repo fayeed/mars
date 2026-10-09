@@ -215,7 +215,7 @@ fn issues_lists_leave_pull_requests_out_and_ask_for_recent_activity_first() {
 
     let requests = transport.requests.lock().expect("requests");
     assert!(requests[0].1.ends_with(
-        "/repos/acme/mars/issues?state=open&sort=updated&direction=desc&per_page=50&page=1"
+        "/repos/acme/mars/issues?state=open&sort=updated&direction=desc&per_page=100&page=1"
     ));
     assert!(
         requests[1]
@@ -269,4 +269,36 @@ fn a_merge_is_pinned_to_the_head_that_was_reviewed() {
         requests[0].2,
         Some(json!({ "merge_method": "squash", "sha": "abc123" }))
     );
+}
+
+#[test]
+fn an_issue_list_reads_past_pages_of_pull_requests() {
+    let pull_as_issue = |number: u64| {
+        json!({
+            "id": number, "number": number, "title": "A pull request", "body": "",
+            "state": "open", "html_url": format!("https://github.test/acme/mars/pull/{number}"),
+            "user": { "login": "bot" }, "labels": [], "updated_at": "2026-10-02T00:00:00Z",
+            "pull_request": { "url": "https://api.github.test/repos/acme/mars/pulls/1" }
+        })
+    };
+    let first_page: Vec<_> = (1..=100).map(pull_as_issue).collect();
+    let issue = json!({
+        "id": 500, "number": 500, "title": "A real issue", "body": null, "state": "open",
+        "html_url": "https://github.test/acme/mars/issues/500", "user": { "login": "faye" },
+        "labels": [], "updated_at": "2026-09-01T00:00:00Z"
+    });
+    let transport = Arc::new(FakeTransport::with_responses(vec![
+        json!(first_page),
+        json!([issue]),
+    ]));
+    let provider = provider_with(transport.clone());
+
+    let issues = provider
+        .list_issues(mars_forge::ItemState::Open, 1)
+        .expect("issues list");
+    assert_eq!(issues.len(), 1);
+    assert_eq!(issues[0].number, 500);
+    let requests = transport.requests.lock().expect("requests");
+    assert_eq!(requests.len(), 2);
+    assert!(requests[1].1.ends_with("per_page=100&page=2"));
 }

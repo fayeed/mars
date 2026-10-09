@@ -34,9 +34,11 @@ export interface PendingPermissionRequest {
   requestedAt: string;
 }
 
+// Stored and matched as JSON in snake_case, so these two fields keep the
+// names the core writes rather than the webview's usual camelCase.
 export type PermissionScope =
-  | { kind: "repository"; repositoryId: string }
-  | { kind: "worktree"; taskId: string; root: string }
+  | { kind: "repository"; repository_id: string }
+  | { kind: "worktree"; task_id: string; root: string }
   | { kind: "command"; program: string; cwd: string }
   | { kind: "network_host"; host: string }
   | { kind: "remote"; remote: string; branch: string };

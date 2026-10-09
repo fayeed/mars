@@ -463,7 +463,10 @@ pub struct ProposalFilters {
 #[serde(rename_all = "camelCase")]
 pub struct ApproveRequest {
     pub proposal_id: String,
-    /// The person approving. Recorded verbatim on the memory.
+    /// The person approving. Recorded verbatim on the memory. Filled by the
+    /// app from the signed-in user, never taken from the webview, so a
+    /// request may omit it.
+    #[serde(default)]
     pub approved_by: String,
     /// Present when the human edited before accepting.
     pub edited_text: Option<String>,
@@ -477,6 +480,7 @@ pub struct ApproveRequest {
 #[serde(rename_all = "camelCase")]
 pub struct RejectRequest {
     pub proposal_id: String,
+    #[serde(default)]
     pub rejected_by: String,
     pub reason: String,
 }
@@ -486,6 +490,7 @@ pub struct RejectRequest {
 pub struct ReviseRequest {
     pub memory_id: String,
     pub text: String,
+    #[serde(default)]
     pub revised_by: String,
     /// Omitted keeps the current kind.
     pub kind: Option<MemoryKind>,
@@ -495,6 +500,7 @@ pub struct ReviseRequest {
 #[serde(rename_all = "camelCase")]
 pub struct RevokeRequest {
     pub memory_id: String,
+    #[serde(default)]
     pub revoked_by: String,
     pub reason: String,
 }

@@ -197,11 +197,14 @@ describe("MemoryBrowser proposals", () => {
     const conflicts = screen.getByRole("group", { name: "Conflicts" });
     expect(conflicts).toHaveTextContent("Says the opposite");
     expect(conflicts).toHaveTextContent(memory.text);
-    expect(screen.getByRole("button", { name: "Approve" })).toBeDisabled();
     await user.click(within(conflicts).getByRole("button", { name: "Replace the old one" }));
-
     expect(onResolveConflict).toHaveBeenCalledWith(proposal, null, memory.id, "supersede_other");
     expect(onApprove).not.toHaveBeenCalled();
+
+    // Editing the contradiction away and asking again is always possible.
+    await user.type(screen.getByRole("textbox", { name: `Proposed memory ${proposal.id}` }), " Usually.");
+    await user.click(screen.getByRole("button", { name: "Check again" }));
+    expect(onApprove).toHaveBeenCalledWith(proposal, "The ingest tests need a running Redis. Usually.");
   });
 
   it("requires a reason before rejecting", async () => {

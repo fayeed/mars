@@ -240,6 +240,9 @@ export function composerScopes(directories: { name: string; files: number }[]): 
  */
 const RECORD_PAGE = 400;
 
+/** The most the record pages at once (`ActivityRecord::read_window`). */
+const MAX_RECORD_WINDOW = 5_000;
+
 /** The pack budget a run is assembled against. Bytes, as the core measures it. */
 const PACK_BUDGET_BYTES = 64 * 1024;
 
@@ -453,8 +456,15 @@ export function ShellWorkspace({
   const [knowledgeState, setKnowledgeState] = useState<ActivityState>("idle");
   const [knowledgeError, setKnowledgeError] = useState<string | null>(null);
   const [includeResolved, setIncludeResolved] = useState(false);
-  // The turn a jump to a memory's origin should bring into view.
-  const [focusSequence, setFocusSequence] = useState<number | null>(null);
+  // The turn a jump to a memory's origin should bring into view. Sequences
+  // are per task, so the target names its task too.
+  const [focusTarget, setFocusTarget] = useState<{ taskId: string; sequence: number } | null>(
+    null,
+  );
+  const focusTargetRef = useRef(focusTarget);
+  useEffect(() => {
+    focusTargetRef.current = focusTarget;
+  }, [focusTarget]);
   const [busyKnowledgeId, setBusyKnowledgeId] = useState<string | null>(null);
   // Opening a Knowledge tab from elsewhere (a transcript card, the end of a
   // run) remounts the view on it.
@@ -693,6 +703,19 @@ export function ShellWorkspace({
         invoke<RunRecord[]>("task_runs", { taskId }),
       ])
         .then(([window, projection, pending, runs]) => {
+          // A jump to a turn older than what was read widens the reading to
+          // reach it, as far as the record will page at once.
+          const target = focusTargetRef.current;
+          const oldest = window.events[0]?.sequence;
+          if (target?.taskId === taskId && oldest !== undefined && target.sequence < oldest) {
+            const needed = limit + (oldest - target.sequence) + 20;
+            if (window.earlier > 0 && needed <= MAX_RECORD_WINDOW) {
+              setRecordLimit(needed);
+            } else {
+              setFocusTarget(null);
+              note("That turn is too far back in the record to bring into view.", "stale");
+            }
+          }
           setRecord({
             taskId,
             events: window.events,
@@ -728,6 +751,7 @@ export function ShellWorkspace({
   // message is for it, and a pack built for another task is not this one's.
   useEffect(() => {
     setRecordLimit(RECORD_PAGE);
+    setFocusTarget((current) => (current && current.taskId !== selectedTaskId ? null : current));
     setComposeNew(false);
     setPack((current) => (current && current.taskId !== selectedTaskId ? null : current));
   }, [selectedTaskId]);
@@ -1956,9 +1980,21 @@ ${text}` : text));
     resolutions: ConflictResolution[] = [],
   ) {
     void memoryAction(proposal.id, async () => {
-      const outcome = await invoke<ApprovalOutcome>("memory_approve", {
-        request: { proposalId: proposal.id, editedText, resolutions },
-      });
+      let outcome: ApprovalOutcome;
+      try {
+        outcome = await invoke<ApprovalOutcome>("memory_approve", {
+          request: { proposalId: proposal.id, editedText, resolutions },
+        });
+      } catch (caught) {
+        // A refused attempt — most often a conflict set gone stale because
+        // the text changed — leaves nothing worth answering on screen.
+        setMemoryConflicts((current) => {
+          const next = { ...current };
+          delete next[proposal.id];
+          return next;
+        });
+        throw caught;
+      }
       setMemoryConflicts((current) => {
         const next = { ...current };
         if (outcome.outcome === "conflictsRequireChoice") next[proposal.id] = outcome.conflicts;
@@ -2018,7 +2054,7 @@ ${text}` : text));
     setSelectedTaskId(conversationId);
     setLibrary(null);
     const sequence = Number(messageId);
-    setFocusSequence(Number.isFinite(sequence) ? sequence : null);
+    setFocusTarget(Number.isFinite(sequence) ? { taskId: conversationId, sequence } : null);
     dispatch({ type: "navigate", destination: "conversation" });
   }
 
@@ -2445,8 +2481,10 @@ ${text}` : text));
       {recovery}
       <ActivityLog
         events={events}
-        focusSequence={focusSequence}
-        onFocused={() => setFocusSequence(null)}
+        focusSequence={
+          focusTarget && focusTarget.taskId === selectedTaskId ? focusTarget.sequence : null
+        }
+        onFocused={() => setFocusTarget(null)}
         failureAction={(event) => ({
           // Prepared, not sent. The composer is where a request becomes a
           // request, and the reader may want to change it first.

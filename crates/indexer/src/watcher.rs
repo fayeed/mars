@@ -28,7 +28,11 @@ pub const DEFAULT_DEBOUNCE: Duration = Duration::from_millis(250);
 const TICK: Duration = Duration::from_millis(25);
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase", tag = "event")]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "event"
+)]
 pub enum WatchEvent {
     /// Paths went quiet and are about to be re-indexed.
     Changed {
@@ -247,6 +251,39 @@ mod tests {
             Change::Head => "HEAD".to_owned(),
             Change::Path(path) => path,
         })
+    }
+
+    #[test]
+    fn events_reach_the_webview_in_its_field_names() {
+        let changed = serde_json::to_value(super::WatchEvent::Changed {
+            relative_paths: vec!["src/a.ts".into()],
+        })
+        .expect("serialize");
+        assert_eq!(
+            changed,
+            serde_json::json!({ "event": "changed", "relativePaths": ["src/a.ts"] })
+        );
+    }
+
+    #[test]
+    fn index_progress_reaches_the_webview_in_its_field_names() {
+        let event = serde_json::to_value(crate::IndexEvent::FileIndexed {
+            run_id: "run-1".into(),
+            relative_path: "src/a.ts".into(),
+            position: 3,
+            total_files: 9,
+        })
+        .expect("serialize");
+        assert_eq!(
+            event,
+            serde_json::json!({
+                "event": "fileIndexed",
+                "runId": "run-1",
+                "relativePath": "src/a.ts",
+                "position": 3,
+                "totalFiles": 9,
+            })
+        );
     }
 
     #[test]

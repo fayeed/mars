@@ -529,3 +529,21 @@ fn a_write_inside_a_granted_directory_is_covered_but_one_outside_is_not() {
         "a grant over the worktree must not cover a path outside it"
     );
 }
+
+#[test]
+fn a_file_write_reaches_the_webview_in_its_field_names_and_old_rows_still_read() {
+    let effect = SideEffect::FileWrite {
+        path: PathBuf::from("src/a.ts"),
+        declared_scope: vec!["src/**".into()],
+    };
+    let json = serde_json::to_value(&effect).expect("serialize");
+    assert_eq!(json["kind"], "fileWrite");
+    assert_eq!(json["declaredScope"], serde_json::json!(["src/**"]));
+
+    // A request stored before the field was renamed.
+    let stored: SideEffect = serde_json::from_str(
+        r#"{"kind":"fileWrite","path":"src/a.ts","declared_scope":["src/**"]}"#,
+    )
+    .expect("an old row should still read");
+    assert_eq!(stored, effect);
+}

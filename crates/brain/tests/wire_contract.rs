@@ -139,3 +139,32 @@ fn approval_outcome_is_tagged_and_camel_case() {
         json!({ "outcome": "conflictsRequireChoice", "conflicts": [] })
     );
 }
+
+/// The webview never says who is acting; the app fills that in from the
+/// signed-in user. A request without it must still read.
+#[test]
+fn memory_requests_from_the_webview_read_without_an_actor() {
+    let approve: mars_brain::ApproveRequest = serde_json::from_value(json!({
+        "proposalId": "p1",
+        "editedText": null,
+        "resolutions": [{ "otherMemoryId": "m1", "choice": "keep_both" }],
+    }))
+    .expect("an approval should read");
+    assert_eq!(approve.proposal_id, "p1");
+    assert!(approve.approved_by.is_empty());
+
+    let reject: mars_brain::RejectRequest =
+        serde_json::from_value(json!({ "proposalId": "p1", "reason": "wrong" }))
+            .expect("a rejection should read");
+    assert_eq!(reject.reason, "wrong");
+
+    let revise: mars_brain::ReviseRequest =
+        serde_json::from_value(json!({ "memoryId": "m1", "text": "Use pnpm." }))
+            .expect("a revision should read");
+    assert_eq!(revise.text, "Use pnpm.");
+
+    let revoke: mars_brain::RevokeRequest =
+        serde_json::from_value(json!({ "memoryId": "m1", "reason": "outdated" }))
+            .expect("a revocation should read");
+    assert_eq!(revoke.reason, "outdated");
+}

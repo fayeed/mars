@@ -135,8 +135,12 @@ export interface RemoteForge {
   host: string | null;
   owner: string | null;
   repository: string | null;
-  /** `github` when Mars can read the remote as a GitHub repository. */
-  provider: "github" | "unknown";
+  /**
+   * `github`: github.com, or a host already connected as GitHub Enterprise.
+   * `unconfirmed`: another host, never sent a token until the person says it
+   * is GitHub Enterprise. `unknown`: not a forge repository URL.
+   */
+  provider: "github" | "unconfirmed" | "unknown";
   connected: boolean;
   account: string | null;
   connection: ForgeConnection | null;

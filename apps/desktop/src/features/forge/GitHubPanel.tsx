@@ -77,6 +77,11 @@ export function GitHubPanel({ baseBranch, onTaskPlanned, repositoryId }: GitHubP
   const [busy, setBusy] = useState(false);
   const [scope, setScope] = useState<"ask" | "all">("ask");
   const [notice, setNotice] = useState<string | null>(null);
+  // Hosts the person has said are GitHub Enterprise. Until then no token is
+  // sent to anything but github.com.
+  const [confirmedHosts, setConfirmedHosts] = useState<string[]>([]);
+  // Bumped to read the open item again after a comment or a merge.
+  const [detailRevision, setDetailRevision] = useState(0);
 
   const loadRemotes = useCallback(
     () =>
@@ -111,57 +116,89 @@ export function GitHubPanel({ baseBranch, onTaskPlanned, repositoryId }: GitHubP
   // Lists are read when the remote, the view or the filter changes.
   useEffect(() => {
     if (!remote || !connected) return;
+    let active = true;
     const args = { repositoryId, remoteName: remote.name, itemState, page: 1 };
     if (view === "issues") {
       invoke<ForgeIssue[]>("github_issues", args)
         .then((items) => {
+          if (!active) return;
           setIssues(items);
           setError(null);
         })
         .catch((caught: unknown) => {
+          if (!active) return;
           setIssues([]);
           setError(messageFor(caught));
         });
     } else {
       invoke<ForgePullRequest[]>("github_pull_requests", args)
         .then((items) => {
+          if (!active) return;
           setPulls(items);
           setError(null);
         })
         .catch((caught: unknown) => {
+          if (!active) return;
           setPulls([]);
           setError(messageFor(caught));
         });
     }
+    return () => {
+      active = false;
+    };
   }, [connected, itemState, remote, repositoryId, view]);
 
-  const loadSelected = useCallback(() => {
+  // The open item. A slow answer for one clicked away from is dropped, so the
+  // conversation on screen is always the one the reply box names.
+  useEffect(() => {
     if (!selected || !remote) return;
+    let active = true;
     const args = { repositoryId, remoteName: remote.name, number: selected.number };
     if (selected.kind === "issue") {
       invoke<ForgeIssueDetail>("github_issue", args)
-        .then(setIssueDetail)
-        .catch((caught: unknown) => setError(messageFor(caught)));
+        .then((detail) => {
+          if (active) setIssueDetail(detail);
+        })
+        .catch((caught: unknown) => {
+          if (active) setError(messageFor(caught));
+        });
     } else {
       invoke<ForgePullRequestDetail>("github_pull_request", args)
-        .then(setPullDetail)
-        .catch((caught: unknown) => setError(messageFor(caught)));
+        .then((detail) => {
+          if (active) setPullDetail(detail);
+        })
+        .catch((caught: unknown) => {
+          if (active) setError(messageFor(caught));
+        });
     }
-  }, [remote, repositoryId, selected]);
+    return () => {
+      active = false;
+    };
+  }, [detailRevision, remote, repositoryId, selected]);
 
-  useEffect(() => {
-    loadSelected();
-  }, [loadSelected]);
+  const reloadSelected = () => setDetailRevision((revision) => revision + 1);
 
   async function connect(withCli: boolean) {
     if (!remote) return;
     setConnecting(true);
     setError(null);
     try {
+      // A host other than github.com is only reached here once the person
+      // has said it is GitHub Enterprise; the core refuses it otherwise.
+      const enterpriseConfirmed = remote.provider !== "github";
       if (withCli) {
-        await invoke("connect_github_cli", { repositoryId, remoteName: remote.name });
+        await invoke("connect_github_cli", {
+          repositoryId,
+          remoteName: remote.name,
+          enterpriseConfirmed,
+        });
       } else {
-        await invoke("connect_github", { repositoryId, remoteName: remote.name, token });
+        await invoke("connect_github", {
+          repositoryId,
+          remoteName: remote.name,
+          token,
+          enterpriseConfirmed,
+        });
       }
       setToken("");
       await loadRemotes();
@@ -184,7 +221,7 @@ export function GitHubPanel({ baseBranch, onTaskPlanned, repositoryId }: GitHubP
       });
       setReply("");
       setConfirmReply(false);
-      loadSelected();
+      reloadSelected();
     } catch (caught) {
       setError(messageFor(caught));
     } finally {
@@ -205,7 +242,7 @@ export function GitHubPanel({ baseBranch, onTaskPlanned, repositoryId }: GitHubP
       });
       setNotice(outcome.merged ? `Merged #${pullDetail.pull.number}` : outcome.message);
       setConfirmMerge(false);
-      loadSelected();
+      reloadSelected();
     } catch (caught) {
       setError(messageFor(caught));
       setConfirmMerge(false);
@@ -235,13 +272,50 @@ export function GitHubPanel({ baseBranch, onTaskPlanned, repositoryId }: GitHubP
   }
 
   if (remotes === null) return <StateBlock state="loading" title="Reading the repository's remotes" />;
-  const github = remotes.filter((candidate) => candidate.provider === "github");
+  const confirmed = (candidate: RemoteForge) =>
+    candidate.provider === "unconfirmed" &&
+    candidate.host !== null &&
+    confirmedHosts.includes(candidate.host);
+  const github = remotes.filter(
+    (candidate) => candidate.provider === "github" || confirmed(candidate),
+  );
+  const unconfirmed = remotes.filter(
+    (candidate) => candidate.provider === "unconfirmed" && !confirmed(candidate),
+  );
   if (github.length === 0) {
     return (
       <StateBlock
         state="idle"
         title="No GitHub remote"
-        description="This repository has no remote on GitHub or GitHub Enterprise. Add one with git remote add, then come back."
+        description={
+          unconfirmed.length > 0
+            ? "No remote is on github.com. If one of these is a GitHub Enterprise server, say so and connect it; a GitHub token is never sent anywhere else."
+            : "This repository has no remote on GitHub or GitHub Enterprise. Add one with git remote add, then come back."
+        }
+        action={
+          unconfirmed.length > 0 ? (
+            <ul aria-label="Other hosts" className="flex flex-col gap-1">
+              {unconfirmed.map((candidate) => (
+                <li key={candidate.name} className="flex items-center gap-2">
+                  <Mono className="text-foreground">
+                    {candidate.name} → {candidate.host}
+                  </Mono>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!candidate.host) return;
+                      setConfirmedHosts((hosts) => [...hosts, candidate.host as string]);
+                      setRemoteName(candidate.name);
+                    }}
+                    className="border border-border px-2 py-0.5 text-[11px] outline-none hover:border-border-strong"
+                  >
+                    {candidate.host} is GitHub Enterprise
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : undefined
+        }
       />
     );
   }

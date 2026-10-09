@@ -155,6 +155,9 @@ pub enum SideEffect {
     /// A write to a path outside the task's declared file scope.
     FileWrite {
         path: PathBuf,
+        // Requests already stored before the field was named for the webview
+        // still read back.
+        #[serde(rename = "declaredScope", alias = "declared_scope")]
         declared_scope: Vec<String>,
     },
     Network {

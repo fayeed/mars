@@ -135,7 +135,11 @@ describe("GitHubPanel", () => {
     expect(within(connect).getByRole("button", { name: "Connect" })).toBeDisabled();
     await user.click(within(connect).getByRole("button", { name: "Use my GitHub CLI sign-in" }));
 
-    expect(invoke).toHaveBeenCalledWith("connect_github_cli", { repositoryId: "repo-1", remoteName: "origin" });
+    expect(invoke).toHaveBeenCalledWith("connect_github_cli", {
+      repositoryId: "repo-1",
+      remoteName: "origin",
+      enterpriseConfirmed: false,
+    });
     expect(await screen.findByText("as @octo")).toBeVisible();
     expect(await screen.findByText("Rate limit the ingest endpoint")).toBeVisible();
   });
@@ -215,5 +219,60 @@ describe("GitHubPanel", () => {
     await user.click(await screen.findByRole("button", { name: /Limit ingest/ }));
     const merge = await screen.findByRole("region", { name: "Merge" });
     expect(within(merge).getByRole("button", { name: "Merge…" })).toBeDisabled();
+  });
+
+  it("sends a token to another host only after the person says it is GitHub Enterprise", async () => {
+    const user = userEvent.setup();
+    const enterprise: RemoteForge = {
+      ...connected,
+      url: "https://git.acme.dev/acme/api.git",
+      host: "git.acme.dev",
+      provider: "unconfirmed",
+      connected: false,
+      account: null,
+      connection: null,
+    };
+    routes({ forge_status: [enterprise], connect_github: connected.connection });
+    render(<GitHubPanel baseBranch="main" repositoryId="repo-1" />);
+
+    expect(await screen.findByText("No GitHub remote")).toBeVisible();
+    expect(screen.queryByRole("textbox", { name: "Personal access token" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "git.acme.dev is GitHub Enterprise" }));
+
+    await user.type(screen.getByLabelText("Personal access token"), "ghp_secret");
+    await user.click(screen.getByRole("button", { name: "Connect" }));
+    expect(invoke).toHaveBeenCalledWith("connect_github", {
+      repositoryId: "repo-1",
+      remoteName: "origin",
+      token: "ghp_secret",
+      enterpriseConfirmed: true,
+    });
+  });
+
+  it("shows the item last clicked even when an earlier one answers later", async () => {
+    const user = userEvent.setup();
+    const later: ForgeIssue = { ...issue, providerId: "3", number: 15, title: "Second issue", body: "The second." };
+    let releaseFirst: (value: unknown) => void = () => undefined;
+    invoke.mockImplementation((command: string, args: { number?: number }) => {
+      if (command === "forge_status") return Promise.resolve([connected]);
+      if (command === "github_issues") return Promise.resolve([issue, later]);
+      if (command === "github_issue" && args.number === 12) {
+        return new Promise((resolve) => {
+          releaseFirst = resolve;
+        });
+      }
+      if (command === "github_issue") return Promise.resolve({ issue: later, comments: [] });
+      return Promise.reject(new Error(command));
+    });
+    render(<GitHubPanel baseBranch="main" repositoryId="repo-1" />);
+
+    await user.click(await screen.findByRole("button", { name: /Rate limit the ingest endpoint/ }));
+    await user.click(screen.getByRole("button", { name: /Second issue/ }));
+    expect(await screen.findByText("The second.")).toBeVisible();
+
+    releaseFirst({ issue, comments: [] });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.getByText("The second.")).toBeVisible();
+    expect(screen.queryByText("It falls over under load.")).toBeNull();
   });
 });

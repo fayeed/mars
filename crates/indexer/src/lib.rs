@@ -75,7 +75,11 @@ impl IndexMode {
 
 /// Progress a caller can stream while a run is in flight.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase", tag = "event")]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "event"
+)]
 pub enum IndexEvent {
     Started {
         run_id: String,
