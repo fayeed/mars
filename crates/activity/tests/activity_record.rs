@@ -223,6 +223,7 @@ fn replay_reconstructs_the_task_from_the_log_alone() {
             role: RunRole::Implementer,
             capabilities: json!({ "writeFiles": true }),
             context_pack_digest: None,
+            resumes_run_id: None,
         })
         .expect("run should start");
 
@@ -366,6 +367,7 @@ fn an_undecided_permission_request_leaves_the_run_blocked() {
             role: RunRole::Implementer,
             capabilities: json!({ "writeFiles": true }),
             context_pack_digest: None,
+            resumes_run_id: None,
         })
         .expect("run should start");
 
@@ -525,4 +527,75 @@ fn an_empty_record_has_nothing_before_it() {
 
     assert!(window.events.is_empty());
     assert_eq!(window.earlier, 0);
+}
+
+#[test]
+fn completions_update_their_command_and_diagnostics_never_fail_a_run() {
+    let fixture = ActivityFixture::new();
+    let record = fixture.record();
+    let runs = fixture.runs();
+    let task = fixture.task("task-completions", "Completions");
+    let start = |stopped: bool| {
+        let run = runs
+            .start(NewRun {
+                task_id: task.clone(),
+                agent_id: "claude".into(),
+                adapter_kind: "claude".into(),
+                role: RunRole::Implementer,
+                capabilities: json!({}),
+                context_pack_digest: None,
+                resumes_run_id: None,
+            })
+            .expect("run should start");
+        let entries = [
+            ActivityEntry::new(
+                &task,
+                ActivityKind::TestRun,
+                Actor::Agent,
+                "claude",
+                "cargo test",
+            )
+            .with_payload(json!({ "command": "cargo test", "status": "started", "callId": "c1" })),
+            ActivityEntry::new(
+                &task,
+                ActivityKind::Error,
+                Actor::System,
+                "mars",
+                "unrecognised frame",
+            )
+            .with_payload(json!({ "providerType": "stderr", "diagnostic": true })),
+            ActivityEntry::new(
+                &task,
+                ActivityKind::TestRun,
+                Actor::Agent,
+                "claude",
+                "cargo test",
+            )
+            .with_payload(json!({ "status": "failed", "callId": "c1", "exitCode": 101 })),
+            ActivityEntry::new(&task, ActivityKind::Done, Actor::Agent, "claude", "Stopped")
+                .with_payload(json!({ "success": false, "stopped": stopped })),
+        ];
+        for entry in entries {
+            record
+                .append(entry.in_run(&run.id))
+                .expect("event should append");
+        }
+    };
+    start(true);
+
+    let projection = replay(&record, &task).expect("log should replay");
+    assert_eq!(
+        projection.tests.len(),
+        1,
+        "the completion is not a second test"
+    );
+    assert_eq!(projection.tests[0].command, "cargo test");
+    assert_eq!(projection.tests[0].status, "failed");
+    assert_eq!(projection.tests[0].exit_code, Some(101));
+    assert!(
+        projection.errors.is_empty(),
+        "a diagnostic is not an error of the run"
+    );
+    assert_eq!(projection.runs[0].state, ReplayedRunState::Cancelled);
+    assert_eq!(projection.runs[0].failure, None);
 }

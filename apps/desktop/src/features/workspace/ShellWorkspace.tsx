@@ -16,6 +16,10 @@ import type {
   AdapterKind,
   AdapterProbe,
   AgentAccount,
+  AgentTimelinePayload,
+  LaunchedRun,
+  RunOverview,
+  RunRecord,
   IndexEvent,
   IndexStatus,
   InterruptedRun,
@@ -93,6 +97,7 @@ import { RepositoryHome, indexActivityState } from "@/features/home/RepositoryHo
 import { CreateTaskDialog } from "@/features/tasks/CreateTaskDialog";
 import { TaskDetail } from "@/features/tasks/TaskDetail";
 import { WorktreePlanMessage, type PlanEdits } from "@/features/tasks/WorktreePlanMessage";
+import { routeMessage } from "@/features/workspace/message-route";
 import { TerminalPanel, type TerminalCommand } from "@/features/terminal/TerminalPanel";
 import type { SettingsAgent } from "@/features/settings/Settings";
 import type { ActivityState } from "@/shell/activity-state";
@@ -266,6 +271,26 @@ export function ShellWorkspace({
   const [notes, setNotes] = useState<Note[]>([]);
   /** The last thing asked for, verbatim, as the pack's assignment. */
   const [assignment, setAssignment] = useState("");
+  /**
+   * The runs of the selected task, as the core records them. The log says what
+   * each run did; this says which provider session a follow-up can resume.
+   */
+  const [taskRuns, setTaskRuns] = useState<{ taskId: string; runs: RunRecord[] } | null>(null);
+  /** Every run still going in any task, for the rail, the status bar and the board. */
+  const [liveRuns, setLiveRuns] = useState<RunOverview[]>([]);
+  /**
+   * Messages written while an agent was still working in their task. They are
+   * sent, in order, the moment that run finishes — not dropped, and not sent
+   * into the middle of a run that cannot hear them.
+   */
+  const [queued, setQueued] = useState<{ id: string; taskId: string; text: string }[]>([]);
+  const queuedRef = useRef(queued);
+  useEffect(() => {
+    queuedRef.current = queued;
+  }, [queued]);
+  /** Whether the next message starts a new task rather than continuing this one. */
+  const [composeNew, setComposeNew] = useState(false);
+  const [starting, setStarting] = useState(false);
 
   /**
    * A task's record, tagged with the task it belongs to.
@@ -413,6 +438,8 @@ export function ShellWorkspace({
   const [planError, setPlanError] = useState<unknown>(null);
 
   const [pack, setPack] = useState<RunContextPack | null>(null);
+  /** The assignment the pack on screen was built from, which a launch must repeat. */
+  const [packAssignment, setPackAssignment] = useState("");
   const [packState, setPackState] = useState<ActivityState>("idle");
   const [packError, setPackError] = useState<unknown>(null);
   const [removedRefs, setRemovedRefs] = useState<string[]>([]);
@@ -518,8 +545,9 @@ export function ShellWorkspace({
         }),
         invoke<TaskProjection>("task_projection", { taskId }),
         invoke<PendingPermissionRequest[]>("pending_permissions", { taskId }),
+        invoke<RunRecord[]>("task_runs", { taskId }),
       ])
-        .then(([window, projection, pending]) => {
+        .then(([window, projection, pending, runs]) => {
           setRecord({
             taskId,
             events: window.events,
@@ -527,6 +555,7 @@ export function ShellWorkspace({
             projection,
             pending,
           });
+          setTaskRuns({ taskId, runs });
           setEventsState("idle");
           // A run that has just started has output to show and somewhere to
           // show it: the utility panel earns the space, and the inspector can
@@ -550,9 +579,12 @@ export function ShellWorkspace({
   }, [loadRecord, recordLimit, selectedTaskId, reloadToken]);
 
   // A different task starts at one page again. The limit belongs to the reading
-  // of one record, not to the session.
+  // of one record, not to the session. Choosing a task also means the next
+  // message is for it, and a pack built for another task is not this one's.
   useEffect(() => {
     setRecordLimit(RECORD_PAGE);
+    setComposeNew(false);
+    setPack((current) => (current && current.taskId !== selectedTaskId ? null : current));
   }, [selectedTaskId]);
 
   /**
@@ -609,17 +641,65 @@ export function ShellWorkspace({
     };
   }, []);
 
+  const refreshLiveRuns = useCallback(
+    () =>
+      invoke<RunOverview[]>("active_runs")
+        .then(setLiveRuns)
+        .catch(() => undefined),
+    [],
+  );
+
+  useEffect(() => {
+    void refreshLiveRuns();
+  }, [refreshLiveRuns]);
+
+  /**
+   * Re-read the selected task at most a few times a second.
+   *
+   * A busy agent emits dozens of events a second. Each is only a nudge — the
+   * record is the truth — so a burst of nudges collapses into one read at the
+   * end of it rather than one read per event.
+   */
+  const reloadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scheduleReload = useCallback(
+    (taskId: string) => {
+      if (reloadTimer.current) return;
+      reloadTimer.current = setTimeout(() => {
+        reloadTimer.current = null;
+        void loadRecord(taskId);
+      }, 200);
+    },
+    [loadRecord],
+  );
+  useEffect(
+    () => () => {
+      if (reloadTimer.current) clearTimeout(reloadTimer.current);
+    },
+    [],
+  );
+
   // The agent event is a nudge, not the truth. It says something happened; the
-  // record says what, and the record is what gets rendered.
+  // record says what, and the record is what gets rendered. Events name their
+  // task, so another task's run never disturbs the one on screen.
   useEffect(() => {
     if (!selectedTaskId) return;
-    const subscription = listen("agent-event", () => {
-      void loadRecord(selectedTaskId);
-    });
+    const forThisTask = (taskId: string | undefined) => !taskId || taskId === selectedTaskId;
+    const subscriptions = [
+      listen<AgentTimelinePayload>("agent-event", ({ payload }) => {
+        if (forThisTask(payload.taskId)) scheduleReload(selectedTaskId);
+      }),
+      // Written by another process — an agent's MCP server asking permission,
+      // most often — while the agent's own stream is silent.
+      listen<{ taskId: string }>("activity-changed", ({ payload }) => {
+        if (forThisTask(payload.taskId)) scheduleReload(selectedTaskId);
+      }),
+    ];
     return () => {
-      void subscription.then((unlisten) => unlisten());
+      for (const subscription of subscriptions) {
+        void subscription.then((unlisten) => unlisten());
+      }
     };
-  }, [loadRecord, selectedTaskId]);
+  }, [scheduleReload, selectedTaskId]);
 
   // Runs that were alive when Mars stopped. Detection changes nothing and
   // resumes nothing; it only finds what needs a decision.
@@ -755,16 +835,34 @@ export function ShellWorkspace({
     [agentProbes],
   );
 
+  /**
+   * The rail shows what each task is doing now. A task with an agent at work
+   * reads as streaming — or blocked when that agent is waiting on an answer —
+   * whatever its worktree's lifecycle says, so a glance at the rail tells you
+   * which of several agents needs you.
+   */
   const shellTasks = useMemo<ShellTask[]>(
     () =>
-      tasks.map((task) => ({
-        id: task.taskId,
-        title: task.title,
-        state: worktreeActivityState(task.state),
-        branch: task.branchName,
-        detail: task.state,
-      })),
-    [tasks],
+      tasks.map((task) => {
+        const run = liveRuns.find((candidate) => candidate.taskId === task.taskId && candidate.live);
+        return {
+          id: task.taskId,
+          title: task.title,
+          state: run
+            ? run.pendingPermissions > 0
+              ? "blocked"
+              : "streaming"
+            : worktreeActivityState(task.state),
+          branch: task.branchName,
+          detail: run
+            ? run.pendingPermissions > 0
+              ? `${run.adapterKind} · waiting on you`
+              : `${run.adapterKind} · working`
+            : task.state,
+          agent: run?.adapterKind,
+        };
+      }),
+    [liveRuns, tasks],
   );
 
   const openFile = useCallback(
@@ -873,9 +971,16 @@ export function ShellWorkspace({
     };
   }, [selectedTaskId, reloadToken]);
 
-  /** Assemble the pack for a provisioned task, excluding what was removed. */
+  /**
+   * Assemble the pack for a provisioned task, excluding what was removed.
+   *
+   * The assignment is passed rather than read from state: the launch rebuilds
+   * the pack from the same inputs and compares digests, so the inputs a pack
+   * was built from are kept beside it.
+   */
   const buildPack = useCallback(
-    async (taskId: string, excluded: string[]) => {
+    async (taskId: string, excluded: string[], forAssignment?: string) => {
+      const text = forAssignment ?? assignment;
       setPackState("loading");
       setPackError(null);
       try {
@@ -885,12 +990,13 @@ export function ShellWorkspace({
             agentId,
             adapter: agentId === "codex" ? "codex" : "claude",
             role: "implementer",
-            assignment,
+            assignment: text,
             maxBytes: PACK_BUDGET_BYTES,
             excludedEntityRefs: excluded,
           },
         });
         setPack(built);
+        setPackAssignment(text);
         setPackState("idle");
       } catch (caught) {
         setPackError(caught);
@@ -901,18 +1007,165 @@ export function ShellWorkspace({
   );
 
   /**
+   * Start the first run of a task from the pack on screen.
+   *
+   * The core rebuilds the pack and compares its digest with the one reviewed;
+   * if anything moved in between, the pack is rebuilt here and shown again
+   * rather than launched.
+   */
+  async function startRun(digest: string) {
+    if (!pack) return;
+    setStarting(true);
+    setPackError(null);
+    try {
+      await invoke<LaunchedRun>("start_run", {
+        request: {
+          taskId: pack.taskId,
+          agentId: pack.agentId,
+          adapter: pack.adapter,
+          role: pack.role,
+          assignment: packAssignment,
+          maxBytes: PACK_BUDGET_BYTES,
+          excludedEntityRefs: removedRefs,
+          digest,
+        },
+      });
+      const taskId = pack.taskId;
+      setPack(null);
+      setRemovedRefs([]);
+      await Promise.all([loadRecord(taskId), refreshLiveRuns()]);
+    } catch (caught) {
+      if ((caught as CommandFailure | null)?.code === "context_pack.changed") {
+        note(
+          "The context changed after you reviewed it, so nothing was started. The pack below " +
+            "is the current one — look it over again.",
+          "stale",
+        );
+        await buildPack(pack.taskId, removedRefs, packAssignment);
+      } else {
+        setPackError(caught);
+      }
+    } finally {
+      setStarting(false);
+    }
+  }
+
+  /** Send the person's next message to the session this task already has. */
+  async function continueRun(taskId: string, text: string) {
+    try {
+      await invoke<LaunchedRun>("continue_run", { request: { taskId, text } });
+      await Promise.all([loadRecord(taskId), refreshLiveRuns()]);
+    } catch (caught) {
+      note(`The message could not be sent: ${messageFor(caught)}`, "failed");
+      setDraft((current) => current || text);
+    }
+  }
+
+  async function stopRun(runId: string) {
+    setInterrupting(true);
+    try {
+      await invoke("stop_run", { runId });
+      await refreshLiveRuns();
+    } catch (caught) {
+      note(`The run could not be stopped: ${messageFor(caught)}`, "failed");
+    } finally {
+      setInterrupting(false);
+    }
+  }
+
+  // A run starting or ending anywhere changes what the rail, the status bar
+  // and the board show; one ending in a task with queued messages sends the
+  // next of them.
+  const continueRef = useRef(continueRun);
+  continueRef.current = continueRun;
+  useEffect(() => {
+    const subscriptions = [
+      listen<{ taskId: string }>("run-started", () => void refreshLiveRuns()),
+      listen<{ taskId: string }>("run-finished", ({ payload }) => {
+        void refreshLiveRuns();
+        const next = queuedRef.current.find((message) => message.taskId === payload.taskId);
+        if (next) {
+          setQueued((current) => current.filter((message) => message.id !== next.id));
+          void continueRef.current(next.taskId, next.text);
+        }
+      }),
+    ];
+    return () => {
+      for (const subscription of subscriptions) {
+        void subscription.then((unlisten) => unlisten());
+      }
+    };
+  }, [refreshLiveRuns]);
+
+  /**
+   * Where a message goes.
+   *
+   * `/ask` is a question about the repository and never becomes work. With a
+   * task open, a message belongs to that task: it refines a plan not yet
+   * approved, opens the context review for a worktree that has no agent yet,
+   * waits its turn behind a run still working, or continues the conversation
+   * the task's agent is already in. Without one — or with "new task" chosen —
+   * it becomes a new task's plan.
+   */
+  async function submit(text: string) {
+    const task = composeNew ? null : selectedTask;
+    const route = routeMessage({
+      text,
+      composeNew,
+      task,
+      working: Boolean(task && liveRuns.some((run) => run.taskId === task.taskId && run.live)),
+      runs: task && taskRuns?.taskId === task.taskId ? taskRuns.runs : [],
+    });
+    switch (route.kind) {
+      case "ask":
+        await askBrain(route.question);
+        return;
+      case "new-task":
+        setComposeNew(false);
+        await planNewTask(text);
+        return;
+      case "queue":
+        if (task) {
+          setQueued((current) => [
+            ...current,
+            { id: crypto.randomUUID(), taskId: task.taskId, text },
+          ]);
+        }
+        return;
+      case "continue":
+        if (task) await continueRun(task.taskId, text);
+        return;
+      case "refine-plan":
+      case "first-run":
+        if (!task) return;
+        try {
+          await invoke("record_message", { taskId: task.taskId, text });
+          if (route.kind === "refine-plan") {
+            // The plan is not approved yet: what was said refines what will be asked.
+            setAssignment((current) => (current ? `${current}
+
+${text}` : text));
+            await loadRecord(task.taskId);
+          } else {
+            // The worktree is ready and no agent has worked in it: the message
+            // is the assignment, and the pack it produces is shown before
+            // anything runs.
+            setAssignment(text);
+            await loadRecord(task.taskId);
+            await buildPack(task.taskId, [], text);
+          }
+        } catch (caught) {
+          note(`The message could not be recorded: ${messageFor(caught)}`, "failed");
+        }
+        return;
+    }
+  }
+
+  /**
    * A request becomes a plan, not a run. Nothing has touched Git at this point:
    * the plan is assembled from reads, shown as a message, and waits.
    */
-  async function submit(text: string) {
-    // `/ask` is a question about the repository, not work to be done. It needs
-    // no branch and no worktree, so it never becomes a task.
-    const asked = /^\/ask\s+/.exec(text);
-    if (asked) {
-      await askBrain(text.slice(asked[0].length));
-      return;
-    }
-
+  async function planNewTask(text: string) {
     setAssignment(text);
     setPlanState("loading");
     setPlanError(null);
@@ -975,7 +1228,7 @@ export function ShellWorkspace({
       setPlanState("idle");
       setReloadToken((token) => token + 1);
       await loadRecord(provisioned.taskId);
-      await buildPack(provisioned.taskId, []);
+      await buildPack(provisioned.taskId, [], assignment || provisioned.intent);
     } catch (caught) {
       setPlanError(caught);
       setPlanState("failed");
@@ -1471,12 +1724,12 @@ export function ShellWorkspace({
   }
 
   function toggleEntry(entityRef: string, included: boolean) {
-    if (!proposal) return;
+    if (!pack) return;
     const next = included
       ? removedRefs.filter((ref) => ref !== entityRef)
       : [...removedRefs, entityRef];
     setRemovedRefs(next);
-    void buildPack(proposal.taskId, next);
+    void buildPack(pack.taskId, next, packAssignment);
   }
 
   async function attachFiles(dropped: File[]) {
@@ -1694,6 +1947,56 @@ export function ShellWorkspace({
       />
     ));
 
+  const queuedRows = queued
+    .filter((message) => message.taskId === selectedTaskId)
+    .map((message) => (
+      <div className="flex flex-col gap-1 border-b border-border px-3 py-2" key={message.id}>
+        <div className="flex items-center gap-2">
+          <StateLabel state="queued" detail="sent when the agent finishes" />
+          <button
+            type="button"
+            className="ml-auto text-[11px] text-muted-foreground outline-none hover:text-foreground focus-visible:text-foreground"
+            onClick={() =>
+              setQueued((current) => current.filter((candidate) => candidate.id !== message.id))
+            }
+          >
+            Withdraw
+          </button>
+        </div>
+        <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-foreground">
+          {message.text}
+        </p>
+      </div>
+    ));
+
+  const currentRuns = taskRuns?.taskId === selectedTaskId ? taskRuns.runs : [];
+  // A worktree that is ready and has never had an agent in it is one step from
+  // work: the context review. Offered here because nothing else on screen
+  // would say what to do next.
+  const readyForAgent =
+    selectedTask?.state === "ready" &&
+    currentRuns.length === 0 &&
+    !pack &&
+    packState !== "loading" &&
+    !liveRuns.some((run) => run.taskId === selectedTaskId && run.live);
+  const readyRow = readyForAgent ? (
+    <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2">
+      <StateLabel state="idle" detail="the worktree is ready and no agent has worked in it" />
+      <button
+        type="button"
+        className="ml-auto border border-border bg-primary px-2 py-1 text-[11px] font-medium text-primary-foreground outline-none"
+        onClick={() => {
+          if (!selectedTask) return;
+          const text = assignment || selectedTask.intent;
+          setAssignment(text);
+          void buildPack(selectedTask.taskId, [], text);
+        }}
+      >
+        Review context and start
+      </button>
+    </div>
+  ) : null;
+
   const noteRows = notes.map((entry) => (
     <div className="flex flex-col gap-1 border-b border-border px-3 py-2" key={entry.id}>
       <StateLabel state={entry.state} />
@@ -1746,14 +2049,9 @@ export function ShellWorkspace({
       {pack ? (
         <div className="border-b border-border">
           <RunContextReview
+            busy={starting}
             error={packError}
-            onStart={(digest) =>
-              note(
-                `Context accepted at digest ${digest.slice(0, 12)}. The run surface is wired to ` +
-                  `the activity record; launching an agent into it is the next stage.`,
-                "queued",
-              )
-            }
+            onStart={(digest) => void startRun(digest)}
             onToggleEntry={toggleEntry}
             pack={pack}
             removed={removedRefs}
@@ -1858,6 +2156,8 @@ export function ShellWorkspace({
         />
       ) : null}
 
+      {readyRow}
+      {queuedRows}
       {noteRows}
     </>
   );
@@ -1886,6 +2186,8 @@ export function ShellWorkspace({
   const hasRecord =
     events.length > 0 ||
     notes.length > 0 ||
+    pack !== null ||
+    readyForAgent ||
     recovery.length > 0 ||
     ask !== null ||
     publish !== null ||
@@ -2154,12 +2456,7 @@ export function ShellWorkspace({
               interrupting={interrupting}
               latest={latestEvent}
               onInterrupt={() => {
-                setInterrupting(true);
-                invoke("cancel_agent", { sessionId: activeRun?.runId })
-                  .catch((caught: unknown) =>
-                    note(`The run could not be interrupted: ${messageFor(caught)}`, "failed"),
-                  )
-                  .finally(() => setInterrupting(false));
+                if (activeRun) void stopRun(activeRun.runId);
               }}
               run={activeRun}
             />
@@ -2173,7 +2470,16 @@ export function ShellWorkspace({
             }
             onSelectAgent={setAgentId}
             onSelectScope={setScopeId}
+            onStop={() => {
+              if (activeRun) void stopRun(activeRun.runId);
+            }}
             onSubmit={(submission) => void submit(submission.text)}
+            onTargetChange={(mode) => setComposeNew(mode === "new")}
+            queuedCount={queued.filter((message) => message.taskId === selectedTaskId).length}
+            target={{
+              mode: selectedTask && !composeNew ? "task" : "new",
+              taskTitle: selectedTask?.title,
+            }}
             onValueChange={setDraft}
             scopes={SCOPES}
             selectedAgentId={agentId}
@@ -2212,8 +2518,9 @@ export function ShellWorkspace({
             ) : undefined,
           context: pack ? (
             <RunContextReview
+              busy={starting}
               error={packError}
-              onStart={() => undefined}
+              onStart={(digest) => void startRun(digest)}
               onToggleEntry={toggleEntry}
               pack={pack}
               removed={removedRefs}
@@ -2325,8 +2632,12 @@ export function ShellWorkspace({
                 : `${index.counts.files.toLocaleString()} files`),
         },
         agents: {
-          state: activeRun ? runActivityState(activeRun) : "idle",
-          count: activeRun && activeRun.state === "running" ? 1 : 0,
+          state: liveRuns.some((run) => run.live && run.pendingPermissions > 0)
+            ? "blocked"
+            : liveRuns.some((run) => run.live)
+              ? "streaming"
+              : "idle",
+          count: liveRuns.filter((run) => run.live).length,
         },
         permissions: {
           state: pending.length > 0 ? "blocked" : "idle",

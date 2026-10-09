@@ -23,7 +23,7 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
 use crate::ActivityError;
-use crate::record::{ActivityEvent, ActivityKind, Actor, ActivityRecord};
+use crate::record::{ActivityEvent, ActivityKind, ActivityRecord, Actor};
 use crate::replay::project;
 
 /// How much of one payload the document carries before saying it cut it.
@@ -144,7 +144,10 @@ impl ActivityRecord {
                     "- Worktree: {} on branch {} from {} ({})",
                     worktree.path.as_deref().unwrap_or("(path not recorded)"),
                     worktree.branch_name.as_deref().unwrap_or("(unnamed)"),
-                    worktree.base_ref.as_deref().unwrap_or("(base not recorded)"),
+                    worktree
+                        .base_ref
+                        .as_deref()
+                        .unwrap_or("(base not recorded)"),
                     worktree.state,
                 );
                 if let Some(oid) = &worktree.base_oid {
@@ -240,7 +243,13 @@ impl ActivityRecord {
 
         match event.kind {
             ActivityKind::Message => {
-                let _ = writeln!(out, "### {} · {} · seq {}", actor_label(event), when, sequence);
+                let _ = writeln!(
+                    out,
+                    "### {} · {} · seq {}",
+                    actor_label(event),
+                    when,
+                    sequence
+                );
                 out.push('\n');
                 let text = field(payload, "text").unwrap_or_else(|| event.summary.clone());
                 for line in text.lines() {
@@ -249,19 +258,17 @@ impl ActivityRecord {
                 out.push('\n');
             }
             ActivityKind::Command => {
-                let command =
-                    field(payload, "command").unwrap_or_else(|| event.summary.clone());
+                let command = field(payload, "command").unwrap_or_else(|| event.summary.clone());
                 let status = field(payload, "status").unwrap_or_else(|| "—".into());
-                let exit = payload
-                    .get("exitCode")
-                    .and_then(serde_json::Value::as_i64);
+                let exit = payload.get("exitCode").and_then(serde_json::Value::as_i64);
                 let _ = writeln!(out, "### Command · {when} · seq {sequence}");
                 out.push('\n');
                 fenced(out, "sh", &command);
                 let _ = writeln!(
                     out,
                     "Status: {status}{}{}",
-                    exit.map(|code| format!(" · exit {code}")).unwrap_or_default(),
+                    exit.map(|code| format!(" · exit {code}"))
+                        .unwrap_or_default(),
                     event
                         .duration_ms
                         .map(|ms| format!(" · {ms}ms"))
@@ -289,8 +296,7 @@ impl ActivityRecord {
                 self.write_payload(out, &resolved, "Diff", "diff");
             }
             ActivityKind::TestRun => {
-                let command =
-                    field(payload, "command").unwrap_or_else(|| event.summary.clone());
+                let command = field(payload, "command").unwrap_or_else(|| event.summary.clone());
                 let status = field(payload, "status").unwrap_or_else(|| "—".into());
                 let _ = writeln!(out, "### Test · {when} · seq {sequence}");
                 out.push('\n');
@@ -422,7 +428,11 @@ impl ActivityRecord {
 
         match &resolved.digest {
             Some(digest) => {
-                let _ = writeln!(out, "{label} (payload `{}`):", &digest[..12.min(digest.len())]);
+                let _ = writeln!(
+                    out,
+                    "{label} (payload `{}`):",
+                    &digest[..12.min(digest.len())]
+                );
             }
             None => {
                 let _ = writeln!(out, "{label}:");

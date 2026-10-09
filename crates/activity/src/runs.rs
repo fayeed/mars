@@ -104,6 +104,8 @@ pub struct NewRun {
     pub role: RunRole,
     pub capabilities: Value,
     pub context_pack_digest: Option<String>,
+    /// The run whose provider session this one continues, for a follow-up.
+    pub resumes_run_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -122,6 +124,11 @@ pub struct RunRecord {
     pub error: Option<String>,
     pub started_at: String,
     pub ended_at: Option<String>,
+    /// The provider's own id for the conversation, which a follow-up resumes.
+    pub provider_session_id: Option<String>,
+    pub resumes_run_id: Option<String>,
+    /// What the provider reported the run cost.
+    pub usage: Option<Value>,
 }
 
 #[derive(Clone)]
@@ -143,8 +150,9 @@ impl RunStore {
             connection.execute(
                 "INSERT INTO agent_runs
                      (id, task_id, session_id, agent_id, adapter_kind, role, capabilities_json,
-                      context_pack_digest, status, last_sequence, error, started_at, ended_at)
-                 VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7, 'starting', 0, NULL, ?8, NULL)",
+                      context_pack_digest, status, last_sequence, error, started_at, ended_at,
+                      resumes_run_id)
+                 VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7, 'starting', 0, NULL, ?8, NULL, ?9)",
                 params![
                     &id,
                     &run.task_id,
@@ -154,6 +162,7 @@ impl RunStore {
                     &capabilities,
                     run.context_pack_digest.as_deref(),
                     &started_at,
+                    run.resumes_run_id.as_deref(),
                 ],
             )?;
             Ok(())
@@ -190,6 +199,86 @@ impl RunStore {
         Ok(())
     }
 
+    /// Remember the provider's session id, so a follow-up can resume it.
+    pub fn set_provider_session(
+        &self,
+        run_id: &str,
+        provider_session_id: &str,
+    ) -> Result<(), ActivityError> {
+        self.storage.with_connection(|connection| {
+            connection.execute(
+                "UPDATE agent_runs SET provider_session_id = ?2 WHERE id = ?1",
+                params![run_id, provider_session_id],
+            )?;
+            Ok(())
+        })?;
+        Ok(())
+    }
+
+    /// Record what the provider said the run cost.
+    pub fn set_usage(&self, run_id: &str, usage: &Value) -> Result<(), ActivityError> {
+        let usage = serde_json::to_string(usage)?;
+        self.storage.with_connection(|connection| {
+            connection.execute(
+                "UPDATE agent_runs SET usage_json = ?2 WHERE id = ?1",
+                params![run_id, usage],
+            )?;
+            Ok(())
+        })?;
+        Ok(())
+    }
+
+    /// The run that owns `session_id`, the supervisor's id for its process.
+    pub fn for_session(&self, session_id: &str) -> Result<Option<RunRecord>, ActivityError> {
+        let row = self.storage.with_connection(|connection| {
+            connection
+                .query_row(
+                    &format!("{RUN_COLUMNS} WHERE session_id = ?1"),
+                    [session_id],
+                    decode_run_row,
+                )
+                .optional()
+        })?;
+        row.map(build_run).transpose()
+    }
+
+    /// The latest run of a task that left a session to resume.
+    pub fn latest_resumable(&self, task_id: &str) -> Result<Option<RunRecord>, ActivityError> {
+        let row = self.storage.with_connection(|connection| {
+            connection
+                .query_row(
+                    &format!(
+                        "{RUN_COLUMNS} WHERE task_id = ?1 AND provider_session_id IS NOT NULL
+                         ORDER BY started_at DESC, id DESC LIMIT 1"
+                    ),
+                    [task_id],
+                    decode_run_row,
+                )
+                .optional()
+        })?;
+        row.map(build_run).transpose()
+    }
+
+    /// The most recent runs across every task of a repository, newest first.
+    pub fn recent_for_repository(
+        &self,
+        repository_id: &str,
+        limit: usize,
+    ) -> Result<Vec<RunRecord>, ActivityError> {
+        let rows = self.storage.with_connection(|connection| {
+            let mut statement = connection.prepare(&format!(
+                "{RUN_COLUMNS} WHERE task_id IN (SELECT id FROM tasks WHERE repository_id = ?1)
+                 ORDER BY started_at DESC, id DESC LIMIT ?2"
+            ))?;
+            let mapped = statement.query_map(
+                params![repository_id, i64::try_from(limit).unwrap_or(i64::MAX)],
+                decode_run_row,
+            )?;
+            mapped.collect::<rusqlite::Result<Vec<_>>>()
+        })?;
+        rows.into_iter().map(build_run).collect()
+    }
+
     pub fn fail(&self, run_id: &str, error: &str) -> Result<(), ActivityError> {
         let ended_at = OffsetDateTime::now_utc().format(&Rfc3339)?;
         self.storage.with_connection(|connection| {
@@ -205,7 +294,11 @@ impl RunStore {
     pub fn get(&self, run_id: &str) -> Result<RunRecord, ActivityError> {
         let row = self.storage.with_connection(|connection| {
             connection
-                .query_row(RUN_SELECT_BY_ID, [run_id], decode_run_row)
+                .query_row(
+                    &format!("{RUN_COLUMNS} WHERE id = ?1"),
+                    [run_id],
+                    decode_run_row,
+                )
                 .optional()
         })?;
         row.ok_or_else(|| ActivityError::RunNotFound(run_id.to_owned()))
@@ -214,7 +307,9 @@ impl RunStore {
 
     pub fn list_for_task(&self, task_id: &str) -> Result<Vec<RunRecord>, ActivityError> {
         let rows = self.storage.with_connection(|connection| {
-            let mut statement = connection.prepare(RUN_SELECT_BY_TASK)?;
+            let mut statement = connection.prepare(&format!(
+                "{RUN_COLUMNS} WHERE task_id = ?1 ORDER BY started_at, id"
+            ))?;
             let mapped = statement.query_map([task_id], decode_run_row)?;
             mapped.collect::<rusqlite::Result<Vec<_>>>()
         })?;
@@ -225,7 +320,10 @@ impl RunStore {
     /// for crash recovery.
     pub fn unfinished(&self) -> Result<Vec<RunRecord>, ActivityError> {
         let rows = self.storage.with_connection(|connection| {
-            let mut statement = connection.prepare(RUN_SELECT_UNFINISHED)?;
+            let mut statement = connection.prepare(&format!(
+                "{RUN_COLUMNS} WHERE status IN ('starting', 'running', 'blocked', 'interrupting')
+                 ORDER BY started_at, id"
+            ))?;
             let mapped = statement.query_map([], decode_run_row)?;
             mapped.collect::<rusqlite::Result<Vec<_>>>()
         })?;
@@ -233,89 +331,74 @@ impl RunStore {
     }
 }
 
-const RUN_SELECT_BY_ID: &str = concat!(
+const RUN_COLUMNS: &str = concat!(
     "SELECT id, task_id, session_id, agent_id, adapter_kind, role, capabilities_json,",
-    " context_pack_digest, status, last_sequence, error, started_at, ended_at",
-    " FROM agent_runs WHERE id = ?1"
+    " context_pack_digest, status, last_sequence, error, started_at, ended_at,",
+    " provider_session_id, resumes_run_id, usage_json",
+    " FROM agent_runs"
 );
 
-const RUN_SELECT_BY_TASK: &str = concat!(
-    "SELECT id, task_id, session_id, agent_id, adapter_kind, role, capabilities_json,",
-    " context_pack_digest, status, last_sequence, error, started_at, ended_at",
-    " FROM agent_runs WHERE task_id = ?1 ORDER BY started_at, id"
-);
-
-const RUN_SELECT_UNFINISHED: &str = concat!(
-    "SELECT id, task_id, session_id, agent_id, adapter_kind, role, capabilities_json,",
-    " context_pack_digest, status, last_sequence, error, started_at, ended_at",
-    " FROM agent_runs",
-    " WHERE status IN ('starting', 'running', 'blocked', 'interrupting')",
-    " ORDER BY started_at, id"
-);
-
-type RunRow = (
-    String,
-    String,
-    Option<String>,
-    String,
-    String,
-    String,
-    String,
-    Option<String>,
-    String,
-    i64,
-    Option<String>,
-    String,
-    Option<String>,
-);
+struct RunRow {
+    id: String,
+    task_id: String,
+    session_id: Option<String>,
+    agent_id: String,
+    adapter_kind: String,
+    role: String,
+    capabilities_json: String,
+    context_pack_digest: Option<String>,
+    status: String,
+    last_sequence: i64,
+    error: Option<String>,
+    started_at: String,
+    ended_at: Option<String>,
+    provider_session_id: Option<String>,
+    resumes_run_id: Option<String>,
+    usage_json: Option<String>,
+}
 
 fn decode_run_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RunRow> {
-    Ok((
-        row.get(0)?,
-        row.get(1)?,
-        row.get(2)?,
-        row.get(3)?,
-        row.get(4)?,
-        row.get(5)?,
-        row.get(6)?,
-        row.get(7)?,
-        row.get(8)?,
-        row.get(9)?,
-        row.get(10)?,
-        row.get(11)?,
-        row.get(12)?,
-    ))
+    Ok(RunRow {
+        id: row.get(0)?,
+        task_id: row.get(1)?,
+        session_id: row.get(2)?,
+        agent_id: row.get(3)?,
+        adapter_kind: row.get(4)?,
+        role: row.get(5)?,
+        capabilities_json: row.get(6)?,
+        context_pack_digest: row.get(7)?,
+        status: row.get(8)?,
+        last_sequence: row.get(9)?,
+        error: row.get(10)?,
+        started_at: row.get(11)?,
+        ended_at: row.get(12)?,
+        provider_session_id: row.get(13)?,
+        resumes_run_id: row.get(14)?,
+        usage_json: row.get(15)?,
+    })
 }
 
 fn build_run(row: RunRow) -> Result<RunRecord, ActivityError> {
-    let (
-        id,
-        task_id,
-        session_id,
-        agent_id,
-        adapter_kind,
-        role,
-        capabilities_json,
-        context_pack_digest,
-        status,
-        last_sequence,
-        error,
-        started_at,
-        ended_at,
-    ) = row;
     Ok(RunRecord {
-        id,
-        task_id,
-        session_id,
-        agent_id,
-        adapter_kind,
-        role: RunRole::parse(&role)?,
-        capabilities: serde_json::from_str(&capabilities_json)?,
-        context_pack_digest,
-        status: RunStatus::parse(&status)?,
-        last_sequence,
-        error,
-        started_at,
-        ended_at,
+        id: row.id,
+        task_id: row.task_id,
+        session_id: row.session_id,
+        agent_id: row.agent_id,
+        adapter_kind: row.adapter_kind,
+        role: RunRole::parse(&row.role)?,
+        capabilities: serde_json::from_str(&row.capabilities_json)?,
+        context_pack_digest: row.context_pack_digest,
+        status: RunStatus::parse(&row.status)?,
+        last_sequence: row.last_sequence,
+        error: row.error,
+        started_at: row.started_at,
+        ended_at: row.ended_at,
+        provider_session_id: row.provider_session_id,
+        resumes_run_id: row.resumes_run_id,
+        usage: row
+            .usage_json
+            .as_deref()
+            .map(serde_json::from_str)
+            .transpose()?,
     })
 }

@@ -79,6 +79,8 @@ export interface RunPackEntry {
   sourceLocation: string;
   reason: string;
   byteSize: number;
+  /** The retrieval score it was selected at. */
+  score?: number;
 }
 
 /**

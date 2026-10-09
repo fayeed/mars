@@ -45,21 +45,19 @@ fn task_worktree_real_agent_stream_and_reopen() {
     );
 
     let adapter = CodexAdapter;
+    let mut request = AgentLaunchRequest::new(
+        PathBuf::from("codex"),
+        ready.worktree_path.clone(),
+        concat!(
+            "Create a file named mars-proof.txt containing exactly MARS_AGENT_WORKTREE_OK followed by a newline. ",
+            "Then run git status --short to verify it. Do not modify any other file."
+        ),
+    );
+    request.allow_write = true;
     let command = adapter
-        .command(&AgentLaunchRequest {
-            executable: PathBuf::from("codex"),
-            cwd: ready.worktree_path.clone(),
-            prompt: concat!(
-                "Create a file named mars-proof.txt containing exactly MARS_AGENT_WORKTREE_OK followed by a newline. ",
-                "Then run git status --short to verify it. Do not modify any other file."
-            )
-            .into(),
-            resume_session_id: None,
-            allowed_tools: Vec::new(),
-            allow_write: true,
-        })
+        .command(&request)
         .expect("Codex command should build");
-    let mut spec = ProcessSpec::new("codex", command.program, command.arguments, command.cwd);
+    let mut spec = ProcessSpec::from_command("codex", command);
     spec.task_id = Some(plan.task_id.clone());
     let supervisor = ProcessSupervisor::new(fixture.storage.clone());
     let mut process = supervisor.launch(spec).expect("real agent should launch");

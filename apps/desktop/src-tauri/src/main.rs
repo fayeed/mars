@@ -1,3 +1,9 @@
+// A release build is a windowed app on Windows: no console opens behind it,
+// and the `mcp` mode an agent CLI starts speaks over the pipes it is given.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+mod runs;
+
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs;
@@ -6,19 +12,14 @@ use std::sync::{Arc, Mutex};
 
 use mars_activity::{
     ActivityEntry, ActivityError, ActivityEvent, ActivityKind, ActivityRecord, Actor,
-    Attachment, InterruptedRun, NewRun, RecoveryAction, RecoveryService, RunRecord, RunRole,
-    RunStatus, RunStore, TaskProjection, replay,
+    InterruptedRun, RecoveryAction, RecoveryService, RunRecord, RunRole, RunStore, TaskProjection,
+    replay,
 };
-use mars_agents::account::{AgentAccount, Billing, SignInPreferences, read_account};
-use mars_agents::adapter::{
-    AdapterError, AdapterKind, AdapterProbe, AgentAdapter, AgentLaunchRequest, JsonLineDecoder,
-    NormalizedAgentEvent,
-};
+use mars_agents::account::{AgentAccount, SignInPreferences, read_account};
+use mars_agents::adapter::{AdapterError, AdapterKind, AdapterProbe, AgentAdapter};
 use mars_agents::claude::ClaudeAdapter;
 use mars_agents::codex::CodexAdapter;
-use mars_agents::process::{
-    ProcessError, ProcessEventKind, ProcessSpec, ProcessSupervisor, SessionRecord,
-};
+use mars_agents::process::{ProcessError, ProcessSupervisor, SessionRecord};
 use mars_brain::tools::{BrainEdge, BrainNeighborhood, BrainSymbol, Dependency};
 use mars_brain::{
     ApprovalOutcome, ApproveRequest, AskError, AskRequest, BrainAnswer, BrainError, BrainEvent,
@@ -29,8 +30,8 @@ use mars_brain::{
     MemoryFilters, MemoryProposal, MemoryService, MemoryUsage, NewKnowledge, NewProposal,
     NewProvenance, ProjectBrain, ProposalFilters, ProvenanceKind, RejectRequest, RetrievalContext,
     RetrievedMemory, ReviewError, ReviewHandoff, ReviewHandoffRequest, ReviewProvider,
-    ReviewRecord, ReviewService, ReviseRequest, RevokeRequest, WhyAnswer, WhyError, WhyRequest,
-    RunContextPack, RunContextPackBuilder, RunPackRequest, ToolGrant, WhyService,
+    ReviewRecord, ReviewService, ReviseRequest, RevokeRequest, RunContextPack,
+    RunContextPackBuilder, RunPackRequest, ToolGrant, WhyAnswer, WhyError, WhyRequest, WhyService,
     injections_from_pack, render_context_pack, render_extraction_prompt,
 };
 use mars_context::{CaptureError, ContextItem, ContextService};
@@ -50,13 +51,13 @@ use mars_git::{
     WorktreeProposal,
 };
 use mars_indexer::{IndexError, IndexSummary, Indexer};
-use mars_security::{
-    BrokerDecision, BrokerOutcome, CapabilityCeiling, GrantView, PendingRequest,
-    PermissionBroker, TrustDecision,
-};
 use mars_security::permissions::{
     Capability, PermissionAudit, PermissionDecision, PermissionError, PermissionOutcome,
     PermissionRequest, PermissionScope,
+};
+use mars_security::{
+    BrokerDecision, BrokerOutcome, CapabilityCeiling, GrantView, PendingRequest, PermissionBroker,
+    TrustDecision,
 };
 use mars_skills::{
     InspectedSkill, SkillCandidate, SkillError, SkillInstallation, SkillScope, SkillService,
@@ -113,6 +114,12 @@ struct AppState {
     index_runs: Arc<Mutex<HashMap<String, tokio_util::sync::CancellationToken>>>,
     why: WhyService,
     storage: Arc<Storage>,
+    /// The database file itself, which an agent's MCP server opens too.
+    database: PathBuf,
+    /// Runs whose processes this app started and is still reading.
+    live_runs: Arc<runs::LiveRuns>,
+    /// Where each agent CLI is, as a person chose it in Settings.
+    executables: runs::AgentExecutables,
 }
 
 #[derive(Serialize)]
@@ -451,86 +458,54 @@ struct MemoryResolutionInput {
 
 struct CliExtractionProvider {
     adapter: AdapterKind,
+    executable: PathBuf,
     cwd: std::path::PathBuf,
     removed_environment: Vec<OsString>,
 }
 
 struct CliReviewProvider {
     adapter: AdapterKind,
+    executable: PathBuf,
     cwd: std::path::PathBuf,
     removed_environment: Vec<OsString>,
 }
 
 impl ReviewProvider for CliReviewProvider {
     fn review(&self, prompt: &str) -> Result<String, String> {
-        let adapter = adapter_for(self.adapter);
-        let command = adapter
-            .command(&AgentLaunchRequest {
-                executable: executable_name(self.adapter).into(),
-                cwd: self.cwd.clone(),
-                prompt: prompt.into(),
-                resume_session_id: None,
-                allowed_tools: Vec::new(),
-                allow_write: false,
-            })
-            .map_err(|error| error.to_string())?;
-        let mut process = std::process::Command::new(command.program);
-        process.args(command.arguments).current_dir(command.cwd);
-        for variable in &self.removed_environment {
-            process.env_remove(variable);
-        }
-        let output = process.output().map_err(|error| error.to_string())?;
-        if !output.status.success() {
-            return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
-        }
-        let mut decoder = JsonLineDecoder::new();
-        let mut events = decoder.push(&output.stdout, adapter.as_ref());
-        events.extend(decoder.finish(adapter.as_ref()));
-        events
-            .into_iter()
-            .filter_map(|event| match event {
-                NormalizedAgentEvent::Text { text } => Some(strip_json_fence(&text)),
-                _ => None,
-            })
-            .next_back()
-            .ok_or_else(|| "reviewer returned no review JSON".into())
+        runs::run_once(
+            self.adapter,
+            &self.executable,
+            &self.cwd,
+            prompt,
+            &self.removed_environment,
+        )
+        .map_err(|error| {
+            if error == "the agent returned no answer" {
+                "reviewer returned no review JSON".to_owned()
+            } else {
+                error
+            }
+        })
     }
 }
 
 impl ExtractionProvider for CliExtractionProvider {
     fn extract(&self, bundle: &mars_brain::EvidenceBundle) -> Result<String, String> {
         let prompt = render_extraction_prompt(bundle).map_err(|error| error.to_string())?;
-        let adapter = adapter_for(self.adapter);
-        let command = adapter
-            .command(&AgentLaunchRequest {
-                executable: executable_name(self.adapter).into(),
-                cwd: self.cwd.clone(),
-                prompt,
-                resume_session_id: None,
-                allowed_tools: Vec::new(),
-                allow_write: false,
-            })
-            .map_err(|error| error.to_string())?;
-        let mut process = std::process::Command::new(command.program);
-        process.args(command.arguments).current_dir(command.cwd);
-        for variable in &self.removed_environment {
-            process.env_remove(variable);
-        }
-        let output = process.output().map_err(|error| error.to_string())?;
-        if !output.status.success() {
-            return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
-        }
-        let mut decoder = JsonLineDecoder::new();
-        let mut events = decoder.push(&output.stdout, adapter.as_ref());
-        events.extend(decoder.finish(adapter.as_ref()));
-        events
-            .into_iter()
-            .filter_map(|event| match event {
-                NormalizedAgentEvent::Text { text } => Some(strip_json_fence(&text)),
-                _ => None,
-            })
-            .next_back()
-            .ok_or_else(|| "agent returned no memory extraction JSON".into())
+        runs::run_once(
+            self.adapter,
+            &self.executable,
+            &self.cwd,
+            &prompt,
+            &self.removed_environment,
+        )
+        .map_err(|error| {
+            if error == "the agent returned no answer" {
+                "agent returned no memory extraction JSON".to_owned()
+            } else {
+                error
+            }
+        })
     }
 }
 
@@ -540,13 +515,6 @@ struct AgentLaunchOutcome {
     session_id: String,
     adapter: AdapterKind,
     version: String,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct AgentTimelinePayload {
-    session_id: String,
-    event: NormalizedAgentEvent,
 }
 
 #[derive(Serialize)]
@@ -563,7 +531,7 @@ fn core_info(request: CommandRequest) -> CommandResponse {
 }
 
 #[tauri::command]
-fn open_repository(
+async fn open_repository(
     path: String,
     trust: TrustDecision,
     state: State<'_, AppState>,
@@ -626,7 +594,7 @@ fn git_line<const N: usize>(root: &Path, arguments: [&str; N]) -> Option<String>
 /// Read a repository without trusting it, so the trust decision can be made
 /// against what is actually there.
 #[tauri::command]
-fn preview_repository(
+async fn preview_repository(
     path: String,
     state: State<'_, AppState>,
 ) -> Result<RepositoryPreview, CommandFailure> {
@@ -645,13 +613,15 @@ fn preview_repository(
         git_line(root, ["remote", "get-url", &first])
     });
 
-    let tracked_files = mars_git::command::run(root, ["ls-files"]).ok().map(|output| {
-        output
-            .stdout_text()
-            .lines()
-            .filter(|line| !line.is_empty())
-            .count()
-    });
+    let tracked_files = mars_git::command::run(root, ["ls-files"])
+        .ok()
+        .map(|output| {
+            output
+                .stdout_text()
+                .lines()
+                .filter(|line| !line.is_empty())
+                .count()
+        });
 
     // The honest number: what the indexer's own walk would read, not a guess
     // from the file count. Costly enough to be worth a loading state, cheap
@@ -728,9 +698,10 @@ fn write_file(
     task_id: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<FileDocument, CommandFailure> {
-    let document = state
-        .files
-        .write_file(&repository_id, &relative_path, &content, &expected_version)?;
+    let document =
+        state
+            .files
+            .write_file(&repository_id, &relative_path, &content, &expected_version)?;
 
     // A person editing a file by hand is something that happened to the task,
     // and the record is what every surface renders from -- so an edit made in
@@ -949,7 +920,7 @@ struct StartingPoint {
 
 /// What Mars can suggest doing next, grounded in what it already knows.
 #[tauri::command]
-fn starting_points(
+async fn starting_points(
     repository_id: String,
     state: State<'_, AppState>,
 ) -> Result<Vec<StartingPoint>, CommandFailure> {
@@ -974,7 +945,10 @@ fn starting_points(
     }
 
     if !status.head_matches_index {
-        let stale = index.stale_paths(&repository_id).map(|paths| paths.len()).unwrap_or(0);
+        let stale = index
+            .stale_paths(&repository_id)
+            .map(|paths| paths.len())
+            .unwrap_or(0);
         points.push(StartingPoint {
             id: "reindex".into(),
             title: "Re-index what moved".into(),
@@ -997,7 +971,12 @@ fn starting_points(
             .filter(|path| !path.is_empty())
             .collect();
         if !changed.is_empty() {
-            let sample = changed.iter().take(3).copied().collect::<Vec<_>>().join(", ");
+            let sample = changed
+                .iter()
+                .take(3)
+                .copied()
+                .collect::<Vec<_>>()
+                .join(", ");
             points.push(StartingPoint {
                 id: "working-tree".into(),
                 title: "Pick up the change in your working tree".into(),
@@ -1024,7 +1003,7 @@ fn starting_points(
 
 /// Hybrid search over the code index: lexical and semantic, fused.
 #[tauri::command]
-fn search_code(
+async fn search_code(
     repository_id: String,
     query: String,
     limit: usize,
@@ -1047,10 +1026,7 @@ fn permission_grants(
     task_id: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<Vec<GrantView>, CommandFailure> {
-    state
-        .broker
-        .grants(task_id.as_deref())
-        .map_err(Into::into)
+    state.broker.grants(task_id.as_deref()).map_err(Into::into)
 }
 
 /// Withdraw a standing grant. Who revoked it is filled in here, not asserted by
@@ -1069,7 +1045,7 @@ fn revoke_permission_grant(
 /// Whether the base moved out from under a task, and what can be done about it.
 /// `None` means it did not.
 #[tauri::command]
-fn task_base_drift(
+async fn task_base_drift(
     task_id: String,
     state: State<'_, AppState>,
 ) -> Result<Option<BaseDrift>, CommandFailure> {
@@ -1078,7 +1054,7 @@ fn task_base_drift(
 
 /// Act on drift. Every branch of this records what was chosen and why.
 #[tauri::command]
-fn resolve_task_base_drift(
+async fn resolve_task_base_drift(
     task_id: String,
     choice: DriftChoice,
     state: State<'_, AppState>,
@@ -1115,7 +1091,7 @@ struct PaletteHit {
 /// question. Nothing is ranked across kinds, because there is no honest way to
 /// compare a file name to an approved memory; the caller groups them instead.
 #[tauri::command]
-fn search_everything(
+async fn search_everything(
     repository_id: String,
     project_id: String,
     query: String,
@@ -1153,7 +1129,11 @@ fn search_everything(
         if messages >= 8 {
             break;
         }
-        for event in state.activity.read(&task.task_id, 0, 500).unwrap_or_default() {
+        for event in state
+            .activity
+            .read(&task.task_id, 0, 500)
+            .unwrap_or_default()
+        {
             if event.kind != ActivityKind::Message {
                 continue;
             }
@@ -1386,7 +1366,7 @@ fn emit_brain_events(app: &AppHandle, stream_id: Option<&String>, event: &BrainE
 }
 
 #[tauri::command]
-fn brain_ask(
+async fn brain_ask(
     repository_id: String,
     question: String,
     budget_tokens: Option<usize>,
@@ -1413,7 +1393,7 @@ fn brain_ask(
 }
 
 #[tauri::command]
-fn brain_explain(
+async fn brain_explain(
     repository_id: String,
     symbol_id: String,
     stream_id: Option<String>,
@@ -1432,7 +1412,7 @@ fn brain_explain(
 }
 
 #[tauri::command]
-fn brain_where_is(
+async fn brain_where_is(
     repository_id: String,
     concept: String,
     stream_id: Option<String>,
@@ -1451,7 +1431,7 @@ fn brain_where_is(
 }
 
 #[tauri::command]
-fn brain_dependency_graph(
+async fn brain_dependency_graph(
     repository_id: String,
     target: String,
     state: State<'_, AppState>,
@@ -1685,7 +1665,7 @@ fn read_context_artifact(
 }
 
 #[tauri::command]
-fn search_skills(
+async fn search_skills(
     query: String,
     state: State<'_, AppState>,
 ) -> Result<Vec<SkillCandidate>, CommandFailure> {
@@ -1693,7 +1673,7 @@ fn search_skills(
 }
 
 #[tauri::command]
-fn inspect_skill(
+async fn inspect_skill(
     candidate: SkillCandidate,
     state: State<'_, AppState>,
 ) -> Result<InspectedSkill, CommandFailure> {
@@ -1701,7 +1681,7 @@ fn inspect_skill(
 }
 
 #[tauri::command]
-fn install_skill(
+async fn install_skill(
     skill_id: String,
     repository_id: String,
     task_id: String,
@@ -1752,7 +1732,7 @@ fn list_task_memory(
 }
 
 #[tauri::command]
-fn extract_task_memory(
+async fn extract_task_memory(
     task_id: String,
     adapter: AdapterKind,
     model_permission: bool,
@@ -1775,6 +1755,7 @@ fn extract_task_memory(
     .stdout_text();
     let provider = Arc::new(CliExtractionProvider {
         adapter,
+        executable: state.executables.resolve(adapter)?.path,
         cwd: task.worktree_path.clone(),
         removed_environment: sign_in_environment(&state, adapter),
     });
@@ -1884,7 +1865,7 @@ fn resolve_memory(
 }
 
 #[tauri::command]
-fn why_query(
+async fn why_query(
     repository_id: String,
     subject: EntityRef,
     max_depth: usize,
@@ -1913,7 +1894,7 @@ fn why_query(
 }
 
 #[tauri::command]
-fn build_review_handoff(
+async fn build_review_handoff(
     task_id: String,
     reviewer_adapter: AdapterKind,
     max_bytes: usize,
@@ -1952,7 +1933,7 @@ fn build_review_handoff(
 }
 
 #[tauri::command]
-fn run_cross_agent_review(
+async fn run_cross_agent_review(
     handoff: ReviewHandoff,
     model_permission: bool,
     state: State<'_, AppState>,
@@ -1985,6 +1966,7 @@ fn run_cross_agent_review(
             model_permission,
             &CliReviewProvider {
                 adapter: reviewer_adapter,
+                executable: state.executables.resolve(reviewer_adapter)?.path,
                 cwd: task.worktree_path,
                 removed_environment: sign_in_environment(&state, reviewer_adapter),
             },
@@ -2024,7 +2006,7 @@ fn review_followup(
 }
 
 #[tauri::command]
-fn build_context_pack(
+async fn build_context_pack(
     request: ContextPackRequest,
     state: State<'_, AppState>,
 ) -> Result<ContextPack, CommandFailure> {
@@ -2104,7 +2086,7 @@ fn task_audit(task_id: String, state: State<'_, AppState>) -> Result<String, Com
 /// to render a task whose record is too large to be one document rather than
 /// writing a partial file that looks whole.
 #[tauri::command]
-fn write_task_audit(
+async fn write_task_audit(
     task_id: String,
     destination: String,
     state: State<'_, AppState>,
@@ -2314,7 +2296,10 @@ struct TaskDiff {
 }
 
 #[tauri::command]
-fn task_diff(task_id: String, state: State<'_, AppState>) -> Result<TaskDiff, CommandFailure> {
+async fn task_diff(
+    task_id: String,
+    state: State<'_, AppState>,
+) -> Result<TaskDiff, CommandFailure> {
     let task = state.tasks.get(&task_id)?;
     if task.state != mars_git::WorktreeState::Ready {
         return Err(CommandFailure::new(
@@ -2344,7 +2329,10 @@ fn task_diff(task_id: String, state: State<'_, AppState>) -> Result<TaskDiff, Co
     })
     .unwrap_or_default();
 
-    let diff_sha256 = format!("{:x}", <sha2::Sha256 as sha2::Digest>::digest(diff.as_bytes()));
+    let diff_sha256 = format!(
+        "{:x}",
+        <sha2::Sha256 as sha2::Digest>::digest(diff.as_bytes())
+    );
 
     Ok(TaskDiff {
         diff,
@@ -2359,7 +2347,7 @@ fn task_diff(task_id: String, state: State<'_, AppState>) -> Result<TaskDiff, Co
 /// One file as it stands in the task worktree, for the right-hand side of a
 /// diff or for a file Git has never seen.
 #[tauri::command]
-fn task_worktree_file(
+async fn task_worktree_file(
     task_id: String,
     relative_path: String,
     state: State<'_, AppState>,
@@ -2374,9 +2362,8 @@ fn task_worktree_file(
             format!("{relative_path} is outside the task worktree"),
         ));
     }
-    fs::read_to_string(&full).map_err(|error| {
-        CommandFailure::new("diff.read_file", format!("{relative_path}: {error}"))
-    })
+    fs::read_to_string(&full)
+        .map_err(|error| CommandFailure::new("diff.read_file", format!("{relative_path}: {error}")))
 }
 
 #[tauri::command]
@@ -2388,7 +2375,7 @@ fn list_tasks(
 }
 
 #[tauri::command]
-fn create_task(
+async fn create_task(
     repository_id: String,
     title: String,
     intent: String,
@@ -2402,7 +2389,7 @@ fn create_task(
 }
 
 #[tauri::command]
-fn task_overlap_warnings(
+async fn task_overlap_warnings(
     task_id: String,
     state: State<'_, AppState>,
 ) -> Result<Vec<OverlapWarning>, CommandFailure> {
@@ -2410,7 +2397,7 @@ fn task_overlap_warnings(
 }
 
 #[tauri::command]
-fn import_github_issue(
+async fn import_github_issue(
     repository_id: String,
     remote_name: String,
     issue_number: u64,
@@ -2447,13 +2434,21 @@ struct PlannedCheck {
 
 /// The commits between the task's base and its head, newest first.
 #[tauri::command]
-fn task_commits(task_id: String, state: State<'_, AppState>) -> Result<Vec<TaskCommit>, CommandFailure> {
+async fn task_commits(
+    task_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<TaskCommit>, CommandFailure> {
     let task = state.tasks.get(&task_id)?;
     let range = format!("{}..HEAD", task.base_ref);
     // A unit separator keeps subjects containing any punctuation intact.
     let output = mars_git::command::run(
         &task.worktree_path,
-        ["log", "--no-color", "--format=%H\x1f%s\x1f%an\x1f%aI", &range],
+        [
+            "log",
+            "--no-color",
+            "--format=%H\x1f%s\x1f%an\x1f%aI",
+            &range,
+        ],
     )
     .map_err(|error| CommandFailure::new("publish.commits", error.to_string()))?
     .stdout_text();
@@ -2479,7 +2474,7 @@ fn task_commits(task_id: String, state: State<'_, AppState>) -> Result<Vec<TaskC
 /// run exists until the pull request does. The screen says which of those two
 /// it is showing rather than presenting a plan as a result.
 #[tauri::command]
-fn planned_checks(
+async fn planned_checks(
     task_id: String,
     state: State<'_, AppState>,
 ) -> Result<Vec<PlannedCheck>, CommandFailure> {
@@ -2523,7 +2518,7 @@ fn planned_checks(
 }
 
 #[tauri::command]
-fn connect_github(
+async fn connect_github(
     repository_id: String,
     remote_name: String,
     token: String,
@@ -2551,7 +2546,7 @@ fn connect_github(
 }
 
 #[tauri::command]
-fn create_task_from_issue(
+async fn create_task_from_issue(
     issue_id: String,
     base_ref: String,
     state: State<'_, AppState>,
@@ -2568,7 +2563,7 @@ fn create_task_from_issue(
 }
 
 #[tauri::command]
-fn preview_pull_request(
+async fn preview_pull_request(
     task_id: String,
     remote_name: String,
     title: String,
@@ -2606,7 +2601,7 @@ fn list_task_forge_mutations(
 }
 
 #[tauri::command]
-fn create_github_pull_request(
+async fn create_github_pull_request(
     plan: PullRequestPlan,
     push_approved: bool,
     forge_approved: bool,
@@ -2620,7 +2615,7 @@ fn create_github_pull_request(
 }
 
 #[tauri::command]
-fn refresh_github_pull_request(
+async fn refresh_github_pull_request(
     task_id: String,
     state: State<'_, AppState>,
 ) -> Result<PullRequestSnapshot, CommandFailure> {
@@ -2714,7 +2709,7 @@ impl From<PlanTaskInput> for PlanRequest {
 
 /// Build a worktree plan. Writes plan rows; touches Git only to read.
 #[tauri::command]
-fn plan_task(
+async fn plan_task(
     request: PlanTaskInput,
     state: State<'_, AppState>,
 ) -> Result<WorktreeProposal, CommandFailure> {
@@ -2734,7 +2729,7 @@ fn task_plan(
 /// Change what a plan declares, before its worktree exists. Any approval the
 /// plan had is dropped by the core, so the edited plan must be approved again.
 #[tauri::command]
-fn amend_task_plan(
+async fn amend_task_plan(
     task_id: String,
     expected_scope: Vec<String>,
     setup_commands: Vec<SetupCommandInput>,
@@ -2757,7 +2752,7 @@ fn amend_task_plan(
 /// client's assertion of *which* plan it showed, and is checked; who approved it
 /// is filled in here and never taken from the webview.
 #[tauri::command]
-fn approve_task_plan(
+async fn approve_task_plan(
     task_id: String,
     fingerprint: String,
     state: State<'_, AppState>,
@@ -2771,7 +2766,7 @@ fn approve_task_plan(
 /// Create the worktree for an approved plan, then run its setup commands.
 /// Refuses if the plan changed after it was approved.
 #[tauri::command]
-fn provision_approved_task(
+async fn provision_approved_task(
     task_id: String,
     state: State<'_, AppState>,
 ) -> Result<WorktreeProposal, CommandFailure> {
@@ -2822,18 +2817,76 @@ struct RunPackInput {
     excluded_entity_refs: Vec<String>,
 }
 
-/// The tools an agent is offered. Mutating tools are listed here but filtered
-/// by the role's ceiling before the pack is built, so a preview can never
-/// promise a tool the broker would refuse.
-fn offered_tools() -> Vec<ToolGrant> {
-    vec![
-        ToolGrant::read_only("read_file", "Read a file inside the task worktree"),
-        ToolGrant::read_only("list_files", "List files inside the task worktree"),
-        ToolGrant::read_only("search_code", "Search the local code index"),
-        ToolGrant::read_only("brain_query", "Ask the project brain about this repository"),
-        ToolGrant::mutating("write_file", "Write a file inside the declared scope"),
-        ToolGrant::mutating("run_command", "Run a command in the task worktree"),
-    ]
+/// The tools an agent is offered, as the pack states them. Mutating tools are
+/// listed here but filtered by the role's ceiling before the pack is built, so
+/// a preview can never promise a tool the broker would refuse.
+fn offered_tools(adapter: AdapterKind) -> Vec<ToolGrant> {
+    let mut tools = vec![
+        ToolGrant::read_only(
+            "read files",
+            "Read, search and list files inside the task worktree",
+        ),
+        ToolGrant::read_only(
+            "mars graph",
+            "search, find_symbol, references, callers, callees, impact, related, file_deps, ask, \
+             where_is and explain over this repository's index; use them before grepping",
+        ),
+        ToolGrant::read_only(
+            "mars memory",
+            "memory and decisions: what people approved for this project",
+        ),
+        ToolGrant::mutating(
+            "mars proposals",
+            "record_decision and remember, which wait for a person's approval",
+        ),
+    ];
+    match adapter {
+        AdapterKind::Claude => {
+            tools.push(ToolGrant::mutating(
+                "edit files",
+                "Edit and write files; inside the declared scope without asking, elsewhere in the \
+                 worktree after a person allows it",
+            ));
+            tools.push(ToolGrant::mutating(
+                "run commands",
+                "Read-only commands run at once; anything that changes state asks first",
+            ));
+            tools.push(ToolGrant::mutating(
+                "web",
+                "Fetch a page or search the web, after a person allows the host",
+            ));
+        }
+        AdapterKind::Codex => {
+            tools.push(ToolGrant::mutating(
+                "edit files and run commands",
+                "Inside Codex's sandbox, confined to this worktree with the network off",
+            ));
+        }
+    }
+    tools
+}
+
+fn run_pack_request(
+    state: &AppState,
+    input: RunPackInput,
+) -> Result<(RunContextPackBuilder, RunPackRequest), CommandFailure> {
+    let plan = state.planner.current(&input.task_id)?;
+    let grants = state.broker.grants(Some(&input.task_id))?;
+    Ok((
+        RunContextPackBuilder::new(state.storage.clone()).with_grants(grants),
+        RunPackRequest {
+            task_id: input.task_id,
+            agent_id: input.agent_id,
+            adapter: adapter_name(input.adapter).to_owned(),
+            role: input.role.as_str().to_owned(),
+            ceiling: input.role.ceiling(),
+            declared_scope: plan.expected_scope,
+            tools: offered_tools(input.adapter),
+            assignment: input.assignment,
+            max_bytes: input.max_bytes,
+            excluded_entity_refs: input.excluded_entity_refs,
+        },
+    ))
 }
 
 /// Exactly what an agent will see and may do, assembled before the run starts.
@@ -2842,36 +2895,204 @@ fn offered_tools() -> Vec<ToolGrant> {
 /// person already approved, so the capability review and the plan approval
 /// cannot disagree about where the agent may write.
 #[tauri::command]
-fn build_run_context_pack(
+async fn build_run_context_pack(
     request: RunPackInput,
     state: State<'_, AppState>,
 ) -> Result<RunContextPack, CommandFailure> {
-    let plan = state.planner.current(&request.task_id)?;
-    let grants = state.broker.grants(Some(&request.task_id))?;
-    let adapter = match request.adapter {
-        AdapterKind::Claude => "claude",
-        AdapterKind::Codex => "codex",
-    };
+    let (builder, pack_request) = run_pack_request(&state, request)?;
+    builder.build(pack_request).map_err(Into::into)
+}
 
-    RunContextPackBuilder::new(state.storage.clone())
-        .with_grants(grants)
-        .build(RunPackRequest {
-            task_id: request.task_id,
-            agent_id: request.agent_id,
-            adapter: adapter.to_owned(),
-            role: request.role.as_str().to_owned(),
-            ceiling: request.role.ceiling(),
-            declared_scope: plan.expected_scope,
-            tools: offered_tools(),
+/// Start the first run of a task from the pack a person reviewed.
+///
+/// The pack is rebuilt and its digest compared with the one approved; a pack
+/// that moved in between is refused and must be looked at again (ADR-042).
+#[tauri::command]
+async fn start_run(
+    request: runs::StartRunInput,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<runs::LaunchedRun, CommandFailure> {
+    let task = state.tasks.get(&request.task_id)?;
+    let plan = state.planner.current(&request.task_id)?;
+    let role = request.role;
+    let (builder, pack_request) = run_pack_request(
+        &state,
+        RunPackInput {
+            task_id: request.task_id.clone(),
+            agent_id: request.agent_id.clone(),
+            adapter: request.adapter,
+            role,
             assignment: request.assignment,
             max_bytes: request.max_bytes,
             excluded_entity_refs: request.excluded_entity_refs,
-        })
-        .map_err(Into::into)
+        },
+    )?;
+    let pack = builder.revalidate(pack_request, &request.digest)?;
+    let launched = runs::launch(
+        launch_context(&app, &state, request.adapter),
+        runs::LaunchPlan {
+            agent_id: request.agent_id,
+            role: match role {
+                RunRoleInput::Implementer => RunRole::Implementer,
+                RunRoleInput::Reviewer => RunRole::Reviewer,
+            },
+            digest: pack.digest.clone(),
+            prompt: pack.prompt.clone(),
+            resume: None,
+            resumes_run_id: None,
+            declared_scope: plan.expected_scope,
+            fixed_tools: None,
+            allow_write: role == RunRoleInput::Implementer,
+            capabilities: json!({
+                "ceiling": pack.permissions.ceiling,
+                "declaredScope": pack.permissions.declared_scope,
+                "asksThroughMars": request.adapter == AdapterKind::Claude,
+            }),
+            adapter: request.adapter,
+            task,
+        },
+    )?;
+    // Recorded only now that the pack was sent (ADR-036).
+    state.memory.record_uses(
+        &pack.memory_injections(),
+        &InjectionContext {
+            task_id: Some(request.task_id),
+            session_id: Some(launched.session_id.clone()),
+            surface: "context_pack".into(),
+        },
+    )?;
+    Ok(launched)
+}
+
+/// The next thing the person said, sent to the session the task already has.
+///
+/// The message is written to the conversation first, then the provider's own
+/// session is resumed with exactly that text: the agent already holds the pack
+/// it started with, so it is not sent again (ADR-045).
+#[tauri::command]
+async fn continue_run(
+    request: runs::ContinueRunInput,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<runs::LaunchedRun, CommandFailure> {
+    let text = request.text.trim().to_owned();
+    if text.is_empty() {
+        return Err(CommandFailure::new("run.empty", "there is nothing to send"));
+    }
+    if state.live_runs.for_task(&request.task_id).is_some() {
+        return Err(CommandFailure::new(
+            "agent.busy",
+            "an agent is already working in this task; your message will go when it finishes",
+        ));
+    }
+    let previous = state
+        .runs
+        .latest_resumable(&request.task_id)?
+        .ok_or_else(|| {
+            CommandFailure::new(
+                "run.nothing_to_resume",
+                "no agent has worked in this task yet; start one from its context pack first",
+            )
+        })?;
+    let adapter = parse_adapter(&previous.adapter_kind)?;
+    let task = state.tasks.get(&request.task_id)?;
+    let plan = state.planner.current(&request.task_id)?;
+    state.activity.append(
+        ActivityEntry::new(
+            &request.task_id,
+            ActivityKind::Message,
+            Actor::Human,
+            local_actor(),
+            text.lines().next().unwrap_or_default(),
+        )
+        .with_payload(json!({ "text": text })),
+    )?;
+    runs::launch(
+        launch_context(&app, &state, adapter),
+        runs::LaunchPlan {
+            agent_id: previous.agent_id.clone(),
+            role: previous.role,
+            digest: runs::digest_of(&text),
+            prompt: text,
+            resume: previous.provider_session_id.clone(),
+            resumes_run_id: Some(previous.id.clone()),
+            declared_scope: plan.expected_scope,
+            fixed_tools: None,
+            allow_write: previous.role == RunRole::Implementer,
+            capabilities: previous.capabilities.clone(),
+            adapter,
+            task,
+        },
+    )
+}
+
+/// Stop a run, by the run's own id.
+#[tauri::command]
+async fn stop_run(run_id: String, state: State<'_, AppState>) -> Result<(), CommandFailure> {
+    runs::stop(
+        &run_id,
+        &state.runs,
+        &state.agents,
+        &state.broker,
+        &state.activity,
+        &state.live_runs,
+    )
+}
+
+/// Every run still going, across every task: what the agents overview shows.
+#[tauri::command]
+async fn active_runs(state: State<'_, AppState>) -> Result<Vec<runs::RunOverview>, CommandFailure> {
+    let unfinished = state.runs.unfinished()?;
+    runs::overview(&state.storage, unfinished, &state.live_runs)
+}
+
+/// The most recent runs in a repository, newest first, finished or not.
+#[tauri::command]
+async fn repository_runs(
+    repository_id: String,
+    limit: Option<usize>,
+    state: State<'_, AppState>,
+) -> Result<Vec<runs::RunOverview>, CommandFailure> {
+    let recent = state
+        .runs
+        .recent_for_repository(&repository_id, limit.unwrap_or(50).clamp(1, 500))?;
+    runs::overview(&state.storage, recent, &state.live_runs)
+}
+
+/// Where each agent CLI is, and how Mars found it.
+#[tauri::command]
+fn agent_executables(state: State<'_, AppState>) -> Vec<runs::ExecutableView> {
+    [AdapterKind::Claude, AdapterKind::Codex]
+        .into_iter()
+        .map(|kind| runs::executable_view(&state.executables, kind))
+        .collect()
+}
+
+/// Choose an agent CLI's executable, or clear the choice to search again.
+#[tauri::command]
+fn set_agent_executable(
+    adapter: AdapterKind,
+    path: Option<PathBuf>,
+    state: State<'_, AppState>,
+) -> Result<runs::ExecutableView, CommandFailure> {
+    if let Some(path) = &path
+        && !path.is_file()
+    {
+        return Err(CommandFailure::new(
+            "agent.executable_missing",
+            format!("{} is not a file", path.display()),
+        ));
+    }
+    state
+        .executables
+        .set(adapter, path)
+        .map_err(|error| CommandFailure::new("agent.preference", error))?;
+    Ok(runs::executable_view(&state.executables, adapter))
 }
 
 #[tauri::command]
-fn provision_task(
+async fn provision_task(
     task_id: String,
     state: State<'_, AppState>,
 ) -> Result<WorktreePlan, CommandFailure> {
@@ -2879,7 +3100,7 @@ fn provision_task(
 }
 
 #[tauri::command]
-fn remove_task_worktree(
+async fn remove_task_worktree(
     task_id: String,
     state: State<'_, AppState>,
 ) -> Result<WorktreePlan, CommandFailure> {
@@ -2887,7 +3108,7 @@ fn remove_task_worktree(
 }
 
 #[tauri::command]
-fn open_task_worktree(
+async fn open_task_worktree(
     task_id: String,
     state: State<'_, AppState>,
 ) -> Result<OpenRepositoryOutcome, CommandFailure> {
@@ -2899,10 +3120,13 @@ fn open_task_worktree(
 }
 
 #[tauri::command]
-fn probe_agent(adapter: AdapterKind) -> Result<AdapterProbe, CommandFailure> {
-    let adapter_impl = adapter_for(adapter);
-    adapter_impl
-        .probe(Path::new(executable_name(adapter)))
+async fn probe_agent(
+    adapter: AdapterKind,
+    state: State<'_, AppState>,
+) -> Result<AdapterProbe, CommandFailure> {
+    let executable = state.executables.resolve(adapter)?;
+    adapter_for(adapter)
+        .probe(&executable.path)
         .map_err(Into::into)
 }
 
@@ -2912,7 +3136,8 @@ async fn agent_account(
     adapter: AdapterKind,
     state: State<'_, AppState>,
 ) -> Result<AgentAccount, CommandFailure> {
-    account_off_thread(adapter, state.sign_in.uses_sign_in(adapter)).await
+    let executable = state.executables.resolve(adapter)?.path;
+    account_off_thread(adapter, executable, state.sign_in.uses_sign_in(adapter)).await
 }
 
 /// Records whether runs of `adapter` should use the CLI's own sign-in rather
@@ -2927,21 +3152,19 @@ async fn set_agent_sign_in_preference(
         .sign_in
         .set(adapter, use_sign_in)
         .map_err(|error| CommandFailure::new("agent.preference", error.to_string()))?;
-    account_off_thread(adapter, use_sign_in).await
+    let executable = state.executables.resolve(adapter)?.path;
+    account_off_thread(adapter, executable, use_sign_in).await
 }
 
 /// Asks the CLI on a blocking thread. `claude auth status` takes a noticeable
 /// fraction of a second, and the shell asks every agent when it opens.
 async fn account_off_thread(
     adapter: AdapterKind,
+    executable: PathBuf,
     use_sign_in: bool,
 ) -> Result<AgentAccount, CommandFailure> {
     tauri::async_runtime::spawn_blocking(move || {
-        read_account(
-            adapter_for(adapter).as_ref(),
-            Path::new(executable_name(adapter)),
-            use_sign_in,
-        )
+        read_account(adapter_for(adapter).as_ref(), &executable, use_sign_in)
     })
     .await
     .map_err(|error| CommandFailure::new("agent.account", error.to_string()))?
@@ -3003,17 +3226,48 @@ async fn launch_agent(
             "task context changed after preview; review the refreshed pack before launch",
         ));
     }
-    let adapter_impl = adapter_for(adapter);
-    let executable = Path::new(executable_name(adapter));
-    let probe = adapter_impl.probe(executable)?;
-    // Asked before anything is recorded: a CLI nobody is signed in to would
-    // start, fail on its first request, and leave a run behind that never did
-    // anything.
-    let account = account_for(&state, adapter)?;
-    if account.billing == Billing::SignedOut {
-        return Err(signed_out(adapter, &account));
-    }
-    // The pack is now the one the agent will actually receive, so this is the
+    let prompt = render_context_pack(&verified_pack, &prompt);
+    let executable = state.executables.resolve(adapter)?.path;
+    let tools = authorize_agent(&state.permissions, &task, adapter, permissions, &executable)?;
+    let resumes_run_id = match &resume_session_id {
+        Some(session) => state
+            .storage
+            .with_connection(|connection| {
+                use rusqlite::OptionalExtension;
+                connection
+                    .query_row(
+                        "SELECT id FROM agent_runs WHERE provider_session_id = ?1
+                         ORDER BY started_at DESC LIMIT 1",
+                        [session],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()
+            })
+            .map_err(|error| CommandFailure::new("agent.resume", error.to_string()))?,
+        None => None,
+    };
+    let launched = runs::launch(
+        launch_context(&app, &state, adapter),
+        runs::LaunchPlan {
+            agent_id: adapter_name.to_owned(),
+            role: RunRole::Implementer,
+            digest: runs::digest_of(&prompt),
+            prompt,
+            resume: resume_session_id,
+            resumes_run_id,
+            declared_scope: Vec::new(),
+            fixed_tools: Some(tools),
+            allow_write: permissions.write_files,
+            capabilities: json!({
+                "writeFiles": permissions.write_files,
+                "runCommands": permissions.run_commands,
+                "network": permissions.network,
+            }),
+            adapter,
+            task,
+        },
+    )?;
+    // The pack is now the one the agent actually received, so this is the
     // moment its memories count as used -- not when it was previewed, and not
     // when it was rebuilt for the comparison above, either of which would
     // record influence the memory never had.
@@ -3021,83 +3275,35 @@ async fn launch_agent(
         &injections_from_pack(&verified_pack),
         &InjectionContext {
             task_id: Some(task_id.clone()),
-            session_id: None,
+            session_id: Some(launched.session_id.clone()),
             surface: "context_pack".into(),
         },
     )?;
-    let prompt = render_context_pack(&verified_pack, &prompt);
-
-    let allowed_tools =
-        authorize_agent(&state.permissions, &task, adapter, permissions, executable)?;
-    let command = adapter_impl.command(&AgentLaunchRequest {
-        executable: executable.into(),
-        cwd: task.worktree_path.clone(),
-        prompt,
-        resume_session_id,
-        allowed_tools,
-        allow_write: permissions.write_files,
-    })?;
-    let mut spec = ProcessSpec::new(
-        match adapter {
-            AdapterKind::Claude => "claude",
-            AdapterKind::Codex => "codex",
-        },
-        command.program,
-        command.arguments,
-        command.cwd,
-    );
-    spec.task_id = Some(task_id);
-    spec.removed_environment = account.removed_environment();
-    // A run row exists before the process does, so an agent that dies on its
-    // first line is still a run the log knows about and recovery can find.
-    let run = state.runs.start(NewRun {
-        task_id: task.task_id.clone(),
-        agent_id: adapter_name.to_owned(),
-        adapter_kind: adapter_name.to_owned(),
-        role: RunRole::Implementer,
-        capabilities: json!({
-            "writeFiles": permissions.write_files,
-            "runCommands": permissions.run_commands,
-            "network": permissions.network,
-        }),
-        // This path launches from the retrieval pack, which carries no digest.
-        // The digest belongs to a `RunContextPack` — the object the capability
-        // review shows — and is recorded once launching goes through that.
-        // Recording something else here would look like the preview had been
-        // verified against the launch when it had not.
-        context_pack_digest: None,
-    })?;
-    let launched = state.agents.launch(spec)?;
-    let session_id = launched.session_id.clone();
-    let _ = state.runs.attach_session(&run.id, &session_id);
-    let _ = state.activity.append(
-        ActivityEntry::new(
-            &task.task_id,
-            ActivityKind::RunStarted,
-            Actor::System,
-            "mars",
-            format!("Started {adapter_name} as {}", run.role.as_str()),
-        )
-        .in_run(&run.id)
-        .with_payload(json!({ "adapter": adapter_name, "billing": account.billing })),
-    );
-    stream_agent_events(
-        app,
-        state.agents.clone(),
-        adapter_impl,
-        launched,
-        RunSink {
-            activity: state.activity.clone(),
-            runs: state.runs.clone(),
-            task_id: task.task_id.clone(),
-            run_id: run.id.clone(),
-        },
-    );
     Ok(AgentLaunchOutcome {
-        session_id,
+        session_id: launched.session_id,
         adapter,
-        version: probe.version,
+        version: launched.version,
     })
+}
+
+/// What a launch reaches, borrowed from the app state.
+fn launch_context<'a>(
+    app: &AppHandle,
+    state: &'a AppState,
+    adapter: AdapterKind,
+) -> runs::LaunchContext<'a> {
+    runs::LaunchContext {
+        app: app.clone(),
+        database: state.database.clone(),
+        activity: &state.activity,
+        runs: &state.runs,
+        supervisor: &state.agents,
+        broker: &state.broker,
+        live: state.live_runs.clone(),
+        executables: &state.executables,
+        uses_sign_in: state.sign_in.uses_sign_in(adapter),
+        plugin_dirs: Vec::new(),
+    }
 }
 
 #[tauri::command]
@@ -3121,9 +3327,10 @@ fn adapter_for(kind: AdapterKind) -> Box<dyn AgentAdapter> {
 }
 
 fn account_for(state: &AppState, adapter: AdapterKind) -> Result<AgentAccount, CommandFailure> {
+    let executable = state.executables.resolve(adapter)?;
     read_account(
         adapter_for(adapter).as_ref(),
-        Path::new(executable_name(adapter)),
+        &executable.path,
         state.sign_in.uses_sign_in(adapter),
     )
     .map_err(Into::into)
@@ -3156,13 +3363,6 @@ fn signed_out(adapter: AdapterKind, account: &AgentAccount) -> CommandFailure {
         "agent.signed_out",
         format!("{name} is installed but not signed in.{how}"),
     )
-}
-
-fn executable_name(kind: AdapterKind) -> &'static str {
-    match kind {
-        AdapterKind::Claude => "claude",
-        AdapterKind::Codex => "codex",
-    }
 }
 
 fn adapter_name(kind: AdapterKind) -> &'static str {
@@ -3283,200 +3483,23 @@ fn record_permission(
     ))
 }
 
-/// Where a run's events are written down.
-///
-/// The adapters speak their own vocabulary and the supervisor keeps its own
-/// per-session table; neither is what the product renders from. This carries
-/// the one destination that is: the task's activity record, and the run row the
-/// events belong to.
-struct RunSink {
-    activity: ActivityRecord,
-    runs: RunStore,
-    task_id: String,
-    run_id: String,
-}
-
-/// Mirror one normalized agent event into the task's activity record.
-///
-/// The adapters speak their own vocabulary and the supervisor keeps its own
-/// per-session table; neither is what the product renders from. This is the one
-/// place that translation happens, so everything downstream — the transcript,
-/// the projection, recovery and export — sees a single normalized log.
-///
-/// Output that would bloat an event row is attached instead, addressed by
-/// digest, and the row keeps only what a person reads at a glance.
-fn record_agent_event(sink: &RunSink, event: &NormalizedAgentEvent) {
-    let task_id = sink.task_id.as_str();
-    let entry = match event {
-        NormalizedAgentEvent::Text { text } => Some(
-            ActivityEntry::new(
-                task_id,
-                ActivityKind::Message,
-                Actor::Agent,
-                "agent",
-                text.lines().next().unwrap_or_default().to_owned(),
-            )
-            .with_payload(json!({ "text": text })),
-        ),
-        NormalizedAgentEvent::Tool { name, input } => Some(
-            ActivityEntry::new(
-                task_id,
-                ActivityKind::ToolCall,
-                Actor::Agent,
-                "agent",
-                name.clone(),
-            )
-            .with_payload(json!({ "name": name, "input": input })),
-        ),
-        NormalizedAgentEvent::Command { command, status } => Some(
-            ActivityEntry::new(
-                task_id,
-                ActivityKind::Command,
-                Actor::Agent,
-                "agent",
-                command.clone(),
-            )
-            .with_payload(json!({ "command": command, "status": status })),
-        ),
-        NormalizedAgentEvent::FileChange { path, change } => Some(
-            ActivityEntry::new(
-                task_id,
-                ActivityKind::FileEdit,
-                Actor::Agent,
-                "agent",
-                format!("{change} {path}"),
-            )
-            .with_payload(json!({ "path": path, "change": change })),
-        ),
-        NormalizedAgentEvent::Test { command, status } => Some(
-            ActivityEntry::new(
-                task_id,
-                ActivityKind::TestRun,
-                Actor::Agent,
-                "agent",
-                command.clone(),
-            )
-            .with_payload(json!({ "command": command, "status": status })),
-        ),
-        NormalizedAgentEvent::Permission { tool, description } => Some(
-            ActivityEntry::new(
-                task_id,
-                ActivityKind::PermissionRequest,
-                Actor::Agent,
-                "agent",
-                description.clone(),
-            )
-            .with_payload(json!({ "tool": tool, "description": description })),
-        ),
-        NormalizedAgentEvent::End { success, message } => Some(
-            ActivityEntry::new(
-                task_id,
-                ActivityKind::Done,
-                Actor::Agent,
-                "agent",
-                message.clone().unwrap_or_else(|| {
-                    if *success { "Agent finished".into() } else { "Agent stopped".into() }
-                }),
-            )
-            .with_payload(json!({ "success": success, "message": message })),
-        ),
-        // A frame no adapter recognised is kept rather than dropped: the log is
-        // the record of what happened, including what Mars could not read.
-        NormalizedAgentEvent::Unknown { provider_type, raw } => Some(
-            ActivityEntry::new(
-                task_id,
-                ActivityKind::Error,
-                Actor::System,
-                "mars",
-                format!("unrecognised {provider_type} frame"),
-            )
-            .with_payload(json!({ "providerType": provider_type }))
-            .with_attachment(Attachment::text(
-                "application/json",
-                raw.to_string(),
-            )),
-        ),
-        // The provider's resume point is session machinery, not activity.
-        NormalizedAgentEvent::Checkpoint { .. } => None,
-    };
-
-    if let Some(entry) = entry {
-        let _ = sink.activity.append(entry.in_run(&sink.run_id));
-    }
-}
-
-fn stream_agent_events(
-    app: AppHandle,
-    supervisor: ProcessSupervisor,
-    adapter: Box<dyn AgentAdapter>,
-    mut launched: mars_agents::process::LaunchedProcess,
-    sink: RunSink,
-) {
-    tauri::async_runtime::spawn(async move {
-        let mut decoder = JsonLineDecoder::new();
-        let mut provider_ended = false;
-        while let Some(process_event) = launched.events.recv().await {
-            let events = match process_event.kind {
-                ProcessEventKind::Stdout { text } => {
-                    decoder.push(text.as_bytes(), adapter.as_ref())
-                }
-                ProcessEventKind::Stderr { text } => vec![NormalizedAgentEvent::Unknown {
-                    provider_type: "stderr".into(),
-                    raw: Value::String(text),
-                }],
-                ProcessEventKind::Exit { code, .. } => {
-                    let mut events = decoder.finish(adapter.as_ref());
-                    if !provider_ended {
-                        events.push(adapter.on_exit(code));
-                    }
-                    events
-                }
-                ProcessEventKind::CancelRequested => vec![NormalizedAgentEvent::Permission {
-                    tool: "process".into(),
-                    description: "Cancellation requested".into(),
-                }],
-                ProcessEventKind::KillEscalated => vec![NormalizedAgentEvent::Unknown {
-                    provider_type: "kill_escalated".into(),
-                    raw: Value::Null,
-                }],
-                ProcessEventKind::DeliveryLagged => vec![NormalizedAgentEvent::Unknown {
-                    provider_type: "delivery_lagged".into(),
-                    raw: Value::Null,
-                }],
-                ProcessEventKind::InterruptedOnRestart => vec![NormalizedAgentEvent::End {
-                    success: false,
-                    message: Some("Session was interrupted by restart".into()),
-                }],
-            };
-            for event in events {
-                provider_ended |= matches!(event, NormalizedAgentEvent::End { .. });
-                let _ = supervisor.record_normalized(&launched.session_id, &event);
-                record_agent_event(&sink, &event);
-                if let NormalizedAgentEvent::End { success, .. } = &event {
-                    let _ = sink.runs.set_status(
-                        &sink.run_id,
-                        if *success { RunStatus::Completed } else { RunStatus::Failed },
-                    );
-                }
-                let _ = app.emit(
-                    "agent-event",
-                    AgentTimelinePayload {
-                        session_id: launched.session_id.clone(),
-                        event,
-                    },
-                );
-            }
-        }
-    });
-}
-
 fn main() {
+    // An agent CLI starts this executable as its MCP server (ADR-046). That is
+    // a different program from the app: it serves one task over stdio and
+    // never opens a window.
+    let mut arguments = std::env::args().skip(1);
+    if arguments.next().as_deref() == Some("mcp") {
+        std::process::exit(mars_mcp::run_from_args(arguments));
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             fs::create_dir_all(&data_dir)?;
-            let storage = Arc::new(Storage::open(data_dir.join("mars.sqlite3"))?);
+            let database = data_dir.join("mars.sqlite3");
+            let storage = Arc::new(Storage::open(&database)?);
+            let live_runs = Arc::new(runs::LiveRuns::default());
+            runs::watch_activity(app.handle().clone(), storage.clone(), live_runs.clone());
             let agents = ProcessSupervisor::new(storage.clone());
             let broker = PermissionBroker::new(storage.clone());
             let payload_root = data_dir.join("activity-payloads");
@@ -3522,6 +3545,9 @@ fn main() {
                 terminals: TerminalService::new(storage.clone()),
                 why: WhyService::new(storage.clone()),
                 storage,
+                database,
+                live_runs,
+                executables: runs::AgentExecutables::load(data_dir.join("agent-executables.json")),
             });
             Ok(())
         })
@@ -3630,7 +3656,14 @@ fn main() {
             set_agent_sign_in_preference,
             launch_agent,
             cancel_agent,
-            agent_session
+            agent_session,
+            start_run,
+            continue_run,
+            stop_run,
+            active_runs,
+            repository_runs,
+            agent_executables,
+            set_agent_executable
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Mars desktop");

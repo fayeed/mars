@@ -371,17 +371,17 @@ impl Agent for CliAgent {
     fn start(&self, task: &TaskSpec, context: &AgentContext) -> Result<AgentHandle, AgentError> {
         // The ceiling reaches the command line, not only the broker: a reviewer
         // is launched without write tools in the first place.
-        let launch = AgentLaunchRequest {
-            executable: self.executable.clone(),
-            cwd: task.worktree_path.clone(),
-            prompt: context.prompt.clone(),
-            resume_session_id: context
-                .resume_session_id
-                .clone()
-                .filter(|_| self.capabilities.supports_resume),
-            allowed_tools: context.allowed_tools.clone(),
-            allow_write: self.capabilities.may_write(),
-        };
+        let mut launch = AgentLaunchRequest::new(
+            self.executable.clone(),
+            task.worktree_path.clone(),
+            context.prompt.clone(),
+        );
+        launch.resume_session_id = context
+            .resume_session_id
+            .clone()
+            .filter(|_| self.capabilities.supports_resume);
+        launch.allowed_tools = context.allowed_tools.clone();
+        launch.allow_write = self.capabilities.may_write();
         let command = self.adapter.command(&launch)?;
 
         let run = self.runs.start(NewRun {
@@ -391,6 +391,7 @@ impl Agent for CliAgent {
             role: self.capabilities.role.as_run_role(),
             capabilities: serde_json::to_value(self.capabilities).unwrap_or(Value::Null),
             context_pack_digest: context.pack_digest.clone(),
+            resumes_run_id: None,
         })?;
 
         self.activity.append(
@@ -420,12 +421,7 @@ impl Agent for CliAgent {
             .with_attachment(Attachment::text("text/plain", context.prompt.clone())),
         )?;
 
-        let mut spec = ProcessSpec::new(
-            adapter_name(self.adapter.kind()),
-            &command.program,
-            command.arguments.clone(),
-            &command.cwd,
-        );
+        let mut spec = ProcessSpec::from_command(adapter_name(self.adapter.kind()), command);
         spec.task_id = Some(task.task_id.clone());
 
         let launched = self.supervisor.launch(spec)?;
@@ -541,6 +537,7 @@ async fn pump_events(
                 tail.push(NormalizedAgentEvent::End {
                     success: *success,
                     message: (!*success).then(|| format!("process exited with {code:?}")),
+                    usage: None,
                 });
                 tail
             }
@@ -548,10 +545,12 @@ async fn pump_events(
             ProcessEventKind::KillEscalated => vec![NormalizedAgentEvent::End {
                 success: false,
                 message: Some("the process was killed after it did not stop".into()),
+                usage: None,
             }],
             ProcessEventKind::InterruptedOnRestart => vec![NormalizedAgentEvent::End {
                 success: false,
                 message: Some("Mars restarted while this process was running".into()),
+                usage: None,
             }],
             ProcessEventKind::DeliveryLagged => vec![NormalizedAgentEvent::Unknown {
                 provider_type: "delivery_lagged".into(),
@@ -743,19 +742,32 @@ fn within_scope(path: &str, scope: &[String]) -> bool {
 fn to_agent_event(event: NormalizedAgentEvent) -> AgentEvent {
     match event {
         NormalizedAgentEvent::Text { text } => AgentEvent::Message { text },
-        NormalizedAgentEvent::Tool { name, input } => AgentEvent::ToolCall { name, input },
-        NormalizedAgentEvent::Command { command, status } => {
-            AgentEvent::Command { command, status }
+        NormalizedAgentEvent::Tool { name, input, .. } => AgentEvent::ToolCall { name, input },
+        NormalizedAgentEvent::Command {
+            command, status, ..
+        } => AgentEvent::Command { command, status },
+        NormalizedAgentEvent::FileChange { path, change, .. } => {
+            AgentEvent::FileEdit { path, change }
         }
-        NormalizedAgentEvent::FileChange { path, change } => AgentEvent::FileEdit { path, change },
-        NormalizedAgentEvent::Test { command, status } => AgentEvent::TestRun { command, status },
+        NormalizedAgentEvent::Test {
+            command, status, ..
+        } => AgentEvent::TestRun { command, status },
+        // A result is the second half of a call already reported; this
+        // interface carries the call, and the session record keeps the result.
+        NormalizedAgentEvent::ToolResult { call_id, .. } => AgentEvent::Unknown {
+            provider_type: "tool_result".into(),
+            raw: Value::String(call_id),
+        },
+        NormalizedAgentEvent::Warning { message } => AgentEvent::Thought { text: message },
         NormalizedAgentEvent::Permission { tool, description } => AgentEvent::PermissionRequest {
             request_id: String::new(),
             summary: format!("{tool}: {description}"),
             classification: "mutating".into(),
         },
         NormalizedAgentEvent::Checkpoint { session_id } => AgentEvent::Checkpoint { session_id },
-        NormalizedAgentEvent::End { success, message } => AgentEvent::Done { success, message },
+        NormalizedAgentEvent::End {
+            success, message, ..
+        } => AgentEvent::Done { success, message },
         NormalizedAgentEvent::Unknown { provider_type, raw } => {
             AgentEvent::Unknown { provider_type, raw }
         }

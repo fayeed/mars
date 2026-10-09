@@ -496,7 +496,14 @@ fn a_refused_reviewer_does_not_undo_the_pull_request_that_already_exists() {
     };
 
     let plan = workflow
-        .plan_pull_request("task", "origin", "Fix sync", "Closes #7", false, &["nope".into()])
+        .plan_pull_request(
+            "task",
+            "origin",
+            "Fix sync",
+            "Closes #7",
+            false,
+            &["nope".into()],
+        )
         .expect("plan should build");
 
     let snapshot = workflow

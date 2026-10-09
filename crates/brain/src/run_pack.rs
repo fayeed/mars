@@ -88,6 +88,10 @@ pub struct PackEntry {
     pub source_location: String,
     pub reason: String,
     pub byte_size: usize,
+    /// The retrieval score it was selected at, which is what a memory's usage
+    /// trail records as its relevance.
+    #[serde(default)]
+    pub score: f64,
 }
 
 /// Everything an agent will see, assembled and inspectable.
@@ -111,6 +115,24 @@ pub struct RunContextPack {
 }
 
 impl RunContextPack {
+    /// The memories this pack puts in front of the agent, for recording at
+    /// launch (ADR-036).
+    #[must_use]
+    pub fn memory_injections(&self) -> Vec<crate::MemoryInjection> {
+        self.entries
+            .iter()
+            .filter_map(|entry| {
+                entry
+                    .entity_ref
+                    .strip_prefix("memory:")
+                    .map(|memory_id| crate::MemoryInjection {
+                        memory_id: memory_id.to_owned(),
+                        relevance: entry.score.clamp(0.0, 1.0),
+                    })
+            })
+            .collect()
+    }
+
     /// Entity references of one kind, in pack order — `file`, `symbol`,
     /// `memory`, `skill`, `context`, `task`.
     #[must_use]
@@ -197,7 +219,13 @@ impl RunContextPackBuilder {
             everything_else_asks: true,
         };
 
-        let prompt = render_prompt(&retrieved, &tools, &permissions, &request.assignment);
+        let prompt = render_prompt(
+            &retrieved,
+            &tools,
+            &permissions,
+            &request.assignment,
+            &request.adapter,
+        );
         let digest = digest_of(&prompt);
 
         Ok(RunContextPack {
@@ -218,6 +246,7 @@ impl RunContextPackBuilder {
                     source_location: item.source_location.clone(),
                     reason: item.reason.clone(),
                     byte_size: item.byte_size,
+                    score: item.score,
                 })
                 .collect(),
             section_usage: retrieved.section_usage.clone(),
@@ -256,6 +285,7 @@ fn render_prompt(
     tools: &[ToolGrant],
     permissions: &PermissionsView,
     assignment: &str,
+    adapter: &str,
 ) -> String {
     let mut rendered = render_context_pack(pack, assignment);
     rendered.push_str("\n\n## Tools\n");
@@ -278,6 +308,23 @@ fn render_prompt(
 
     rendered.push_str("\n## Permissions\n");
     rendered.push_str(&format!("Role: {}\n", permissions.role));
+    if adapter == "codex" {
+        // Codex runs non-interactively inside its own sandbox. Nothing can
+        // stop it and ask a person, so the prompt must not say otherwise.
+        rendered.push_str(&format!(
+            "You run inside Codex's sandbox: you may {}change files in this worktree, and the network is off. \
+             Nothing here can stop and ask a person, so an action the sandbox refuses fails. \
+             Say what you needed instead of working around it.\n",
+            negate(permissions.ceiling.write_files),
+        ));
+        if !permissions.declared_scope.is_empty() {
+            rendered.push_str(&format!(
+                "Keep your changes to the declared file scope: {}.\n",
+                permissions.declared_scope.join(", ")
+            ));
+        }
+        return rendered;
+    }
     rendered.push_str(&format!(
         "You may {}write files, {}reach the network, and {}push.\n",
         negate(permissions.ceiling.write_files),

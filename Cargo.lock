@@ -2378,9 +2378,11 @@ dependencies = [
  "mars-forge-github",
  "mars-git",
  "mars-indexer",
+ "mars-mcp",
  "mars-security",
  "mars-skills",
  "mars-storage",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -2462,6 +2464,24 @@ dependencies = [
  "tree-sitter-typescript",
  "tree-sitter-yaml",
  "uuid",
+]
+
+[[package]]
+name = "mars-mcp"
+version = "0.1.0"
+dependencies = [
+ "mars-activity",
+ "mars-brain",
+ "mars-core",
+ "mars-git",
+ "mars-indexer",
+ "mars-security",
+ "mars-storage",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio-util",
 ]
 
 [[package]]

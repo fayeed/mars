@@ -98,14 +98,9 @@ fn partial_and_malformed_jsonl_frames_degrade_without_losing_data() {
 #[test]
 fn commands_use_streaming_modes_and_resume_without_permission_bypass() {
     let root = PathBuf::from("/tmp/mars adapter worktree");
-    let request = AgentLaunchRequest {
-        executable: PathBuf::from("/opt/bin/agent"),
-        cwd: root.clone(),
-        prompt: "Implement the task".into(),
-        resume_session_id: None,
-        allowed_tools: vec!["Read".into(), "Edit".into()],
-        allow_write: true,
-    };
+    let mut request = AgentLaunchRequest::new("/opt/bin/agent", root.clone(), "Implement the task");
+    request.allowed_tools = vec!["Read".into(), "Edit".into()];
+    request.allow_write = true;
 
     let claude = ClaudeAdapter;
     let claude_command = claude
@@ -131,15 +126,13 @@ fn commands_use_streaming_modes_and_resume_without_permission_bypass() {
     let codex = CodexAdapter;
     let codex_command = codex.command(&request).expect("Codex command should build");
     let codex_args = strings(&codex_command.arguments);
-    assert_eq!(
-        codex_args[..4],
-        ["exec", "--json", "--color", "never"].map(str::to_owned)
-    );
+    assert_eq!(codex_args[..2], ["exec", "--json"].map(str::to_owned));
     assert!(
         codex_args
             .windows(2)
-            .any(|pair| pair == ["--sandbox", "workspace-write"])
+            .any(|pair| pair == ["-c", "sandbox_mode=\"workspace-write\""])
     );
+    assert_eq!(codex_command.stdin.as_deref(), Some("Implement the task"));
     assert!(
         !codex_args
             .iter()
@@ -168,7 +161,7 @@ fn commands_use_streaming_modes_and_resume_without_permission_bypass() {
                 .arguments
         )
         .windows(2)
-        .any(|pair| pair == ["--json", "session-123"])
+        .any(|pair| pair == ["session-123", "-"])
     );
 }
 
@@ -228,20 +221,30 @@ fn real_adapter_smoke(expected: AdapterKind, executable: &Path) {
         expected
     );
     let command = adapter
-        .command(&AgentLaunchRequest {
-            executable: executable.to_owned(),
-            cwd: directory.path().to_owned(),
-            prompt: "Reply with exactly MARS_SMOKE_OK. Do not use tools or modify files.".into(),
-            resume_session_id: None,
-            allowed_tools: Vec::new(),
-            allow_write: false,
-        })
+        .command(&AgentLaunchRequest::new(
+            executable,
+            directory.path(),
+            "Reply with exactly MARS_SMOKE_OK. Do not use tools or modify files.",
+        ))
         .expect("smoke command should build");
-    let output = Command::new(command.program)
+    let mut child = Command::new(command.program)
         .args(command.arguments)
         .current_dir(command.cwd)
-        .output()
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .expect("real adapter should launch");
+    {
+        use std::io::Write;
+        let mut stdin = child.stdin.take().expect("stdin is piped");
+        stdin
+            .write_all(command.stdin.unwrap_or_default().as_bytes())
+            .expect("prompt should write");
+    }
+    let output = child
+        .wait_with_output()
+        .expect("real adapter should finish");
     assert!(
         output.status.success(),
         "real adapter failed: {}",

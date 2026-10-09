@@ -25,6 +25,7 @@ fn interrupted_fixture() -> (ActivityFixture, String, String) {
             role: RunRole::Implementer,
             capabilities: json!({ "writeFiles": true }),
             context_pack_digest: None,
+            resumes_run_id: None,
         })
         .expect("run should start");
     runs.set_status(&run.id, RunStatus::Running)

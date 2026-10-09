@@ -82,20 +82,65 @@ export interface AgentLaunchOutcome {
   version: string;
 }
 
+/** What a run cost, as the provider reported it at the end. */
+export interface RunUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  cachedInputTokens?: number;
+  costUsd?: number;
+  turns?: number;
+}
+
 export type NormalizedAgentEvent =
   | { type: "checkpoint"; sessionId: string }
   | { type: "text"; text: string }
-  | { type: "tool"; name: string; input: unknown }
-  | { type: "command"; command: string; status: string }
-  | { type: "file_change"; path: string; change: string }
-  | { type: "test"; command: string; status: string }
+  | { type: "tool"; name: string; input: unknown; callId?: string }
+  | { type: "command"; command: string; status: string; callId?: string }
+  | { type: "file_change"; path: string; change: string; callId?: string }
+  | { type: "test"; command: string; status: string; callId?: string }
+  | {
+      type: "tool_result";
+      callId: string;
+      output: string;
+      isError: boolean;
+      exitCode?: number;
+    }
   | { type: "permission"; tool: string; description: string }
+  | { type: "warning"; message: string }
   | { type: "unknown"; providerType: string; raw: unknown }
-  | { type: "end"; success: boolean; message: string | null };
+  | { type: "end"; success: boolean; message: string | null; usage?: RunUsage };
 
+/**
+ * One agent event as the app emits it. `taskId` and `runId` name where it
+ * belongs, so a screen showing one task never reacts to another task's run.
+ */
 export interface AgentTimelinePayload {
   sessionId: string;
+  taskId?: string;
+  runId?: string;
   event: NormalizedAgentEvent;
+}
+
+/** Where an agent CLI's executable was found. */
+export type ExecutableSource = "configured" | "path" | "installer" | "editor_extension";
+
+export interface AgentExecutable {
+  adapter: AdapterKind;
+  path: string | null;
+  source: ExecutableSource | null;
+  /** The path chosen in Settings, if any. */
+  chosen: string | null;
+  /** Where Mars looked when it found nothing. */
+  searched: string[];
+}
+
+/** A run that was launched, as `start_run` and `continue_run` answer. */
+export interface LaunchedRun {
+  runId: string;
+  sessionId: string;
+  adapter: AdapterKind;
+  version: string;
+  billing: AgentBilling;
 }
 
 export type AgentSessionStatus =

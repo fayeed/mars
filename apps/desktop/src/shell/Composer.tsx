@@ -33,6 +33,12 @@ import type {
 import { KeyHint, MetaLabel, Mono, StateDot } from "@/shell/primitives";
 import { useShell } from "@/shell/shell-store";
 
+export interface ComposerTarget {
+  mode: "task" | "new";
+  /** The open task's title, when there is one to continue. */
+  taskTitle?: string;
+}
+
 export interface ComposerProps {
   agents?: ComposerAgent[];
   attachments?: ComposerAttachment[];
@@ -52,8 +58,19 @@ export interface ComposerProps {
   /** Controlled draft. Omit to let the composer own its own text. */
   value?: string;
   onValueChange?: (value: string) => void;
-  /** `streaming` shows Stop; `blocked` says why sending will not help yet. */
+  /**
+   * `streaming` adds Stop beside Send, and a message sent then waits for the
+   * run to finish; `blocked` says why sending will not help yet.
+   */
   state?: ActivityState;
+  /**
+   * Where the message will go: the open task's conversation, or a new task.
+   * Said in the composer, because the same words do very different things.
+   */
+  target?: ComposerTarget;
+  onTargetChange?: (mode: ComposerTarget["mode"]) => void;
+  /** Messages already waiting for the running agent to finish. */
+  queuedCount?: number;
   blockedReason?: string;
   placeholder?: string;
   /** Live `@` search. Omit to filter `mentions` in the browser. */
@@ -95,6 +112,9 @@ export function Composer({
   selectedScopeId,
   skills = [],
   state = "idle",
+  target,
+  onTargetChange,
+  queuedCount = 0,
   value: controlledValue,
 }: ComposerProps) {
   const { registerRegion } = useShell();
@@ -288,6 +308,44 @@ export function Composer({
         </ul>
       ) : null}
 
+      {target ? (
+        <div
+          className="flex items-center gap-2 border-b border-border px-2.5 py-1 text-[11px]"
+          data-slot="composer-target"
+        >
+          {target.mode === "task" && target.taskTitle ? (
+            <>
+              <span className="text-faint">Continuing</span>
+              <span className="min-w-0 truncate text-foreground">{target.taskTitle}</span>
+              {queuedCount > 0 ? (
+                <Mono className="shrink-0 text-primary">{queuedCount} queued</Mono>
+              ) : null}
+              <button
+                type="button"
+                className="ml-auto shrink-0 text-muted-foreground outline-none hover:text-foreground focus-visible:text-foreground"
+                onClick={() => onTargetChange?.("new")}
+              >
+                New task instead
+              </button>
+            </>
+          ) : (
+            <>
+              <span className="text-faint">New task</span>
+              <span className="text-muted-foreground">— planned in its own branch and worktree</span>
+              {target.taskTitle ? (
+                <button
+                  type="button"
+                  className="ml-auto min-w-0 truncate text-muted-foreground outline-none hover:text-foreground focus-visible:text-foreground"
+                  onClick={() => onTargetChange?.("task")}
+                >
+                  Continue {target.taskTitle} instead
+                </button>
+              ) : null}
+            </>
+          )}
+        </div>
+      ) : null}
+
       <div className="relative">
         {menuOpen ? (
           <div className="absolute bottom-full left-0 z-20 mb-px flex w-full border border-border bg-popover">
@@ -424,21 +482,20 @@ export function Composer({
             <StateDot state="streaming" />
             Stop
           </button>
-        ) : (
-          <button
-            type="button"
-            disabled={!canSend}
-            onClick={submit}
-            className="flex items-center gap-1.5 border border-border bg-primary px-2 py-1 text-[11px] font-medium text-primary-foreground outline-none disabled:cursor-not-allowed disabled:border-border disabled:bg-transparent disabled:text-faint"
-          >
-            <SendIcon className="size-3.5" />
-            Send
-            <KeyHint
-              className="border-transparent text-current opacity-70"
-              keys={chordHint({ key: "Enter", mod: true })}
-            />
-          </button>
-        )}
+        ) : null}
+        <button
+          type="button"
+          disabled={!canSend}
+          onClick={submit}
+          className="flex items-center gap-1.5 border border-border bg-primary px-2 py-1 text-[11px] font-medium text-primary-foreground outline-none disabled:cursor-not-allowed disabled:border-border disabled:bg-transparent disabled:text-faint"
+        >
+          <SendIcon className="size-3.5" />
+          {state === "streaming" && target?.mode === "task" ? "Queue" : "Send"}
+          <KeyHint
+            className="border-transparent text-current opacity-70"
+            keys={chordHint({ key: "Enter", mod: true })}
+          />
+        </button>
       </div>
 
       <div

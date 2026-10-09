@@ -21,6 +21,8 @@ pub enum ReplayedRunState {
     Blocked,
     Completed,
     Failed,
+    /// Someone stopped it before it finished.
+    Cancelled,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -74,6 +76,9 @@ pub struct FileTouch {
 pub struct CommandRun {
     pub command: String,
     pub status: String,
+    /// The provider's id for the call, which its completion carries too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
     pub exit_code: Option<i64>,
     pub duration_ms: Option<i64>,
     pub output_digest: Option<String>,
@@ -86,6 +91,10 @@ pub struct CommandRun {
 pub struct TestOutcome {
     pub command: String,
     pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i64>,
     pub duration_ms: Option<i64>,
     pub result_digest: Option<String>,
     pub sequence: i64,
@@ -235,29 +244,75 @@ pub fn project(task_id: &str, events: &[ActivityEvent]) -> TaskProjection {
                 }
             }
             ActivityKind::Command => {
-                commands.push(CommandRun {
-                    command: string_field(&event.payload, "command")
-                        .unwrap_or_else(|| event.summary.clone()),
-                    status: string_field(&event.payload, "status")
-                        .unwrap_or_else(|| "unknown".into()),
-                    exit_code: event.payload.get("exitCode").and_then(Value::as_i64),
-                    duration_ms: event.duration_ms,
-                    output_digest: event.payload_digest.clone(),
-                    run_id: event.run_id.clone(),
-                    sequence: event.sequence,
+                let call_id = string_field(&event.payload, "callId");
+                let status =
+                    string_field(&event.payload, "status").unwrap_or_else(|| "unknown".into());
+                let exit_code = event.payload.get("exitCode").and_then(Value::as_i64);
+                // A completion names the call it finishes; it updates that
+                // command rather than reading as a second one.
+                let started = call_id.as_deref().and_then(|call_id| {
+                    commands
+                        .iter_mut()
+                        .rev()
+                        .find(|command| command.call_id.as_deref() == Some(call_id))
                 });
+                if let Some(command) = started {
+                    command.status = status;
+                    command.exit_code = exit_code.or(command.exit_code);
+                    command.duration_ms = event.duration_ms.or(command.duration_ms);
+                    command.output_digest = event
+                        .payload_digest
+                        .clone()
+                        .or(command.output_digest.take());
+                    command.sequence = event.sequence;
+                } else {
+                    commands.push(CommandRun {
+                        command: string_field(&event.payload, "command")
+                            .unwrap_or_else(|| event.summary.clone()),
+                        status,
+                        call_id,
+                        exit_code,
+                        duration_ms: event.duration_ms,
+                        output_digest: event.payload_digest.clone(),
+                        run_id: event.run_id.clone(),
+                        sequence: event.sequence,
+                    });
+                }
             }
             ActivityKind::TestRun => {
-                tests.push(TestOutcome {
-                    command: string_field(&event.payload, "command")
-                        .unwrap_or_else(|| event.summary.clone()),
-                    status: string_field(&event.payload, "status")
-                        .unwrap_or_else(|| "unknown".into()),
-                    duration_ms: event.duration_ms,
-                    result_digest: event.payload_digest.clone(),
-                    sequence: event.sequence,
+                let call_id = string_field(&event.payload, "callId");
+                let status =
+                    string_field(&event.payload, "status").unwrap_or_else(|| "unknown".into());
+                let exit_code = event.payload.get("exitCode").and_then(Value::as_i64);
+                let started = call_id.as_deref().and_then(|call_id| {
+                    tests
+                        .iter_mut()
+                        .rev()
+                        .find(|test| test.call_id.as_deref() == Some(call_id))
                 });
+                if let Some(test) = started {
+                    test.status = status;
+                    test.exit_code = exit_code.or(test.exit_code);
+                    test.duration_ms = event.duration_ms.or(test.duration_ms);
+                    test.result_digest = event.payload_digest.clone().or(test.result_digest.take());
+                    test.sequence = event.sequence;
+                } else {
+                    tests.push(TestOutcome {
+                        command: string_field(&event.payload, "command")
+                            .unwrap_or_else(|| event.summary.clone()),
+                        status,
+                        call_id,
+                        exit_code,
+                        duration_ms: event.duration_ms,
+                        result_digest: event.payload_digest.clone(),
+                        sequence: event.sequence,
+                    });
+                }
             }
+            // A provider frame Mars could not read is kept for diagnosis. It
+            // says nothing about whether the run went well.
+            ActivityKind::Error
+                if event.payload.get("diagnostic").and_then(Value::as_bool) == Some(true) => {}
             ActivityKind::Error => {
                 errors.push(event.summary.clone());
                 if let Some(run_id) = event.run_id.as_deref()
@@ -275,14 +330,21 @@ pub fn project(task_id: &str, events: &[ActivityEvent]) -> TaskProjection {
                         .get("success")
                         .and_then(Value::as_bool)
                         .unwrap_or(false);
+                    let stopped = event
+                        .payload
+                        .get("stopped")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
                     run.state = if success {
                         ReplayedRunState::Completed
+                    } else if stopped {
+                        ReplayedRunState::Cancelled
                     } else {
                         ReplayedRunState::Failed
                     };
                     run.ended_at = Some(event.occurred_at.clone());
                     run.blocked_on_request = None;
-                    if !success && run.failure.is_none() {
+                    if !success && !stopped && run.failure.is_none() {
                         run.failure = Some(event.summary.clone());
                     }
                 }

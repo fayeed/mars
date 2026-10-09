@@ -97,6 +97,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "plain_windows_paths",
         sql: include_str!("../migrations/0017_plain_windows_paths.sql"),
     },
+    Migration {
+        version: 18,
+        name: "run_conversation",
+        sql: include_str!("../migrations/0018_run_conversation.sql"),
+    },
 ];
 
 pub(crate) fn apply_all(connection: &mut Connection) -> Result<()> {

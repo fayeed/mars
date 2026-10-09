@@ -60,6 +60,8 @@ impl AgentAdapter for ScriptedAdapter {
             program,
             arguments,
             cwd: request.cwd.clone(),
+            stdin: None,
+            environment: Vec::new(),
         })
     }
 
@@ -80,14 +82,17 @@ impl AgentAdapter for ScriptedAdapter {
             "command" => vec![NormalizedAgentEvent::Command {
                 command: text("command"),
                 status: text("status"),
+                call_id: None,
             }],
             "file" => vec![NormalizedAgentEvent::FileChange {
                 path: text("path"),
                 change: text("change"),
+                call_id: None,
             }],
             "test" => vec![NormalizedAgentEvent::Test {
                 command: text("command"),
                 status: text("status"),
+                call_id: None,
             }],
             "end" => vec![NormalizedAgentEvent::End {
                 success: value
@@ -95,6 +100,7 @@ impl AgentAdapter for ScriptedAdapter {
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
                 message: None,
+                usage: None,
             }],
             other => vec![NormalizedAgentEvent::Unknown {
                 provider_type: other.to_owned(),

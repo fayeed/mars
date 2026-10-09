@@ -19,7 +19,7 @@ use tokio::time::{Instant, sleep, timeout};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::adapter::NormalizedAgentEvent;
+use crate::adapter::{AdapterCommand, NormalizedAgentEvent};
 
 const RAW_EVENT_CAPACITY: usize = 64;
 const STREAM_CHUNK_BYTES: usize = 4 * 1024;
@@ -38,9 +38,28 @@ pub struct ProcessSpec {
     /// Variables the child must not inherit from Mars, such as an API key the
     /// person chose not to bill. Recorded by name only.
     pub removed_environment: Vec<OsString>,
+    /// Written to the child's standard input, which is then closed. Never
+    /// persisted on the session: it is the prompt, and the run keeps its own
+    /// copy where a reader can find it.
+    pub stdin: Option<String>,
 }
 
 impl ProcessSpec {
+    /// A process for exactly what an adapter built: its program, arguments,
+    /// working directory, standard input and added environment.
+    #[must_use]
+    pub fn from_command(adapter_kind: impl Into<String>, command: AdapterCommand) -> Self {
+        let mut spec = Self::new(
+            adapter_kind,
+            &command.program,
+            command.arguments,
+            &command.cwd,
+        );
+        spec.environment = command.environment;
+        spec.stdin = command.stdin;
+        spec
+    }
+
     #[must_use]
     pub fn new(
         adapter_kind: impl Into<String>,
@@ -57,6 +76,7 @@ impl ProcessSpec {
             cwd: cwd.as_ref().to_owned(),
             environment: Vec::new(),
             removed_environment: Vec::new(),
+            stdin: None,
         }
     }
 }
@@ -218,7 +238,11 @@ impl ProcessSupervisor {
             .args(&spec.arguments)
             .current_dir(&spec.cwd)
             .envs(spec.environment.iter().cloned())
-            .stdin(Stdio::null())
+            .stdin(if spec.stdin.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
@@ -232,6 +256,16 @@ impl ProcessSupervisor {
         }
         let mut child = command.spawn()?;
         let pid = child.id();
+        if let (Some(input), Some(mut stdin)) = (spec.stdin.clone(), child.stdin.take()) {
+            // Written on its own task so a child that reads slowly cannot hold
+            // up the reads of its output; dropping the handle closes the pipe,
+            // which is how the child knows the prompt is complete.
+            tokio::spawn(async move {
+                use tokio::io::AsyncWriteExt;
+                let _ = stdin.write_all(input.as_bytes()).await;
+                let _ = stdin.shutdown().await;
+            });
+        }
         let stdout = child
             .stdout
             .take()
@@ -378,19 +412,77 @@ async fn read_stream(
     sender: mpsc::Sender<RawEvent>,
 ) {
     let mut buffer = vec![0_u8; STREAM_CHUNK_BYTES];
+    let mut decoder = Utf8Chunks::default();
     loop {
-        match stream.read(&mut buffer).await {
-            Ok(0) | Err(_) => break,
-            Ok(read) => {
-                let raw = RawEvent {
-                    kind,
-                    text: String::from_utf8_lossy(&buffer[..read]).into_owned(),
-                };
-                if sender.send(raw).await.is_err() {
-                    break;
+        let text = match stream.read(&mut buffer).await {
+            Ok(0) | Err(_) => {
+                let rest = decoder.finish();
+                if !rest.is_empty() {
+                    let _ = sender.send(RawEvent { kind, text: rest }).await;
+                }
+                break;
+            }
+            Ok(read) => decoder.push(&buffer[..read]),
+        };
+        if text.is_empty() {
+            continue;
+        }
+        if sender.send(RawEvent { kind, text }).await.is_err() {
+            break;
+        }
+    }
+}
+
+/// Decodes a byte stream read in arbitrary chunks.
+///
+/// A read can end partway through a multi-byte character. Decoding each chunk
+/// on its own turns both halves into replacement characters, which in an agent
+/// stream corrupts the JSON line the character sat in. The incomplete tail is
+/// held back until the bytes that finish it arrive.
+#[derive(Default)]
+pub struct Utf8Chunks {
+    pending: Vec<u8>,
+}
+
+impl Utf8Chunks {
+    /// Everything decodable so far.
+    pub fn push(&mut self, bytes: &[u8]) -> String {
+        self.pending.extend_from_slice(bytes);
+        let mut text = String::new();
+        loop {
+            match std::str::from_utf8(&self.pending) {
+                Ok(valid) => {
+                    text.push_str(valid);
+                    self.pending.clear();
+                    return text;
+                }
+                Err(error) => {
+                    let valid = error.valid_up_to();
+                    text.push_str(std::str::from_utf8(&self.pending[..valid]).unwrap_or_default());
+                    match error.error_len() {
+                        // Bytes that are invalid wherever they end up: replace
+                        // them and carry on with the rest of the chunk.
+                        Some(invalid) => {
+                            text.push(char::REPLACEMENT_CHARACTER);
+                            self.pending.drain(..valid + invalid);
+                        }
+                        // A character cut off by the end of the read.
+                        None => {
+                            self.pending.drain(..valid);
+                            return text;
+                        }
+                    }
                 }
             }
         }
+    }
+
+    /// Whatever is left when the stream ends, which can only be a character
+    /// that never finished.
+    pub fn finish(&mut self) -> String {
+        let rest = String::from_utf8_lossy(&self.pending).into_owned();
+        self.pending.clear();
+        rest
     }
 }
 

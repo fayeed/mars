@@ -267,6 +267,7 @@ fn normalized_provider_events_are_durable_and_ordered_for_handoffs() {
                     &NormalizedAgentEvent::Test {
                         command: "pnpm test".into(),
                         status: "passed".into(),
+                        call_id: None,
                     },
                 )
                 .expect("normalized test should persist"),

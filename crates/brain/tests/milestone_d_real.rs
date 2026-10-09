@@ -57,9 +57,10 @@ fn real_agent_work_becomes_human_reviewed_explainable_memory() {
             resume_session_id: None,
             allowed_tools: Vec::new(),
             allow_write: true,
+                    ..Default::default()
         })
         .expect("Codex implementation command should build");
-    let mut spec = ProcessSpec::new("codex", command.program, command.arguments, command.cwd);
+    let mut spec = ProcessSpec::from_command("codex", command);
     spec.task_id = Some(plan.task_id.clone());
     let supervisor = ProcessSupervisor::new(fixture.storage.clone());
     let session_id = tokio::runtime::Runtime::new()
@@ -319,13 +320,10 @@ impl ExtractionProvider for RealCodexProvider {
                 resume_session_id: None,
                 allowed_tools: Vec::new(),
                 allow_write: false,
+                ..Default::default()
             })
             .map_err(|error| error.to_string())?;
-        let output = Command::new(command.program)
-            .args(command.arguments)
-            .current_dir(command.cwd)
-            .output()
-            .map_err(|error| error.to_string())?;
+        let output = command.output(&[]).map_err(|error| error.to_string())?;
         if !output.status.success() {
             return Err(String::from_utf8_lossy(&output.stderr).into_owned());
         }

@@ -83,9 +83,10 @@ fn claude_implements_and_codex_reviews_the_exact_shared_handoff() {
             resume_session_id: None,
             allowed_tools: vec!["Read".into(), "Edit".into(), "Write".into(), "Bash".into()],
             allow_write: true,
+            ..Default::default()
         })
         .expect("Claude implementation command should build");
-    let mut spec = ProcessSpec::new("claude", command.program, command.arguments, command.cwd);
+    let mut spec = ProcessSpec::from_command("claude", command);
     spec.task_id = Some(plan.task_id.clone());
     let supervisor = ProcessSupervisor::new(fixture.storage.clone());
     let implementation_session_id = tokio::runtime::Runtime::new()
@@ -208,13 +209,10 @@ impl ReviewProvider for CodexReviewProvider {
                 resume_session_id: None,
                 allowed_tools: Vec::new(),
                 allow_write: false,
+                ..Default::default()
             })
             .map_err(|error| error.to_string())?;
-        let output = Command::new(command.program)
-            .args(command.arguments)
-            .current_dir(command.cwd)
-            .output()
-            .map_err(|error| error.to_string())?;
+        let output = command.output(&[]).map_err(|error| error.to_string())?;
         if !output.status.success() {
             return Err(String::from_utf8_lossy(&output.stderr).into_owned());
         }

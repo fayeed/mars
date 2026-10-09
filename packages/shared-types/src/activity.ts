@@ -75,9 +75,26 @@ export interface RunRecord {
   error: string | null;
   startedAt: string;
   endedAt: string | null;
+  /** The provider's own id for the conversation, which a follow-up resumes. */
+  providerSessionId?: string | null;
+  /** The run whose session this one continued. */
+  resumesRunId?: string | null;
+  /** What the provider said the run cost. */
+  usage?: import("./tasks").RunUsage | null;
 }
 
-export type ReplayedRunState = "running" | "blocked" | "completed" | "failed";
+/** One run with the task it belongs to, as the agents overview shows it. */
+export interface RunOverview extends RunRecord {
+  taskTitle: string;
+  branchName: string;
+  worktreePath: string;
+  /** Whether the app is still reading this run's process. */
+  live: boolean;
+  pendingPermissions: number;
+  filesTouched: number;
+}
+
+export type ReplayedRunState = "running" | "blocked" | "completed" | "failed" | "cancelled";
 
 export interface ReplayedRun {
   runId: string;
@@ -120,6 +137,7 @@ export interface FileTouch {
 export interface CommandRun {
   command: string;
   status: string;
+  callId?: string;
   exitCode: number | null;
   durationMs: number | null;
   outputDigest: string | null;
@@ -130,6 +148,8 @@ export interface CommandRun {
 export interface TestOutcome {
   command: string;
   status: string;
+  callId?: string;
+  exitCode?: number | null;
   durationMs: number | null;
   resultDigest: string | null;
   sequence: number;

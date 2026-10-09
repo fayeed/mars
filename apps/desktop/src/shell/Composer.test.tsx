@@ -116,14 +116,48 @@ describe("Composer sending", () => {
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
-  it("offers Stop instead of Send while a run is streaming", async () => {
+  it("offers Stop beside Queue while a run in this task is streaming", async () => {
     const user = userEvent.setup();
     const onStop = vi.fn();
-    renderComposer({ state: "streaming", onStop });
+    const onSubmit = vi.fn();
+    renderComposer({
+      state: "streaming",
+      onStop,
+      onSubmit,
+      target: { mode: "task", taskTitle: "Tune retries" },
+      queuedCount: 1,
+    });
 
-    expect(screen.queryByRole("button", { name: /Send/ })).not.toBeInTheDocument();
+    // A message written now waits for the run rather than being refused.
+    expect(screen.getByRole("button", { name: /Queue/ })).toBeInTheDocument();
+    expect(screen.getByText("1 queued")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Stop" }));
     expect(onStop).toHaveBeenCalled();
+
+    await user.type(screen.getByRole("combobox", { name: "Message" }), "also cover the timeout");
+    await user.click(screen.getByRole("button", { name: /Queue/ }));
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "also cover the timeout" }),
+    );
+  });
+});
+
+describe("Composer target", () => {
+  it("says which task a message continues and offers a new task instead", async () => {
+    const user = userEvent.setup();
+    const onTargetChange = vi.fn();
+    renderComposer({ target: { mode: "task", taskTitle: "Tune retries" }, onTargetChange });
+
+    expect(screen.getByText("Continuing")).toBeInTheDocument();
+    expect(screen.getByText("Tune retries")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "New task instead" }));
+    expect(onTargetChange).toHaveBeenCalledWith("new");
+  });
+
+  it("says a message starts a new task when none is open", () => {
+    renderComposer({ target: { mode: "new" } });
+    expect(screen.getByText("New task")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /instead/ })).not.toBeInTheDocument();
   });
 });
 

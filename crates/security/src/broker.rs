@@ -114,6 +114,11 @@ impl CapabilityCeiling {
             SideEffect::GitPush { .. } if !self.git_push => {
                 Some("this agent was started without permission to push".into())
             }
+            // A tool from a server Mars does not know can do anything its
+            // server can, so it sits with mutating commands.
+            SideEffect::Tool { .. } if !self.commands.admits(CommandClass::Mutating) => {
+                Some("this agent was started read-only and cannot use outside tools".into())
+            }
             SideEffect::Shell { .. } => {
                 let class = analysis.map_or(CommandClass::Mutating, |analysis| analysis.class);
                 if class == CommandClass::Network && !self.network {
@@ -161,6 +166,13 @@ pub enum SideEffect {
         branch: String,
         cwd: PathBuf,
     },
+    /// A tool Mars does not provide — one from an MCP server the person
+    /// configured for the CLI themselves.
+    Tool {
+        name: String,
+        detail: String,
+        cwd: PathBuf,
+    },
 }
 
 impl SideEffect {
@@ -170,6 +182,7 @@ impl SideEffect {
             Self::FileWrite { .. } => "file_write",
             Self::Network { .. } => "network",
             Self::GitPush { .. } => "git_push",
+            Self::Tool { .. } => "tool",
         }
     }
 
@@ -179,6 +192,7 @@ impl SideEffect {
             Self::FileWrite { .. } => Capability::WriteFiles,
             Self::Network { .. } => Capability::Network,
             Self::GitPush { .. } => Capability::MutateGit,
+            Self::Tool { .. } => Capability::RunCommand,
         }
     }
 
@@ -197,6 +211,10 @@ impl SideEffect {
                 remote: remote.clone(),
                 branch: branch.clone(),
             },
+            Self::Tool { name, cwd, .. } => PermissionScope::Command {
+                program: name.clone(),
+                cwd: cwd.clone(),
+            },
         }
     }
 
@@ -208,6 +226,7 @@ impl SideEffect {
             Self::FileWrite { .. } => CommandClass::Mutating,
             Self::Network { .. } => CommandClass::Network,
             Self::GitPush { .. } => CommandClass::Destructive,
+            Self::Tool { .. } => CommandClass::Mutating,
         }
     }
 
@@ -230,6 +249,8 @@ impl SideEffect {
                 branch,
                 cwd: _,
             } => format!("push {branch} to {remote}"),
+            Self::Tool { name, detail, .. } if detail.is_empty() => format!("use {name}"),
+            Self::Tool { name, detail, .. } => format!("use {name} ({detail})"),
         }
     }
 
@@ -240,6 +261,7 @@ impl SideEffect {
             Self::FileWrite { path, .. } => path.to_string_lossy().replace('\\', "/"),
             Self::Network { host, .. } => host.clone(),
             Self::GitPush { remote, branch, .. } => format!("{remote} {branch}"),
+            Self::Tool { name, .. } => name.clone(),
         }
     }
 
@@ -252,6 +274,10 @@ impl SideEffect {
                 .unwrap_or_else(|| "*".into()),
             Self::Network { host, .. } => host.clone(),
             Self::GitPush { remote, .. } => format!("{remote} *"),
+            // Everything the same server offers: `mcp__server__*`.
+            Self::Tool { name, .. } => name
+                .rsplit_once("__")
+                .map_or_else(|| name.clone(), |(server, _)| format!("{server}__*")),
         }
     }
 }
@@ -510,6 +536,102 @@ impl PermissionBroker {
             }
         }
         Ok(outcome)
+    }
+
+    /// What was decided about `request_id`, or `None` while it still waits.
+    ///
+    /// A ticket only resolves inside the process that asked. An agent's MCP
+    /// server asks from its own process and the person answers in the app's,
+    /// so the server waits by reading this instead.
+    pub fn outcome(&self, request_id: &str) -> Result<Option<BrokerOutcome>, PermissionError> {
+        let row = self.storage.with_connection(|connection| {
+            connection
+                .query_row(
+                    "SELECT state, decision, decided_by, grant_id
+                     FROM permission_requests WHERE id = ?1",
+                    [request_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, Option<String>>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                            row.get::<_, Option<String>>(3)?,
+                        ))
+                    },
+                )
+                .optional()
+        })?;
+        let Some((state, decision, decided_by, grant_id)) = row else {
+            return Err(PermissionError::RequestNotFound(request_id.to_owned()));
+        };
+        if state == "pending" {
+            return Ok(None);
+        }
+        let decided_by = decided_by.unwrap_or_else(|| "someone".into());
+        Ok(Some(
+            match (
+                decision.as_deref().and_then(BrokerDecision::parse),
+                grant_id,
+            ) {
+                (Some(BrokerDecision::Deny) | None, _) | (_, None) => BrokerOutcome::Denied {
+                    by_construction: decided_by == "mars",
+                    reason: if decided_by == "mars" {
+                        "Mars withdrew the request".into()
+                    } else {
+                        format!("{decided_by} denied this request")
+                    },
+                },
+                (Some(decision), Some(grant_id)) => BrokerOutcome::Allowed {
+                    grant_id,
+                    reason: format!("{decided_by} chose {}", decision.as_str()),
+                },
+            },
+        ))
+    }
+
+    /// Withdraw every request a run left waiting, because the run is over.
+    ///
+    /// A stopped agent cannot act on an answer, and a question left standing
+    /// would ask a person to decide something that no longer matters. The
+    /// withdrawal is a decision by Mars, recorded like any other.
+    pub fn withdraw_for_run(&self, run_id: &str, reason: &str) -> Result<usize, PermissionError> {
+        let ids: Vec<String> = self.storage.with_connection(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT id FROM permission_requests WHERE run_id = ?1 AND state = 'pending'",
+            )?;
+            statement
+                .query_map([run_id], |row| row.get(0))?
+                .collect::<rusqlite::Result<Vec<String>>>()
+        })?;
+        for id in &ids {
+            self.withdraw(id, reason)?;
+        }
+        Ok(ids.len())
+    }
+
+    /// Withdraw one request that is still waiting. A request already decided
+    /// is left as it was: the decision stands.
+    pub fn withdraw(&self, request_id: &str, reason: &str) -> Result<(), PermissionError> {
+        let Some(stored) = self.stored_request(request_id)? else {
+            return Err(PermissionError::RequestNotFound(request_id.to_owned()));
+        };
+        if stored.state != "pending" {
+            return Ok(());
+        }
+        let outcome = self.finalize(
+            request_id,
+            &stored.request,
+            BrokerDecision::Deny,
+            "mars",
+            Some(reason),
+            None,
+        )?;
+        if let Some(senders) = self.waiters()?.waiters.remove(request_id) {
+            for sender in senders {
+                let _ = sender.send(outcome.clone());
+            }
+        }
+        Ok(())
     }
 
     /// Every request still waiting on a person, oldest first.
@@ -994,6 +1116,9 @@ fn describe_effect(effect: &SideEffect) -> String {
         SideEffect::Network { host, .. } => format!("{host} is outside the worktree"),
         SideEffect::GitPush { remote, .. } => {
             format!("pushing to {remote} publishes work outside this machine")
+        }
+        SideEffect::Tool { name, .. } => {
+            format!("{name} comes from a server Mars does not provide, so it could do anything")
         }
     }
 }

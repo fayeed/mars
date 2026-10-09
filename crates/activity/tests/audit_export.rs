@@ -22,6 +22,7 @@ fn recorded() -> (ActivityFixture, String) {
             role: RunRole::Implementer,
             capabilities: json!({ "writeFiles": true }),
             context_pack_digest: None,
+            resumes_run_id: None,
         })
         .expect("run should start");
 
@@ -47,8 +48,14 @@ fn recorded() -> (ActivityFixture, String) {
             "baseOid": "abc123def456",
             "path": fixture.worktree_root.to_string_lossy(),
         })),
-        ActivityEntry::new(&task, ActivityKind::RunStarted, Actor::System, "mars", "claude started")
-            .in_run(&run.id),
+        ActivityEntry::new(
+            &task,
+            ActivityKind::RunStarted,
+            Actor::System,
+            "mars",
+            "claude started",
+        )
+        .in_run(&run.id),
         ActivityEntry::new(
             &task,
             ActivityKind::Message,
@@ -95,14 +102,20 @@ fn recorded() -> (ActivityFixture, String) {
             "removed": 0,
             "detail": "@@ -1,3 +1,6 @@\n+if (b === 0) throw new Error('divide by zero');\n",
         })),
-        ActivityEntry::new(&task, ActivityKind::Command, Actor::Agent, "claude", "npm test")
-            .in_run(&run.id)
-            .with_payload(json!({
-                "command": "npm test",
-                "status": "completed",
-                "exitCode": 0,
-                "output": "2 passing",
-            })),
+        ActivityEntry::new(
+            &task,
+            ActivityKind::Command,
+            Actor::Agent,
+            "claude",
+            "npm test",
+        )
+        .in_run(&run.id)
+        .with_payload(json!({
+            "command": "npm test",
+            "status": "completed",
+            "exitCode": 0,
+            "output": "2 passing",
+        })),
         ActivityEntry::new(
             &task,
             ActivityKind::PermissionRequest,
@@ -170,8 +183,14 @@ fn the_same_log_always_produces_the_same_document() {
     // An audit that differs between two exports of unchanged evidence cannot be
     // compared against itself, so the timestamp is an argument and not a clock.
     let (fixture, task) = recorded();
-    let first = fixture.record().audit_markdown(&task, WHEN).expect("first render");
-    let second = fixture.record().audit_markdown(&task, WHEN).expect("second render");
+    let first = fixture
+        .record()
+        .audit_markdown(&task, WHEN)
+        .expect("first render");
+    let second = fixture
+        .record()
+        .audit_markdown(&task, WHEN)
+        .expect("second render");
     assert_eq!(first, second);
 }
 
@@ -190,7 +209,9 @@ fn an_event_kind_with_no_special_rendering_still_gets_a_line() {
         ))
         .expect("event should append");
 
-    let document = record.audit_markdown(&task, WHEN).expect("audit should render");
+    let document = record
+        .audit_markdown(&task, WHEN)
+        .expect("audit should render");
     assert!(document.contains("considering the edge cases"));
     assert!(document.contains("thought"));
 }
@@ -205,17 +226,25 @@ fn a_spilled_payload_is_resolved_into_the_document() {
     let marker = "the-line-that-matters";
     record
         .append(
-            ActivityEntry::new(&task, ActivityKind::Command, Actor::Agent, "claude", "cargo test")
-                .with_payload(json!({
-                    "command": "cargo test",
-                    "status": "completed",
-                    "exitCode": 1,
-                    "output": format!("{}\n{marker}\n", "noise\n".repeat(6_000)),
-                })),
+            ActivityEntry::new(
+                &task,
+                ActivityKind::Command,
+                Actor::Agent,
+                "claude",
+                "cargo test",
+            )
+            .with_payload(json!({
+                "command": "cargo test",
+                "status": "completed",
+                "exitCode": 1,
+                "output": format!("{}\n{marker}\n", "noise\n".repeat(6_000)),
+            })),
         )
         .expect("event should append");
 
-    let document = record.audit_markdown(&task, WHEN).expect("audit should render");
+    let document = record
+        .audit_markdown(&task, WHEN)
+        .expect("audit should render");
     assert!(document.contains(marker));
     // A spilled row keeps only its digest, so the command and its exit code have
     // to be read back out of the blob — otherwise the audit would report the run
@@ -231,16 +260,24 @@ fn a_truncated_payload_says_so_on_the_page() {
     let task = fixture.task("task-truncated", "Very big output");
     record
         .append(
-            ActivityEntry::new(&task, ActivityKind::Command, Actor::Agent, "claude", "cargo test")
-                .with_payload(json!({
-                    "command": "cargo test",
-                    "status": "completed",
-                    "output": "x".repeat(mars_activity::AUDIT_MAX_PAYLOAD_BYTES + 4_096),
-                })),
+            ActivityEntry::new(
+                &task,
+                ActivityKind::Command,
+                Actor::Agent,
+                "claude",
+                "cargo test",
+            )
+            .with_payload(json!({
+                "command": "cargo test",
+                "status": "completed",
+                "output": "x".repeat(mars_activity::AUDIT_MAX_PAYLOAD_BYTES + 4_096),
+            })),
         )
         .expect("event should append");
 
-    let document = record.audit_markdown(&task, WHEN).expect("audit should render");
+    let document = record
+        .audit_markdown(&task, WHEN)
+        .expect("audit should render");
     // Silent truncation in an audit is a lie of omission.
     assert!(document.contains("Cut after"));
 }
