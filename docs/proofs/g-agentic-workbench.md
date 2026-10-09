@@ -56,16 +56,42 @@ The full gate passes on Windows:
 ```text
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace            309 passed, 0 failed, 5 ignored
+cargo test --workspace            315 passed, 0 failed, 5 ignored
 pnpm -r typecheck
 pnpm lint
-pnpm test                         67 files, 497 tests passed
+pnpm test                         67 files, 499 tests passed
 pnpm build:web
 pnpm check:protocol
 git diff --check
 ```
 
 The five ignored tests need a real CLI or the network. Four were run on this machine and pass: Claude Code and Codex reporting their sign-in (using the copies inside the VS Code extensions), Codex parsing the MCP overrides Mars builds, and discovery, inspection and install against the live skills.sh registry. The fifth, a Codex memory extraction, is a paid model run and was not.
+
+## What review found
+
+An independent review of the Phase 4 diff, by two reviewers reading the Rust
+and the React separately, found defects the suites had not, because the desktop
+tests replace the IPC boundary with a mock. All are fixed, each with a test at
+the boundary it crossed:
+
+- GitHub and skills.sh commands ran a blocking HTTP client on the async
+  runtime, which panics in debug builds. A desktop test reproduces the panic
+  and proves `blocking_io` removes it.
+- Memory approve, reject, revise and revoke required an actor field the app
+  fills itself, so none of them could succeed from the UI
+  (`wire_contract.rs`).
+- Index progress, watcher changes, permission outcomes and file-write
+  requests reached the webview in snake_case; stored requests still read
+  (`permission_broker.rs`, `watcher.rs`).
+- A GitHub token could be sent to a non-GitHub host; the core now refuses
+  unless the person confirms GitHub Enterprise.
+- Smaller: an issue page could be empty behind pull requests, a merge notice
+  could reach the wrong task, a slow answer could replace the item on
+  screen, stale memory conflicts could lock a proposal, and a jump to an old
+  turn could highlight a row in another task.
+
+A sweep of every serialized type for the snake_case class of defect found no
+others.
 
 ## Not claimed
 
