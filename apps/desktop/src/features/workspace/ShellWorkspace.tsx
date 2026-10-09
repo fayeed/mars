@@ -32,6 +32,7 @@ import type {
   PlannedCheck,
   PullRequestPlan,
   PullRequestSnapshot,
+  OpenRepositoryOutcome,
   ProjectSnapshot,
   RecoveryAction,
   ReviewFinding,
@@ -133,7 +134,16 @@ interface ShellWorkspaceProps {
 interface OpenFile {
   document: FileDocument;
   draft: string;
+  /** The root it was read from: the repository, or one task's worktree. */
+  repositoryId: string;
+  /** Set when it is a task's copy; a save is then written to that task's record. */
+  taskId: string | null;
+  /** Unique across roots: the same path in a worktree is a different file. */
+  key: string;
 }
+
+/** Where a file should be opened from. */
+type FileOrigin = "repository" | "task";
 
 /**
  * Something to say that the activity record does not carry.
@@ -262,7 +272,13 @@ export function ShellWorkspace({
     items: SkillInstallation[];
   } | null>(null);
   const [files, setFiles] = useState<OpenFile[]>([]);
-  const [activePath, setActivePath] = useState<string | null>(null);
+  const [activeKey, setActiveKey] = useState<string | null>(null);
+  /**
+   * Each task's worktree, registered as a root the file service can read and
+   * save in. Resolved on first use, so the editor works on the task's copy of
+   * a file rather than the repository's.
+   */
+  const worktreeRoots = useRef<Record<string, string>>({});
   const [revealLine, setRevealLine] = useState<number | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
   const [agentId, setAgentId] = useState(AGENTS[0].id);
@@ -903,40 +919,91 @@ export function ShellWorkspace({
     [liveRuns, tasks],
   );
 
+  /** The root a task's files are read from: its worktree, registered once. */
+  const worktreeRoot = useCallback(async (taskId: string): Promise<string | null> => {
+    const known = worktreeRoots.current[taskId];
+    if (known) return known;
+    try {
+      const outcome = await invoke<OpenRepositoryOutcome>("open_task_worktree", { taskId });
+      if (outcome.status !== "opened") return null;
+      worktreeRoots.current[taskId] = outcome.repository.repositoryId;
+      return outcome.repository.repositoryId;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  /**
+   * Open a file in the editor.
+   *
+   * A file a task's agent changed, or one opened from that task's diff, is
+   * the task's copy in its worktree; anything else is the repository's. The
+   * two are different files with the same path, and are kept apart.
+   */
   const openFile = useCallback(
-    async (relativePath: string, force = false, line: number | null = null) => {
+    async (
+      relativePath: string,
+      force = false,
+      line: number | null = null,
+      origin: FileOrigin = "repository",
+    ) => {
       setRevealLine(line);
       dispatch({ type: "navigate", destination: "editor" });
-      const existing = files.find((file) => file.document.relativePath === relativePath);
+      setFileError(null);
+      let repositoryId = project.repositoryId;
+      let taskId: string | null = null;
+      const task = origin === "task" ? selectedTask : null;
+      if (task && task.state === "ready") {
+        const root = await worktreeRoot(task.taskId);
+        if (root) {
+          repositoryId = root;
+          taskId = task.taskId;
+        }
+      }
+      const key = `${repositoryId}:${relativePath}`;
+      const existing = files.find((file) => file.key === key);
       if (existing && !force) {
-        setActivePath(relativePath);
+        setActiveKey(key);
         return;
       }
-      setFileError(null);
       try {
-        const document = await invoke<FileDocument>("read_file", {
-          repositoryId: project.repositoryId,
-          relativePath,
-        });
+        const document = await invoke<FileDocument>("read_file", { repositoryId, relativePath });
         setFiles((current) => [
-          ...current.filter((file) => file.document.relativePath !== relativePath),
-          { document, draft: document.content },
+          ...current.filter((file) => file.key !== key),
+          { document, draft: document.content, repositoryId, taskId, key },
         ]);
-        setActivePath(relativePath);
+        setActiveKey(key);
       } catch (caught) {
         setFileError(messageFor(caught));
       }
     },
-    [dispatch, files, project.repositoryId],
+    [dispatch, files, project.repositoryId, selectedTask, worktreeRoot],
   );
 
-  const activeFile = files.find((file) => file.document.relativePath === activePath) ?? null;
+  /** Read an open file again from the root it came from. */
+  async function reloadFile(file: OpenFile) {
+    setFileError(null);
+    try {
+      const document = await invoke<FileDocument>("read_file", {
+        repositoryId: file.repositoryId,
+        relativePath: file.document.relativePath,
+      });
+      setFiles((current) =>
+        current.map((candidate) =>
+          candidate.key === file.key ? { ...candidate, document, draft: document.content } : candidate,
+        ),
+      );
+    } catch (caught) {
+      setFileError(messageFor(caught));
+    }
+  }
+
+  const activeFile = files.find((file) => file.key === activeKey) ?? null;
+  const activePath = activeFile?.taskId ? null : (activeFile?.document.relativePath ?? null);
 
   function updateActive(update: (file: OpenFile) => OpenFile) {
-    if (!activePath) return;
-    setFiles((current) =>
-      current.map((file) => (file.document.relativePath === activePath ? update(file) : file)),
-    );
+    if (!activeKey) return;
+    setFiles((current) => current.map((file) => (file.key === activeKey ? update(file) : file)));
   }
 
   function upsertTask(task: WorktreePlan) {
@@ -1814,13 +1881,18 @@ ${text}` : text));
             <div className="flex h-[var(--shell-header-height)] shrink-0 items-stretch border-b border-border">
               <div className="flex min-w-0 flex-1 items-stretch overflow-x-auto">
               {files.map((file) => {
-                const current = file.document.relativePath === activePath;
+                const current = file.key === activeKey;
                 return (
                   <button
-                    key={file.document.relativePath}
+                    key={file.key}
                     type="button"
                     aria-current={current ? "page" : undefined}
-                    onClick={() => setActivePath(file.document.relativePath)}
+                    title={
+                      file.taskId
+                        ? `${file.document.relativePath} in the task's worktree`
+                        : file.document.relativePath
+                    }
+                    onClick={() => setActiveKey(file.key)}
                     className={`relative flex items-center gap-1.5 px-2 text-[11px] outline-none before:absolute before:inset-x-1.5 before:bottom-0 before:h-0.5 before:bg-transparent ${
                       current
                         ? "text-foreground before:bg-primary"
@@ -1828,6 +1900,7 @@ ${text}` : text));
                     }`}
                   >
                     <Mono>{file.document.relativePath.split("/").at(-1)}</Mono>
+                    {file.taskId ? <Mono className="text-faint">task</Mono> : null}
                     {file.draft !== file.document.content ? (
                       <span aria-label="Unsaved" className="size-1.5 rounded-[1px] bg-primary" />
                     ) : null}
@@ -1850,17 +1923,17 @@ ${text}` : text));
             {activeFile ? (
               <Suspense fallback={<StateBlock state="loading" title="Loading editor" />}>
                 <CodeEditor
-                  key={activeFile.document.relativePath}
+                  key={activeFile.key}
                   document={activeFile.document}
                   onChange={(value) => updateActive((file) => ({ ...file, draft: value }))}
-                  onReload={() => void openFile(activeFile.document.relativePath, true)}
+                  onReload={() => void reloadFile(activeFile)}
                   onSaved={(document) => {
-                    updateActive(() => ({ document, draft: document.content }));
+                    updateActive((file) => ({ ...file, document, draft: document.content }));
                     setTreeRevision((revision) => revision + 1);
                   }}
-                  repositoryId={project.repositoryId}
+                  repositoryId={activeFile.repositoryId}
                   revealLine={revealLine}
-                  taskId={selectedTaskId}
+                  taskId={activeFile.taskId}
                   value={activeFile.draft}
                 />
               </Suspense>
@@ -2080,7 +2153,7 @@ ${text}` : text));
             ),
         })}
         loadPayload={loadPayload}
-        onOpenFile={(path, line) => void openFile(path, false, line)}
+        onOpenFile={(path, line) => void openFile(path, false, line, "task")}
         renderEvent={renderEvent}
         scroller={scroller}
       />
@@ -2111,7 +2184,7 @@ ${text}` : text));
               )
             }
             onDecide={(finding, status) => void decideFinding(finding, status)}
-            onOpenFinding={(path, line) => void openFile(path, false, line)}
+            onOpenFinding={(path, line) => void openFile(path, false, line, "task")}
             currentDiffSha={diff?.taskId === selectedTaskId ? diff.diffSha256 : null}
             review={review}
             state={reviewState}
@@ -2140,7 +2213,7 @@ ${text}` : text));
 
       {pullRequest ? (
         <PullRequestActivity
-          onOpenFile={(path, line) => void openFile(path, false, line)}
+          onOpenFile={(path, line) => void openFile(path, false, line, "task")}
           onOpenUrl={(url) => void invoke("open_external_url", { url }).catch(() => undefined)}
           onRefresh={() => {
             if (!selectedTaskId) return;
@@ -2256,12 +2329,12 @@ ${text}` : text));
           activeFile ? (
             <Suspense fallback={<StateBlock state="loading" title="Loading editor" />}>
               <CodeEditor
-                key={activeFile.document.relativePath}
+                key={activeFile.key}
                 document={activeFile.document}
                 onChange={(value) => updateActive((file) => ({ ...file, draft: value }))}
-                onReload={() => void openFile(activeFile.document.relativePath, true)}
+                onReload={() => void reloadFile(activeFile)}
                 onSaved={(document) => {
-                  updateActive(() => ({ document, draft: document.content }));
+                  updateActive((file) => ({ ...file, document, draft: document.content }));
                   // The save is already in the record; re-read so the count in
                   // the bar above is true rather than merely plausible. The
                   // file just changed, so anything anchored to it is re-checked
@@ -2269,9 +2342,9 @@ ${text}` : text));
                   setTreeRevision((revision) => revision + 1);
                   if (selectedTaskId) void loadRecord(selectedTaskId);
                 }}
-                repositoryId={project.repositoryId}
+                repositoryId={activeFile.repositoryId}
                 revealLine={revealLine}
-                taskId={selectedTaskId}
+                taskId={activeFile.taskId}
                 value={activeFile.draft}
               />
             </Suspense>
@@ -2473,7 +2546,7 @@ ${text}` : text));
                   files={diff?.taskId === selectedTaskId ? diff.files : []}
                   headOid={diff?.headOid}
                   onComment={(path, line, text, side) => void comment(path, line, text, side)}
-                  onOpenFile={(path, line) => void openFile(path, false, line)}
+                  onOpenFile={(path, line) => void openFile(path, false, line, "task")}
                   onReread={() => {
                     if (selectedTask && selectedTaskId) {
                       void loadDiff(selectedTaskId, selectedTask.branchName);
@@ -2483,7 +2556,14 @@ ${text}` : text));
                   state={diffState}
                 />
               }
+              onChanged={() => {
+                setReloadToken((token) => token + 1);
+                setTreeRevision((revision) => revision + 1);
+              }}
+              onOpenFile={(path, line) => void openFile(path, false, line ?? null, "task")}
               onSelectTask={setSelectedTaskId}
+              repositoryId={project.repositoryId}
+              repositoryName={project.name}
               selectedTaskId={selectedTaskId}
               tasks={tasks}
               worktreeState={worktreeActivityState}
@@ -2582,7 +2662,7 @@ ${text}` : text));
                 <li key={file.path}>
                   <button
                     type="button"
-                    onClick={() => void openFile(file.path)}
+                    onClick={() => void openFile(file.path, false, null, "task")}
                     className="flex w-full items-baseline gap-2 border-b border-border px-2 py-1 text-left outline-none hover:bg-surface-raised focus-visible:bg-surface-raised"
                   >
                     <Mono className="min-w-0 flex-1 truncate text-foreground">{file.path}</Mono>

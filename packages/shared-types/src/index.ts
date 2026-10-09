@@ -15,3 +15,4 @@ export * from "./activity";
 export * from "./permissions";
 export * from "./worktree-plan";
 export * from "./agent-runtime";
+export * from "./scm";

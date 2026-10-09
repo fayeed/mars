@@ -2,6 +2,7 @@ pub mod command;
 pub mod disk;
 pub mod overlap;
 pub mod plan;
+pub mod scm;
 pub mod status;
 pub mod worktree;
 

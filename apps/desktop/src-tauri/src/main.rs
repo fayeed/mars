@@ -3,6 +3,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod runs;
+mod scm_commands;
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -1827,12 +1828,9 @@ async fn extract_task_memory(
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
     }).map_err(|error| CommandFailure::new("memory.session", error.to_string()))?;
-    let diff = mars_git::command::run(
-        &task.worktree_path,
-        ["diff", "--no-ext-diff", "--unified=3", "HEAD"],
-    )
-    .map_err(|error| CommandFailure::new("memory.diff", error.to_string()))?
-    .stdout_text();
+    // Everything the task changed since its base, committed or not: an agent
+    // that commits its work must not leave the extractor looking at nothing.
+    let (diff, _) = scm_commands::task_change(&state, &task)?;
     let provider = Arc::new(CliExtractionProvider {
         adapter,
         executable: state.executables.resolve(adapter)?.path,
@@ -1994,12 +1992,7 @@ async fn build_review_handoff(
             )
         })
         .map_err(|error| CommandFailure::new("review.session", error.to_string()))?;
-    let diff = mars_git::command::run(
-        &task.worktree_path,
-        ["diff", "--no-ext-diff", "--unified=3", "HEAD"],
-    )
-    .map_err(|error| CommandFailure::new("review.diff", error.to_string()))?
-    .stdout_text();
+    let (diff, _) = scm_commands::task_change(&state, &task)?;
     state
         .reviews
         .build_handoff(ReviewHandoffRequest {
@@ -2020,12 +2013,7 @@ async fn run_cross_agent_review(
 ) -> Result<ReviewRecord, CommandFailure> {
     let task = state.tasks.get(&handoff.task_id)?;
     let reviewer_adapter = parse_adapter(&handoff.reviewer_adapter)?;
-    let diff = mars_git::command::run(
-        &task.worktree_path,
-        ["diff", "--no-ext-diff", "--unified=3", "HEAD"],
-    )
-    .map_err(|error| CommandFailure::new("review.diff", error.to_string()))?
-    .stdout_text();
+    let (diff, _) = scm_commands::task_change(&state, &task)?;
     let verified = state.reviews.build_handoff(ReviewHandoffRequest {
         task_id: handoff.task_id.clone(),
         implementation_session_id: handoff.implementation_session_id.clone(),
@@ -2388,26 +2376,9 @@ async fn task_diff(
         ));
     }
 
-    let diff = mars_git::command::run(
-        &task.worktree_path,
-        ["diff", "--no-ext-diff", "--unified=3", "HEAD"],
-    )
-    .map_err(|error| CommandFailure::new("diff.read", error.to_string()))?
-    .stdout_text();
-
-    let untracked = mars_git::command::run(
-        &task.worktree_path,
-        ["ls-files", "--others", "--exclude-standard"],
-    )
-    .map(|output| {
-        output
-            .stdout_text()
-            .lines()
-            .filter(|line| !line.is_empty())
-            .map(ToOwned::to_owned)
-            .collect::<Vec<_>>()
-    })
-    .unwrap_or_default();
+    // Measured from where the task left its base, not from HEAD: an agent that
+    // commits as it goes would otherwise leave nothing here to review.
+    let (diff, untracked) = scm_commands::task_change(&state, &task)?;
 
     let diff_sha256 = format!(
         "{:x}",
@@ -3765,7 +3736,31 @@ fn main() {
             set_skill_adapter,
             check_skill_update,
             block_skill,
-            local_skills
+            local_skills,
+            scm_commands::git_status,
+            scm_commands::git_diff,
+            scm_commands::git_stage,
+            scm_commands::git_unstage,
+            scm_commands::git_discard,
+            scm_commands::git_commit,
+            scm_commands::git_log,
+            scm_commands::git_show,
+            scm_commands::git_branches,
+            scm_commands::git_switch,
+            scm_commands::git_create_branch,
+            scm_commands::git_remotes,
+            scm_commands::git_fetch,
+            scm_commands::git_pull,
+            scm_commands::git_push,
+            scm_commands::git_stashes,
+            scm_commands::git_stash_push,
+            scm_commands::git_stash_pop,
+            scm_commands::integration_preview,
+            scm_commands::integration_apply,
+            scm_commands::worktree_cleanup_plan,
+            scm_commands::worktree_cleanup,
+            scm_commands::worktree_restore,
+            scm_commands::worktree_last_cleanup
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Mars desktop");
