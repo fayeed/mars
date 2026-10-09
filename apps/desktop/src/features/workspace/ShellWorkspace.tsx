@@ -79,6 +79,7 @@ import { InterruptedRunRecovery } from "@/features/activity/InterruptedRunRecove
 import { RunStatusLine, runActivityState } from "@/features/activity/RunStatusLine";
 import { BrainAnswerMessage } from "@/features/brain/BrainAnswerMessage";
 import { BrainExplorer } from "@/features/brain/BrainExplorer";
+import { CodeGraph } from "@/features/brain/CodeGraph";
 import { LibraryOverlay, type LibraryTab } from "@/features/library/LibraryOverlay";
 import { MemoryBrowser, type MemoryFilterState } from "@/features/memory/MemoryBrowser";
 import {
@@ -167,6 +168,13 @@ type FileOrigin = "repository" | "task";
  * something that failed before it could be recorded, which would otherwise
  * vanish without a trace.
  */
+/** What the working-tree watcher reports on `index-watch`. */
+type WatchChange =
+  | { event: "changed"; relativePaths: string[] }
+  | { event: "headChanged" }
+  | { event: "indexed"; summary: unknown }
+  | { event: "failed"; error: string };
+
 interface Note {
   id: string;
   state: ActivityState;
@@ -436,6 +444,8 @@ export function ShellWorkspace({
   const [knowledgeOpening, setKnowledgeOpening] = useState<{
     tab: KnowledgeTab;
     nonce: number;
+    /** For the code graph: what to put in the middle. */
+    target?: string;
   } | null>(null);
 
   const [grants, setGrants] = useState<GrantView[]>([]);
@@ -570,6 +580,43 @@ export function ShellWorkspace({
       void subscription.then((unlisten) => unlisten());
     };
   }, [loadIndex]);
+
+  // The index keeps itself current. A repository Mars has never read is read
+  // once when it is opened — locally; nothing leaves the machine — and one it
+  // has read is watched, so saves and branch switches are re-read as they
+  // happen rather than when someone remembers to ask.
+  const autoIndexed = useRef(new Set<string>());
+  useEffect(() => {
+    if (!index || index.repositoryId !== project.repositoryId) return;
+    if (isIndexCold(index)) {
+      if (index.runningRuns > 0 || autoIndexed.current.has(project.repositoryId)) return;
+      autoIndexed.current.add(project.repositoryId);
+      invoke("index_repository", { repositoryId: project.repositoryId }).catch(() => undefined);
+      return;
+    }
+    invoke("watch_repository", { repositoryId: project.repositoryId }).catch(() => undefined);
+  }, [index, project.repositoryId]);
+
+  useEffect(() => {
+    const subscription = listen<{ repositoryId: string; change: WatchChange }>(
+      "index-watch",
+      ({ payload }) => {
+        if (payload.repositoryId !== project.repositoryId) return;
+        const change = payload.change;
+        if (change.event === "changed") {
+          setIndexProgress(`re-reading ${change.relativePaths.length.toLocaleString()} changed file(s)`);
+        } else if (change.event === "headChanged") {
+          setIndexProgress("re-reading after the branch moved");
+        } else {
+          setIndexProgress(null);
+          void loadIndex();
+        }
+      },
+    );
+    return () => {
+      void subscription.then((unlisten) => unlisten());
+    };
+  }, [loadIndex, project.repositoryId]);
 
   // Re-read when the index moves: what is worth starting depends on what Mars
   // has read. The previous list stays on screen until the new one arrives
@@ -1928,8 +1975,8 @@ ${text}` : text));
     }
   }
 
-  function openKnowledge(tab: KnowledgeTab) {
-    setKnowledgeOpening((current) => ({ tab, nonce: (current?.nonce ?? 0) + 1 }));
+  function openKnowledge(tab: KnowledgeTab, target?: string) {
+    setKnowledgeOpening((current) => ({ tab, nonce: (current?.nonce ?? 0) + 1, target }));
     dispatch({ type: "navigate", destination: "knowledge" });
   }
 
@@ -2723,6 +2770,22 @@ ${text}` : text));
                   state={knowledgeState}
                 />
               }
+              code={
+                <CodeGraph
+                  index={index}
+                  indexProgress={indexProgress}
+                  initialTarget={knowledgeOpening?.target}
+                  onOpen={(path, line) => void openFile(path, false, line)}
+                  onReindex={() => {
+                    setIndexState("loading");
+                    invoke("index_repository", { repositoryId: project.repositoryId })
+                      .then(loadIndex)
+                      .catch(() => setIndexState("failed"));
+                  }}
+                  repositoryId={project.repositoryId}
+                  suggestion={activePath}
+                />
+              }
               initialTab={knowledgeOpening?.tab}
               memory={memoryBrowser()}
               waiting={{ decisions: waitingDecisions, memory: waitingMemories }}
@@ -2911,7 +2974,7 @@ ${text}` : text));
           ) : undefined,
           brain: (
             <BrainExplorer
-              onExplore={(target) => runSearch(target)}
+              onExplore={(target) => openKnowledge("code", target)}
               onOpen={(path, line) => void openFile(path, false, line)}
               onSearch={runSearch}
               results={searchResults}

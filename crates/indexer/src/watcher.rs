@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use mars_security::{is_default_ignored_directory, is_sensitive_filename};
 use mars_storage::Storage;
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Serialize;
@@ -211,16 +212,57 @@ enum Change {
 
 /// Maps a filesystem event path to something the index cares about. Git's own
 /// bookkeeping is ignored apart from `HEAD`, which signals a branch switch.
+///
+/// Directories no index pass ever reads (`node_modules`, `target`, build
+/// output) and secret files are dropped here, before they are scheduled: a
+/// build writes thousands of files there, and each burst would otherwise cost
+/// a re-index pass that reads nothing.
 fn classify(root: &Path, path: &Path) -> Option<Change> {
     let relative = walk::relative_path(root, path).ok()?;
     if relative == ".git/HEAD" {
         return Some(Change::Head);
     }
-    if relative.starts_with(".git/") || relative == ".git" {
-        return None;
-    }
     if relative.is_empty() {
         return None;
     }
+    let mut parts = relative.split('/').peekable();
+    while let Some(part) = parts.next() {
+        let last = parts.peek().is_none();
+        if is_default_ignored_directory(part) || (last && is_sensitive_filename(part)) {
+            return None;
+        }
+    }
     Some(Change::Path(relative))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::{Change, classify};
+
+    fn classified(path: &str) -> Option<String> {
+        let root = Path::new("/repo");
+        classify(root, &root.join(path)).map(|change| match change {
+            Change::Head => "HEAD".to_owned(),
+            Change::Path(path) => path,
+        })
+    }
+
+    #[test]
+    fn only_paths_an_index_pass_would_read_are_scheduled() {
+        assert_eq!(classified("src/main.rs").as_deref(), Some("src/main.rs"));
+        assert_eq!(classified(".git/HEAD").as_deref(), Some("HEAD"));
+        assert_eq!(classified(".git/index"), None);
+        assert_eq!(classified("target/debug/build/out.rs"), None);
+        assert_eq!(classified("web/node_modules/react/index.js"), None);
+        assert_eq!(classified("apps/site/.next/cache/x.json"), None);
+        assert_eq!(classified("config/.env"), None);
+        assert_eq!(
+            classified("config/.env.example").as_deref(),
+            Some("config/.env.example")
+        );
+        // A file merely named like an ignored directory is still source.
+        assert_eq!(classified("src/build.rs").as_deref(), Some("src/build.rs"));
+    }
 }

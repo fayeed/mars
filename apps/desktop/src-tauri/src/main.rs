@@ -115,6 +115,9 @@ struct AppState {
     /// process's UI — which run a person can still stop — and not about the
     /// index itself.
     index_runs: Arc<Mutex<HashMap<String, tokio_util::sync::CancellationToken>>>,
+    /// The repository whose working tree is being watched, so its index
+    /// follows edits without anyone asking. One at a time: the one open.
+    watcher: Mutex<Option<(String, mars_indexer::watcher::RepositoryWatcher)>>,
     why: WhyService,
     storage: Arc<Storage>,
     /// The database file itself, which an agent's MCP server opens too.
@@ -840,6 +843,47 @@ async fn index_repository(
             format!("the index worker did not finish: {error}"),
         )),
     }
+}
+
+/// Keep a repository's index following its working tree: a saved file is
+/// re-read on its own, a branch switch re-reads the tree. Started once the
+/// repository has an index; watching another repository stops this one.
+/// What the watcher does is reported on `index-watch`.
+#[tauri::command]
+fn watch_repository(
+    repository_id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<bool, CommandFailure> {
+    let mut current = state.watcher.lock().expect("watcher slot is poisoned");
+    if current
+        .as_ref()
+        .is_some_and(|(watched, _)| watched == &repository_id)
+    {
+        return Ok(false);
+    }
+    let root = mars_storage::projects::ProjectRepository::new(state.storage.clone())
+        .find_repository(&repository_id)
+        .map_err(|error| CommandFailure::new("repository.not_found", error.to_string()))?
+        .root_path;
+    // The previous watch stops (and joins) before the next starts.
+    drop(current.take());
+    let key = repository_id.clone();
+    let watcher = mars_indexer::watcher::RepositoryWatcher::start(
+        state.storage.clone(),
+        &repository_id,
+        &root,
+        mars_indexer::watcher::WatchOptions::default(),
+        move |event| {
+            let _ = app.emit(
+                "index-watch",
+                serde_json::json!({ "repositoryId": key, "change": event }),
+            );
+        },
+    )
+    .map_err(|error| CommandFailure::new("index.watch", error.to_string()))?;
+    *current = Some((repository_id, watcher));
+    Ok(true)
 }
 
 /// Stop an index pass that is still running. Nothing already written is undone;
@@ -3610,6 +3654,7 @@ fn main() {
                 forge,
                 indexer: Indexer::new(storage.clone()),
                 index_runs: Arc::new(Mutex::new(HashMap::new())),
+                watcher: Mutex::new(None),
                 knowledge: KnowledgeService::new(storage.clone()),
                 overlaps: TaskOverlapService::new(storage.clone()),
                 planner: WorktreePlanner::new(storage.clone(), data_dir.join("worktrees"))
@@ -3784,6 +3829,7 @@ fn main() {
             forge_commands::github_merge,
             forge_commands::start_task_from_issue,
             forge_commands::open_external_url,
+            watch_repository,
             knowledge_commands::project_knowledge,
             knowledge_commands::resolve_knowledge
         ])
