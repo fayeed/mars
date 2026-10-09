@@ -8,7 +8,15 @@ import tseslint from "typescript-eslint";
 
 export default defineConfig([
   {
-    ignores: ["**/dist/**", "**/gen/**", "**/node_modules/**", "target/**"],
+    // Fixture repositories are what the indexer reads, not code Mars runs;
+    // one is malformed on purpose.
+    ignores: [
+      "**/dist/**",
+      "**/gen/**",
+      "**/node_modules/**",
+      "target/**",
+      "fixtures/repositories/**",
+    ],
   },
   {
     files: ["**/*.{js,mjs,ts,tsx}"],

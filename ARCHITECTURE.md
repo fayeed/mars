@@ -102,6 +102,9 @@ flowchart TB
   Agents --> PTY[Native process/PTY supervisor]
   PTY --> Claude[Claude Code CLI]
   PTY --> Codex[Codex CLI]
+  Claude -->|MCP stdio| MCP[Mars MCP server]
+  Codex -->|MCP stdio| MCP
+  MCP --> DB
   Workspace --> Git[User's system Git]
   Forge --> GitHub[GitHub API]
   Desktop --> Monaco
@@ -146,6 +149,7 @@ crates/
   skills/                    # discovery, quarantine, trust, activation
   forge/                     # provider trait and normalized entities
   forge-github/              # GitHub HTTP implementation
+  mcp/                       # the MCP server every agent run is given (stdio JSON-RPC)
   security/                  # permissions, redaction, keychain facade
 packages/
   protocol/                  # JSON schema + generated TS/Rust contract tests
@@ -888,13 +892,120 @@ Storage is migration 15: `activity_events`, `activity_payloads`, `agent_runs`,
 `permission_requests`, `permission_grants`, `worktree_plans`,
 `worktree_cleanups`. Proof: `docs/proofs/3-foundations.md`.
 
+## 13d. The working product (Phase 4)
+
+Phase 3 made every agent action pass through Mars. Phase 4 makes the product
+something to work in all day: agents that hold a conversation and can see the
+project graph, several of them at once, skills that load natively, everyday Git
+and GitHub without leaving the window, and a place where what agents decided
+and proposed to remember is settled. Each piece below has its ADR.
+
+### Runs are conversations (ADR-045, ADR-048, ADR-049)
+
+The first run of a task launches from the reviewed context pack; every later
+message resumes the provider's own session (`claude --resume`, `codex exec
+resume`) with exactly the words typed, recorded first as a human message. A
+message written while the task's agent is working is queued and sent when the
+run ends; one task holds one running agent. Prompts go to the CLI on stdin.
+
+The CLIs are found, not assumed: a path chosen in Settings, then `PATH`
+(preferring a real `.exe` to a script shim), then installer locations, then the
+copies VS Code, Cursor and Windsurf extensions ship. Every launch, probe,
+review and extraction uses the resolved path, and Settings says where it was
+found.
+
+Streams are normalized with the provider's call id on every tool, command, test
+and file event, and a `tool_result` pairs the output (bounded, head and tail
+kept) with its call. Reasoning blocks are dropped in the parser. Exactly one
+`end` closes every run, carrying token usage and reported cost.
+
+### Agents see Mars over MCP (ADR-046, ADR-047)
+
+Each run is given an MCP server scoped to its task, served by the desktop's
+own executable (`mars-desktop mcp --database … --task … --run …`) and also
+built as `mars-mcp`. It is `crates/mcp`: newline-delimited JSON-RPC over
+stdio, one request in flight per call, cancellable.
+
+| Tools | What they answer |
+| --- | --- |
+| `search`, `find_symbol`, `symbols_at`, `references`, `callers`, `callees`, `impact`, `related`, `file_deps` | The structural index, in compact `path:start-end` text, so an agent stops re-reading files with grep |
+| `ask`, `where_is`, `explain`, `index_status` | The Project Brain's cited answers, and whether the index can be trusted |
+| `memory`, `decisions` | Approved memory and decisions, recorded as used when injected |
+| `record_decision`, `remember` | Writes that land as candidates for a person; never fact until approved |
+| `permission_prompt` | Claude Code's permission hook (below) |
+
+A reviewer is offered no write. Claude runs with `--permission-prompt-tool
+mcp__mars__permission_prompt`: before acting it asks Mars, which allows reads
+and in-scope writes, refuses writes outside the worktree or into `.git`, and
+sends everything else to the permission broker — across processes, by polling
+the decision back out of SQLite. Codex, which cannot ask in `exec` mode, runs in
+its own sandbox with the network off unless granted.
+
+### Several agents, one picture (ADR-050)
+
+The Agents destination draws every run in the repository on a shared clock:
+one lane per task, one bar per run, follow-ups joined to the run they
+continued, reviewers hollow, runs waiting on a person drawn as blocked. Below
+it, the same runs in words with branch, elapsed time, files, tokens and cost,
+and Stop. The task rail and status bar draw from the same live set.
+
+### Skills load natively (ADR-051)
+
+An installation is a pin: files written once per content hash under
+`skills/store/<hash>`, verified against the digest skills.sh publishes, with its
+`SKILL.md` kept on the installation. The Library's Skills view is a marketplace
+— Discover (skills.sh), Installed, On this machine — with enable, per-agent
+limits, update checks and blocks. At launch, Claude Code gets the applicable
+skills as a generated plugin (`--plugin-dir`), so it loads them the way it
+loads its own; Codex gets their text and paths in the prompt.
+
+### Source control and GitHub (ADR-052, ADR-053)
+
+Source control covers the repository and every task worktree: status, stage,
+unstage, discard, commit, history, branches, fetch, fast-forward pull, push,
+stash. A task merges home through `git merge-tree --write-tree`, previewed and
+fingerprinted over both tips, applied as a merge commit, squash or fast-forward
+only against that preview, and aborted on conflict. A task's change is measured
+from where it left its base, so committed work is still reviewed.
+
+The GitHub entry beside it lists issues and pull requests, reads one with its
+conversation, checks and line comments, comments and merges — each write
+confirmed on a line naming the account, a merge pinned to the head on screen —
+and turns an issue into a planned task. Connecting can reuse the GitHub CLI's
+sign-in; tokens live in the OS keychain.
+
+### Knowledge (ADR-054, ADR-055)
+
+The Knowledge destination holds what agents are later told as fact, so it is
+where a person settles it:
+
+- **Decisions** — every decision, constraint, risk and open question recorded
+  in the project, by an agent over MCP or by extraction, waiting-on-you first,
+  each with its agent, task, alternatives and affected files
+  (`KnowledgeService::origin`). Approve, reword, reject, retire, pin.
+- **Memory** — the project's proposal queue and approved memories; an approval
+  that conflicts with a kept memory writes nothing until each pair is settled.
+- **Code graph** — a symbol or file with what uses it and what it uses, one
+  column per step; open, re-centre, explain, blast radius, why, where-is.
+
+The rail counts what waits. The index keeps itself current: a repository never
+read is indexed on open, an indexed one is watched (`RepositoryWatcher`) so
+saves and branch switches are re-read, and dependency and build directories are
+dropped before anything is scheduled.
+
+Storage is migrations 17–19: plain Windows paths, run conversation columns
+(`provider_session_id`, `resumes_run_id`, `usage_json`), and pinned skill
+installations.
+
 ## 14. Minimal IDE information architecture
 
 ```text
 Project window
-├─ App rail (48px): Conversation | Editor | Source control, then theme, account
+├─ App rail (48px): Conversation | Editor | Source control | Agents | Knowledge,
+│                   then theme, account; a count where something waits on you
 ├─ Task rail: active tasks with live state; collapses to a labelled strip
-├─ Workbench: editor tabs / diff — opens beside the conversation, never over it
+├─ Workbench: editor tabs, source control and GitHub, the agents board, or
+│            knowledge — opens beside the conversation, never over it
 ├─ Center: conversation — always present, always live, never replaced
 ├─ Right inspector: context pack, plan, diff summary, brain answers
 ├─ Composer: pinned under the conversation, usable while panels are open
@@ -902,7 +1013,7 @@ Project window
 └─ Status bar: repo/worktree/branch, index state, agents, permissions
 ```
 
-The app rail is a set of destinations, not a toolbar of every feature (ADR-043). Tasks remain the organizing unit — a conversation belongs to a task, so every turn has a branch and a worktree to happen in — but the landing surface is the task's live conversation rather than a list. A task carries intent, context tray, worktree/branch, selected skills, agent controls, event timeline, changes/tests, memory candidates, and review/PR status; those appear in the conversation and the inspector, not in chrome of their own. Clicking any source opens Monaco or the original artifact in the workbench, beside the conversation rather than in place of it. “Review with other agent” is a first-class action next to the diff. The user can always open the current worktree in the editor, source-control view, or terminal.
+The app rail is a set of destinations, not a toolbar of every feature (ADR-043; Agents and Knowledge were added by ADR-050 and ADR-054). Tasks remain the organizing unit — a conversation belongs to a task, so every turn has a branch and a worktree to happen in — but the landing surface is the task's live conversation rather than a list. A task carries intent, context tray, worktree/branch, selected skills, agent controls, event timeline, changes/tests, memory candidates, and review/PR status; those appear in the conversation and the inspector, not in chrome of their own. Clicking any source opens Monaco or the original artifact in the workbench, beside the conversation rather than in place of it. “Review with other agent” is a first-class action next to the diff. The user can always open the current worktree in the editor, source-control view, or terminal.
 
 The shell is one component system in `apps/desktop/src/shell`: regions, panel headers, the state vocabulary (`idle`, `queued`, `loading`, `streaming`, `blocked`, `failed`, `stale`, `done`), the keymap, and the design tokens. Screens compose those regions; no screen supplies its own chrome, empty states, or state vocabulary.
 
