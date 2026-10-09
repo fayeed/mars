@@ -11,12 +11,19 @@ import {
 } from "react";
 
 /**
- * Three destinations. Not a toolbar of every feature — a set of places the
- * product can be. Everything else is a panel inside one of them.
+ * The places the product can be — not a toolbar of every feature. Each one
+ * other than the conversation opens a workbench beside it, so the
+ * conversation is never replaced (ADR-050). Everything else is a panel
+ * inside one of them.
  */
-export type Destination = "conversation" | "editor" | "source-control";
+export type Destination = "conversation" | "editor" | "source-control" | "agents";
 
-export const DESTINATIONS: readonly Destination[] = ["conversation", "editor", "source-control"];
+export const DESTINATIONS: readonly Destination[] = [
+  "conversation",
+  "editor",
+  "source-control",
+  "agents",
+];
 
 export type InspectorTab = "context" | "plan" | "diff" | "brain";
 export type UtilityTab = "problems" | "tests" | "checks" | "terminal";

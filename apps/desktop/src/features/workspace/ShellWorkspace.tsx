@@ -64,6 +64,7 @@ import {
 } from "react";
 
 import { ActivityLog } from "@/features/activity/ActivityLog";
+import { AgentsBoard } from "@/features/agents/AgentsBoard";
 import { AuditExport } from "@/features/activity/AuditExport";
 import { CompletionSummary } from "@/features/activity/CompletionSummary";
 import { InterruptedRunRecovery } from "@/features/activity/InterruptedRunRecovery";
@@ -240,7 +241,7 @@ export function ShellWorkspace({
   onOpenProject,
   project,
 }: ShellWorkspaceProps) {
-  const { dispatch } = useShell();
+  const { dispatch, layout } = useShell();
   const [tasks, setTasks] = useState<WorktreePlan[]>([]);
   const [tasksState, setTasksState] = useState<ActivityState>("loading");
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
@@ -288,6 +289,11 @@ export function ShellWorkspace({
   useEffect(() => {
     queuedRef.current = queued;
   }, [queued]);
+  /** Every run in the repository, newest first, for the Agents board. */
+  const [boardRuns, setBoardRuns] = useState<RunOverview[]>([]);
+  const [boardState, setBoardState] = useState<ActivityState>("idle");
+  const [stoppingRunId, setStoppingRunId] = useState<string | null>(null);
+  const [now, setNow] = useState(() => Date.now());
   /** Whether the next message starts a new task rather than continuing this one. */
   const [composeNew, setComposeNew] = useState(false);
   const [starting, setStarting] = useState(false);
@@ -641,17 +647,42 @@ export function ShellWorkspace({
     };
   }, []);
 
+  const boardOpen = layout.destination === "agents";
+  const refreshBoard = useCallback(() => {
+    setBoardState((current) => (current === "idle" ? current : "loading"));
+    return invoke<RunOverview[]>("repository_runs", {
+      repositoryId: project.repositoryId,
+      limit: 200,
+    })
+      .then((runs) => {
+        setBoardRuns(runs);
+        setBoardState("idle");
+      })
+      .catch(() => setBoardState("failed"));
+  }, [project.repositoryId]);
+
   const refreshLiveRuns = useCallback(
     () =>
-      invoke<RunOverview[]>("active_runs")
-        .then(setLiveRuns)
-        .catch(() => undefined),
-    [],
+      Promise.all([
+        invoke<RunOverview[]>("active_runs")
+          .then(setLiveRuns)
+          .catch(() => undefined),
+        boardOpen ? refreshBoard() : Promise.resolve(),
+      ]).then(() => undefined),
+    [boardOpen, refreshBoard],
   );
 
   useEffect(() => {
     void refreshLiveRuns();
   }, [refreshLiveRuns]);
+
+  // The board's clock moves only while there is something live to measure.
+  const anyLive = liveRuns.some((run) => run.live);
+  useEffect(() => {
+    if (!boardOpen || !anyLive) return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [anyLive, boardOpen]);
 
   /**
    * Re-read the selected task at most a few times a second.
@@ -2409,6 +2440,30 @@ ${text}` : text));
         ),
       }}
       workbench={{
+        agents: {
+          content: (
+            <AgentsBoard
+              now={now}
+              // The conversation is already beside the board; choosing a task
+              // puts it there without leaving the board.
+              onOpenTask={setSelectedTaskId}
+              onStop={(runId) => {
+                setStoppingRunId(runId);
+                void stopRun(runId).finally(() => setStoppingRunId(null));
+              }}
+              runs={boardRuns}
+              selectedTaskId={selectedTaskId}
+              state={boardState}
+              stoppingRunId={stoppingRunId}
+            />
+          ),
+          state: liveRuns.some((run) => run.live && run.pendingPermissions > 0)
+            ? "blocked"
+            : anyLive
+              ? "streaming"
+              : boardState,
+          detail: `${liveRuns.filter((run) => run.live).length} live`,
+        },
         editor: {
           content: editorSurface,
           state: fileError ? "failed" : "idle",

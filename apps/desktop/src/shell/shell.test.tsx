@@ -47,13 +47,14 @@ function renderShell(overrides: Parameters<typeof ShellFrame>[0] = {}) {
 }
 
 describe("ShellFrame regions", () => {
-  it("shows exactly three destinations plus theme and account", () => {
+  it("shows the four destinations plus theme and account", () => {
     renderShell();
     const rail = screen.getByRole("navigation", { name: "Destinations" });
-    expect(within(rail).getAllByRole("button")).toHaveLength(5);
+    expect(within(rail).getAllByRole("button")).toHaveLength(6);
     expect(within(rail).getByRole("button", { name: "Conversation" })).toBeVisible();
     expect(within(rail).getByRole("button", { name: "Editor" })).toBeVisible();
     expect(within(rail).getByRole("button", { name: "Source control" })).toBeVisible();
+    expect(within(rail).getByRole("button", { name: "Agents" })).toBeVisible();
   });
 
   it("keeps the conversation and its composer present on every destination", async () => {
@@ -68,6 +69,10 @@ describe("ShellFrame regions", () => {
     expect(screen.getByRole("combobox", { name: "Message" })).toBeVisible();
 
     await user.click(screen.getByRole("button", { name: "Source control" }));
+    expect(screen.getByRole("region", { name: "Conversation" })).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Agents" }));
+    expect(screen.getByRole("region", { name: "Agents" })).toBeVisible();
     expect(screen.getByRole("region", { name: "Conversation" })).toBeVisible();
   });
 

@@ -46,6 +46,7 @@ export const SHELL_BINDINGS: readonly ShellBinding[] = [
   binding("go.conversation", { key: "1", mod: true }, "Go to conversation"),
   binding("go.editor", { key: "2", mod: true }, "Go to editor"),
   binding("go.source-control", { key: "3", mod: true }, "Go to source control"),
+  binding("go.agents", { key: "4", mod: true }, "Go to agents"),
   binding("toggle.taskRail", { key: "b", mod: true }, "Toggle task rail"),
   binding("toggle.inspector", { key: "i", mod: true, shift: true }, "Toggle inspector"),
   binding("toggle.utility", { key: "j", mod: true }, "Toggle utility panel"),
@@ -145,8 +146,8 @@ export function useShellKeymap(handlers: ShellKeymapHandlers = {}) {
         return;
       }
 
-      const destinationIndex = ["go.conversation", "go.editor", "go.source-control"].indexOf(
-        match.id,
+      const destinationIndex = DESTINATIONS.findIndex(
+        (destination) => match.id === `go.${destination}`,
       );
       let action: ShellAction | null = null;
 

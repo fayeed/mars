@@ -1,4 +1,5 @@
 import {
+  BotIcon,
   CircleUserIcon,
   FileCode2Icon,
   GitCompareIcon,
@@ -21,6 +22,7 @@ const destinationMeta: Record<
   conversation: { icon: MessageSquareIcon, label: "Conversation", binding: "go.conversation" },
   editor: { icon: FileCode2Icon, label: "Editor", binding: "go.editor" },
   "source-control": { icon: GitCompareIcon, label: "Source control", binding: "go.source-control" },
+  agents: { icon: BotIcon, label: "Agents", binding: "go.agents" },
 };
 
 const themeMeta: Record<ThemeMode, { icon: ComponentType<{ className?: string }>; label: string }> =
@@ -31,7 +33,7 @@ const themeMeta: Record<ThemeMode, { icon: ComponentType<{ className?: string }>
   };
 
 /**
- * Three destinations, then theme and account. Nothing else is ever added here:
+ * The destinations, then theme and account. Nothing else is ever added here:
  * the rail says where you are, not what you can do.
  */
 export function AppRail({

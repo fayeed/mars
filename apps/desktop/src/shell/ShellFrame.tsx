@@ -50,6 +50,26 @@ export interface ShellFrameProps {
 const WORKBENCH_TITLE: Record<Exclude<Destination, "conversation">, string> = {
   editor: "Editor",
   "source-control": "Source control",
+  agents: "Agents",
+};
+
+const WORKBENCH_EMPTY: Record<
+  Exclude<Destination, "conversation">,
+  { title: string; description: string }
+> = {
+  editor: {
+    title: "No file open",
+    description:
+      "Open a file from a task, a diff, or a brain answer. The conversation stays where it is.",
+  },
+  "source-control": {
+    title: "No changes to review",
+    description: "Staged and unstaged changes in the current worktree appear here.",
+  },
+  agents: {
+    title: "No agents yet",
+    description: "Every agent run in this repository appears here, working or finished.",
+  },
 };
 
 /**
@@ -106,14 +126,8 @@ export function ShellFrame({
                 {surface?.content ?? (
                   <StateBlock
                     state={surface?.state ?? "idle"}
-                    title={
-                      workbenchKey === "editor" ? "No file open" : "No changes to review"
-                    }
-                    description={
-                      workbenchKey === "editor"
-                        ? "Open a file from a task, a diff, or a brain answer. The conversation stays where it is."
-                        : "Staged and unstaged changes in the current worktree appear here."
-                    }
+                    title={WORKBENCH_EMPTY[workbenchKey].title}
+                    description={WORKBENCH_EMPTY[workbenchKey].description}
                   />
                 )}
               </div>
