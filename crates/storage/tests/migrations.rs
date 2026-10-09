@@ -143,7 +143,7 @@ fn fresh_database_applies_each_migration_once() {
         })
         .expect("activity events table should exist");
 
-    assert_eq!(applied, 16);
+    assert_eq!(applied, 17);
     assert_eq!(activity_table, "activity_events");
     assert_eq!(memories_table, "memories");
     assert_eq!(jobs_table, "jobs");
@@ -164,7 +164,60 @@ fn fresh_database_applies_each_migration_once() {
             })
         })
         .expect("migration journal should remain readable");
-    assert_eq!(applied_after_reopen, 16);
+    assert_eq!(applied_after_reopen, 17);
+}
+
+#[test]
+fn verbatim_windows_roots_are_rewritten_without_changing_identity() {
+    let database = TestDatabase::new("plain-windows-paths");
+    let storage = Storage::open(database.path()).expect("database should open");
+    // A database written before migration 17: the roots are in the verbatim
+    // form, and the journal does not yet record 17 as applied.
+    storage
+        .with_connection(|connection| {
+            connection.execute_batch(
+                r"INSERT INTO projects (id, name, created_at, updated_at)
+                  VALUES ('p1', 'repo', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
+                         ('p2', 'long', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+                  INSERT INTO repositories
+                    (id, project_id, root_path, git_common_dir, state, created_at, updated_at)
+                  VALUES ('r1', 'p1', '\\?\C:\work\repo', '\\?\C:\work\repo\.git',
+                          'active', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
+                         ('r2', 'p2', '\\?\UNC\server\share\repo', '\\?\UNC\server\share\repo\.git',
+                          'active', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+                  DELETE FROM _mars_migrations WHERE version = 17;",
+            )
+        })
+        .expect("legacy rows should insert");
+    drop(storage);
+
+    let reopened = Storage::open(database.path()).expect("database should reopen");
+    let rows: Vec<(String, String, String)> = reopened
+        .with_connection(|connection| {
+            let mut statement = connection
+                .prepare("SELECT id, root_path, git_common_dir FROM repositories ORDER BY id")?;
+            statement
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+                .collect()
+        })
+        .expect("repositories should load");
+
+    assert_eq!(
+        rows,
+        vec![
+            (
+                "r1".to_owned(),
+                r"C:\work\repo".to_owned(),
+                r"C:\work\repo\.git".to_owned()
+            ),
+            // A UNC share has no drive-letter form, so it keeps the one it had.
+            (
+                "r2".to_owned(),
+                r"\\?\UNC\server\share\repo".to_owned(),
+                r"\\?\UNC\server\share\repo\.git".to_owned()
+            ),
+        ]
+    );
 }
 
 #[test]

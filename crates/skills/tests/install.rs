@@ -300,13 +300,16 @@ fn snapshot_hash(files: &[SkillFile]) -> String {
 }
 
 struct Fixture {
-    _directory: TestDirectory,
+    // Declaration order is drop order: the database and the service holding it
+    // must close before the directory they live in is removed, or Windows
+    // refuses the removal and the panic in `Drop` aborts the whole binary.
+    service: SkillService,
+    storage: Arc<Storage>,
     repository_id: String,
     task_id: String,
-    storage: Arc<Storage>,
     install_root: PathBuf,
     registry: FakeRegistry,
-    service: SkillService,
+    _directory: TestDirectory,
 }
 
 impl Fixture {
@@ -358,13 +361,13 @@ impl Fixture {
         let install_root = directory.path().join("installed-skills");
         let service = SkillService::new(storage.clone(), Arc::new(registry.clone()), &install_root);
         Self {
-            _directory: directory,
+            service,
+            storage,
             repository_id: project.repository_id,
             task_id,
-            storage,
             install_root,
             registry,
-            service,
+            _directory: directory,
         }
     }
 }

@@ -156,8 +156,13 @@ fn read_trimmed(path: &Path) -> Result<String, ProjectError> {
         })
 }
 
-fn canonicalize(path: &Path) -> Result<PathBuf, ProjectError> {
-    fs::canonicalize(path).map_err(|source| ProjectError::Filesystem {
+/// Resolves a path the way Mars stores it: absolute, symlinks followed, and on
+/// Windows in the ordinary `C:\` form rather than the verbatim `\\?\C:\` one
+/// whenever the ordinary form can express it. The verbatim prefix is what
+/// `std::fs::canonicalize` returns there, and Git, agent CLIs and people all
+/// read it worse than the path they chose.
+pub fn canonicalize(path: &Path) -> Result<PathBuf, ProjectError> {
+    dunce::canonicalize(path).map_err(|source| ProjectError::Filesystem {
         path: path.into(),
         source,
     })

@@ -92,6 +92,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "review_diff_anchor",
         sql: include_str!("../migrations/0016_review_diff_anchor.sql"),
     },
+    Migration {
+        version: 17,
+        name: "plain_windows_paths",
+        sql: include_str!("../migrations/0017_plain_windows_paths.sql"),
+    },
 ];
 
 pub(crate) fn apply_all(connection: &mut Connection) -> Result<()> {

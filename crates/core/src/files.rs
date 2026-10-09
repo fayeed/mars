@@ -197,11 +197,13 @@ fn resolve_file(root: &Path, relative_path: &str) -> Result<PathBuf, FileError> 
     validate_relative_path(relative_path)?;
     let relative = Path::new(relative_path);
     let unresolved = root.join(relative);
-    let path = fs::canonicalize(&unresolved).map_err(|source| FileError::Filesystem {
+    let path = dunce::canonicalize(&unresolved).map_err(|source| FileError::Filesystem {
         path: unresolved,
         source,
     })?;
-    if !path.starts_with(root) {
+    // Both sides in the same form, or a root stored verbatim (`\\?\C:\`) would
+    // make every file in it look like an escape.
+    if !path.starts_with(dunce::simplified(root)) {
         return Err(FileError::OutsideRepository(path));
     }
     if !path.is_file() {

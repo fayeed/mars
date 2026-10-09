@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Barrier};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use mars_core::projects::{OpenRepositoryOutcome, ProjectError, ProjectService};
+use mars_core::projects::{OpenRepositoryOutcome, ProjectError, ProjectService, canonicalize};
 use mars_security::TrustDecision;
 use mars_storage::Storage;
 
@@ -62,14 +62,11 @@ fn untrusted_repository_returns_a_canonical_candidate_without_persisting() {
     };
     assert_eq!(
         candidate.root_path,
-        repository.canonicalize().expect("root should resolve")
+        canonicalize(&repository).expect("root should resolve")
     );
     assert_eq!(
         candidate.git_common_dir,
-        repository
-            .join(".git")
-            .canonicalize()
-            .expect("Git directory should resolve")
+        canonicalize(&repository.join(".git")).expect("Git directory should resolve")
     );
     assert_eq!(candidate.capabilities.len(), 3);
     let stored: i64 = storage
@@ -119,7 +116,7 @@ fn git_file_worktrees_resolve_their_shared_common_directory() {
 
     assert_eq!(
         candidate.git_common_dir,
-        common.canonicalize().expect("common dir should resolve")
+        canonicalize(&common).expect("common dir should resolve")
     );
 }
 
